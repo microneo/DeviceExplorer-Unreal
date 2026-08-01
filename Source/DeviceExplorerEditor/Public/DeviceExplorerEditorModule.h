@@ -4,6 +4,8 @@
 #include "HAL/PlatformProcess.h"
 #include "Modules/ModuleManager.h"
 
+class SWidget;
+
 class DEVICEEXPLOREREDITOR_API FDeviceExplorerEditorModule final : public IModuleInterface
 {
 public:
@@ -18,7 +20,8 @@ public:
 
 private:
 	void RegisterMenus();
-	void ToggleHost();
+	TSharedRef<SWidget> CreateStatusBarWidget();
+	TSharedRef<SWidget> BuildStatusBarMenu();
 	bool BuildHost();
 	bool InstallHostTarget(FText& OutError) const;
 	FString FindHostExecutable() const;

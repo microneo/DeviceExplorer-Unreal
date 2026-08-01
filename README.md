@@ -30,7 +30,7 @@ not need Node.js.
 
 1. Copy this directory to `<Project>/Plugins/DeviceExplorer`.
 2. Regenerate project files and build the Editor target.
-3. Press the DeviceExplorer toolbar button.
+3. Click **DeviceExplorer** in the Editor status bar.
 
 The host is a standalone program. On the first press the Editor offers to build
 it and takes care of the rest.
@@ -62,13 +62,13 @@ second property. Manual connection remains available:
 | `DeviceExplorerCore` | Runtime-safe registry and C++ Builder API |
 | `DeviceExplorer` | Non-Shipping client embedded in the build |
 | `DeviceExplorerHost` | Standalone HTTP, WebSocket, mDNS, and file-transfer host |
-| `DeviceExplorerEditor` | Editor toolbar, menu, settings, and host process control |
+| `DeviceExplorerEditor` | Status bar item, menu, settings, and host process control |
 
 ## Build and run the host
 
 The host is started, stopped, restarted, and opened from the DeviceExplorer
-toolbar button or from **Tools → DeviceExplorer**. Preferences are under
-**Editor Preferences → Plugins → DeviceExplorer**.
+item in the Editor status bar or from **Tools → DeviceExplorer**. Preferences
+are under **Editor Preferences → Plugins → DeviceExplorer**.
 
 Building it by hand is only needed outside the Editor. The build script
 installs the small `DeviceExplorerHost.Target.cs` wrapper into the project's

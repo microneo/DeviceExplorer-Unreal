@@ -3,25 +3,27 @@
 #include "DesktopPlatformModule.h"
 #include "DeviceExplorerEditorSettings.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "IDesktopPlatform.h"
+#include "ISettingsModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
+#include "Styling/StyleColors.h"
 #include "ToolMenus.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "DeviceExplorerEditor"
-
-namespace
-{
-const FName ToolbarEntry(TEXT("DeviceExplorer.Toolbar"));
-}
 
 void FDeviceExplorerEditorModule::StartupModule()
 {
@@ -214,7 +216,7 @@ void FDeviceExplorerEditorModule::OpenDashboard()
 {
 	if (!IsHostRunning())
 	{
-		Notify(LOCTEXT("DashboardNoHost", "DeviceExplorerHost is not running.\nStart it from the toolbar first."), true);
+		Notify(LOCTEXT("DashboardNoHost", "DeviceExplorerHost is not running.\nStart it from the DeviceExplorer status bar item."), true);
 		return;
 	}
 
@@ -226,16 +228,17 @@ void FDeviceExplorerEditorModule::RegisterMenus()
 {
 	FToolMenuOwnerScoped OwnerScoped(this);
 
-	UToolMenu* Toolbar = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.LevelEditorToolBar.PlayToolBar"));
-	FToolMenuSection& ToolbarSection = Toolbar->FindOrAddSection(TEXT("PluginTools"));
-	FToolMenuEntry ToolbarButton = FToolMenuEntry::InitToolBarButton(
-		ToolbarEntry,
-		FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::ToggleHost)),
-		LOCTEXT("ToolbarLabel", "DeviceExplorer"),
-		TAttribute<FText>::CreateLambda([this]() { return IsHostRunning() ? LOCTEXT("ToolbarTooltipRunning", "Open the DeviceExplorerHost dashboard.") : LOCTEXT("ToolbarTooltipStopped", "Start DeviceExplorerHost."); }),
-		TAttribute<FSlateIcon>::CreateLambda([this]() { return FSlateIcon(FAppStyle::GetAppStyleSetName(), IsHostRunning() ? TEXT("Icons.BrowseContent") : TEXT("Icons.Server")); }));
-	ToolbarButton.StyleNameOverride = TEXT("CalloutToolbar");
-	ToolbarSection.AddEntry(ToolbarButton);
+	UToolMenu* StatusBar = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.StatusBar.ToolBar"));
+	FToolMenuSection& StatusBarSection = StatusBar->AddSection(
+		TEXT("DeviceExplorer"),
+		FText::GetEmpty(),
+		FToolMenuInsert(TEXT("SourceControl"), EToolMenuInsertType::Before));
+	StatusBarSection.AddEntry(FToolMenuEntry::InitWidget(
+		TEXT("DeviceExplorerStatus"),
+		CreateStatusBarWidget(),
+		FText::GetEmpty(),
+		true,
+		false));
 
 	UToolMenu* ToolsMenu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.MainMenu.Tools"));
 	FToolMenuSection& MenuSection = ToolsMenu->FindOrAddSection(TEXT("DeviceExplorer"));
@@ -261,16 +264,105 @@ void FDeviceExplorerEditorModule::RegisterMenus()
 	                         FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::StopHost)));
 }
 
-void FDeviceExplorerEditorModule::ToggleHost()
+TSharedRef<SWidget> FDeviceExplorerEditorModule::CreateStatusBarWidget()
 {
-	if (IsHostRunning())
+	return SNew(SComboButton)
+		.ContentPadding(FMargin(6.0f, 0.0f))
+		.MenuPlacement(MenuPlacement_AboveAnchor)
+		.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>(TEXT("SimpleComboButton")))
+		.OnGetMenuContent(FOnGetContent::CreateRaw(this, &FDeviceExplorerEditorModule::BuildStatusBarMenu))
+		.ToolTipText_Lambda([this]
+		{
+			return IsHostRunning()
+				? FText::Format(LOCTEXT("StatusRunning", "DeviceExplorerHost is running.\nDashboard: {0}"), FText::FromString(GetDashboardURL()))
+				: LOCTEXT("StatusStopped", "DeviceExplorerHost is stopped.");
+		})
+		.ButtonContent()
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 5.0f, 0.0f)
+			[
+				SNew(SImage)
+				.Image(FAppStyle::Get().GetBrush(TEXT("Icons.Server")))
+				.ColorAndOpacity_Lambda([this] { return IsHostRunning() ? FStyleColors::AccentGreen : FStyleColors::Foreground; })
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("StatusBarLabel", "DeviceExplorer"))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(5.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>(TEXT("SmallText")))
+				.ColorAndOpacity(FStyleColors::AccentGreen)
+				.Visibility_Lambda([this] { return IsHostRunning() ? EVisibility::Visible : EVisibility::Collapsed; })
+				.Text_Lambda([this] { return FText::FromString(FString::FromInt(GetDefault<UDeviceExplorerEditorSettings>()->DashboardPort)); })
+			]
+		];
+}
+
+TSharedRef<SWidget> FDeviceExplorerEditorModule::BuildStatusBarMenu()
+{
+	FMenuBuilder MenuBuilder(true, nullptr);
+	const bool bRunning = IsHostRunning();
+
+	MenuBuilder.BeginSection(NAME_None, LOCTEXT("HostSection", "DeviceExplorer Host"));
+	if (bRunning)
 	{
-		OpenDashboard();
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("StatusBarOpenLabel", "Open Dashboard"),
+			LOCTEXT("StatusBarOpenTooltip", "Open the local dashboard in a browser."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.BrowseContent")),
+			FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::OpenDashboard)));
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("StatusBarRestartLabel", "Restart Host"),
+			LOCTEXT("StatusBarRestartTooltip", "Restart the standalone host process."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.ViewportScalabilityReset")),
+			FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::RestartHost)));
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("StatusBarStopLabel", "Stop Host"),
+			LOCTEXT("StatusBarStopTooltip", "Stop the host process started by this editor."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Toolbar.Stop")),
+			FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::StopHost)));
 	}
 	else
 	{
-		StartHost();
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("StatusBarStartLabel", "Start Host"),
+			LOCTEXT("StatusBarStartTooltip", "Start the standalone DeviceExplorer host."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Play")),
+			FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::StartHost)));
 	}
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection(NAME_None);
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("SettingsLabel", "Settings..."),
+		LOCTEXT("SettingsTooltip", "Open the DeviceExplorer editor preferences."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Settings")),
+		FUIAction(FExecuteAction::CreateLambda([]
+		{
+			const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
+			if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>(TEXT("Settings")))
+			{
+				SettingsModule->ShowViewer(Settings->GetContainerName(), Settings->GetCategoryName(), Settings->GetSectionName());
+			}
+		})));
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
 }
 
 FString FDeviceExplorerEditorModule::FindHostExecutable() const

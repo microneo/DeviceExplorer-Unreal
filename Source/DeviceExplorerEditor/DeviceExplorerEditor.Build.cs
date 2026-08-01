@@ -15,6 +15,7 @@ public class DeviceExplorerEditor : ModuleRules
             "DeveloperSettings",
             "Engine",
             "Projects",
+            "Settings",
             "Slate",
             "SlateCore",
             "ToolMenus",
