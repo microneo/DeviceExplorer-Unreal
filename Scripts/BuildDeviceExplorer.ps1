@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string] $Project,
 
     [string] $EngineDir = $env:UE_ENGINE_DIR,
@@ -11,16 +10,25 @@ param(
     [ValidateSet("Win64", "Mac", "Linux")]
     [string] $Platform = "Win64",
 
-    [switch] $SkipWebInstall,
-    [switch] $WebOnly
+    [switch] $Web,
+    [switch] $SkipWebInstall
 )
 
 $ErrorActionPreference = "Stop"
+$PluginRoot = Split-Path $PSScriptRoot -Parent
+
+if ([string]::IsNullOrWhiteSpace($Project)) {
+    $ProjectRoot = Split-Path (Split-Path $PluginRoot -Parent) -Parent
+    $Candidates = @(Get-ChildItem -LiteralPath $ProjectRoot -Filter "*.uproject" -File)
+    if ($Candidates.Count -ne 1) {
+        throw "Expected exactly one .uproject in $ProjectRoot. Pass -Project explicitly."
+    }
+    $Project = $Candidates[0].FullName
+}
 $Project = (Resolve-Path $Project).Path
 
-& (Join-Path $PSScriptRoot "BuildWebUI.ps1") -SkipInstall:$SkipWebInstall
-if ($WebOnly) {
-    exit 0
+if ($Web) {
+    & (Join-Path $PSScriptRoot "BuildWebUI.ps1") -SkipInstall:$SkipWebInstall
 }
 
 if ([string]::IsNullOrWhiteSpace($EngineDir)) {
@@ -46,4 +54,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "DeviceExplorerHost build failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "DeviceExplorer WebUI and host were built successfully." -ForegroundColor Green
+Write-Host "DeviceExplorer host was built for $Platform $Configuration." -ForegroundColor Green

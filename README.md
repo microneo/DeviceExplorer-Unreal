@@ -64,25 +64,48 @@ second property. Manual connection remains available:
 
 ## Build and run the host
 
-The build script installs the small `DeviceExplorerHost.Target.cs` wrapper into
-the project's `Source` directory when it is missing, builds the WebUI, then
-builds the standalone target:
+The host is started, stopped, restarted, and opened from the DeviceExplorer
+toolbar button or from **Tools → DeviceExplorer**. Preferences are under
+**Editor Preferences → Plugins → DeviceExplorer**.
+
+Building it by hand is only needed outside the Editor. The build script
+installs the small `DeviceExplorerHost.Target.cs` wrapper into the project's
+`Source` directory when it is missing, then builds the standalone target:
 
 ```powershell
 .\Plugins\DeviceExplorer\Scripts\BuildDeviceExplorer.ps1 `
-  -Project .\YourProject.uproject `
   -EngineDir C:\Unreal\UE_5.x `
   -Platform Win64 `
   -Configuration Development
 ```
 
-`UE_ENGINE_DIR` can replace `-EngineDir`. The same script can be configured as a
-Rider External Tool. Use `-WebOnly` for a frontend-only build and
-`-SkipWebInstall` when dependencies are already installed.
+`-Project` is optional while the plugin sits in `<Project>/Plugins` and the
+project directory holds a single `.uproject`. `UE_ENGINE_DIR` can replace
+`-EngineDir`. The same script can be configured as a Rider External Tool.
 
-The host can also be controlled from the DeviceExplorer toolbar button or from
-**Tools → DeviceExplorer**. Preferences are under
-**Editor Preferences → Plugins → DeviceExplorer**.
+The committed dashboard is used as is. Pass `-Web` to rebuild it first, and
+`-SkipWebInstall` with it when npm dependencies are already installed.
+
+`Scripts\InstallDeviceExplorerHostTarget.ps1` installs the host target on its
+own, which is what an IDE workflow needs before project files are generated.
+It refuses to touch an existing `DeviceExplorerHost.Target.cs` that differs
+from the template unless `-Force` is passed.
+
+To rebuild the host with every Editor build, add it as a pre-build target in
+the project's editor target:
+
+```csharp
+PreBuildTargets.Add(new TargetInfo(
+    "DeviceExplorerHost",
+    Target.Platform,
+    UnrealTargetConfiguration.Development,
+    Target.Architectures,
+    Target.ProjectFile,
+    null));
+```
+
+`Development` is required either way: the Editor starts the host by its
+unsuffixed executable name.
 
 ## C++ module Builder
 
