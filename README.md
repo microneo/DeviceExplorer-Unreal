@@ -236,14 +236,17 @@ Actions may return `void`, `bool`, or `FDeviceExplorerModuleResult`. Explicit
 result types let the WebUI show validation and runtime errors without custom
 protocol code.
 
-Available field helpers are `Readonly`, `Badge`, `Meter`, `Toggle`, `Number`,
-`String`, `Enum`, `Action`, and `Command`. `Object` reflects selected editable
-`UObject` properties. `SettingsObject` creates a dedicated page with manual
-apply, category sections, persistence, and collapsible cards.
+Readouts are `Readonly`, `Badge`, `Meter`, `Series`, `Status`, `Table`, `Json`,
+`Artifact`, and `Path`. Editors are `Toggle`, `Number`, `String`, `Text`,
+`Enum`, `Flags`, `Vector`, and `Color`. Actions are `Action`, `Button`, and
+`Command`. `Object` reflects selected editable `UObject` properties.
+`SettingsObject` creates a dedicated page with manual apply, category sections,
+persistence, and collapsible cards. [Docs/Widgets.md](Docs/Widgets.md) documents
+every widget, the value its getter returns, and how it renders.
 
-Section styles are `Default`, `Stats`, `Toolbar`, and `Settings`. Number display
-modes are `Auto`, `Input`, `Slider`, and `SliderAndInput`. Action styles are
-`Default`, `Primary`, and `Danger`.
+Section styles are `Default`, `Stats`, `Toolbar`, `Settings`, and `Hero`. Number
+display modes are `Auto`, `Input`, `Slider`, and `SliderAndInput`. Action styles
+are `Default`, `Primary`, and `Danger`.
 
 Keep getters fast. Cache expensive diagnostics outside the provider and return
 snapshots. Do not expose credentials, personal data, or unrestricted file-system
