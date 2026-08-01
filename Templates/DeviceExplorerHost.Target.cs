@@ -6,6 +6,7 @@ public class DeviceExplorerHostTarget : TargetRules
     {
         Type = TargetType.Program;
         LinkType = TargetLinkType.Monolithic;
+        CppStandard = CppStandardVersion.Cpp20;
         LaunchModuleName = "DeviceExplorerHost";
         bBuildDeveloperTools = false;
         bCompileAgainstEngine = false;
