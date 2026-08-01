@@ -1,11 +1,16 @@
 #include "DeviceExplorerEditorModule.h"
 
+#include "DesktopPlatformModule.h"
 #include "DeviceExplorerEditorSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
+#include "IDesktopPlatform.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Guid.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -24,7 +29,7 @@ void FDeviceExplorerEditorModule::StartupModule()
 
 	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
 	bStopWithEditor = Settings->bStopWithEditor;
-	if (Settings->bAutoStart)
+	if (Settings->bAutoStart && FPaths::FileExists(FindHostExecutable()))
 	{
 		StartHost();
 	}
@@ -69,11 +74,8 @@ void FDeviceExplorerEditorModule::StartHost()
 	}
 
 	const FString Executable = FindHostExecutable();
-	if (!FPaths::FileExists(Executable))
+	if (!FPaths::FileExists(Executable) && !BuildHost())
 	{
-		Notify(
-			FText::Format(LOCTEXT("HostNotBuilt", "DeviceExplorerHost is not built.\nExpected: {0}\nBuild the DeviceExplorerHost target in Rider."), FText::FromString(Executable)),
-			true);
 		return;
 	}
 
@@ -135,8 +137,87 @@ void FDeviceExplorerEditorModule::RestartHost()
 	StartHost();
 }
 
-void FDeviceExplorerEditorModule::OpenDashboard() const
+bool FDeviceExplorerEditorModule::InstallHostTarget(FText& OutError) const
 {
+	const FString TargetPath = FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), TEXT("DeviceExplorerHost.Target.cs"));
+	if (FPaths::FileExists(TargetPath))
+	{
+		return true;
+	}
+
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("DeviceExplorer"));
+	if (!Plugin.IsValid())
+	{
+		OutError = LOCTEXT("PluginMissing", "Cannot locate the DeviceExplorer plugin.");
+		return false;
+	}
+
+	IFileManager& FileManager = IFileManager::Get();
+	const FString TemplatePath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Templates"), TEXT("DeviceExplorerHost.Target.cs"));
+	FileManager.MakeDirectory(*FPaths::GetPath(TargetPath), true);
+	if (FileManager.Copy(*TargetPath, *TemplatePath) != COPY_OK)
+	{
+		OutError = FText::Format(LOCTEXT("TargetInstallFailed", "Failed to write {0}."), FText::FromString(TargetPath));
+		return false;
+	}
+
+	return true;
+}
+
+bool FDeviceExplorerEditorModule::BuildHost()
+{
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform == nullptr || !DesktopPlatform->IsUnrealBuildToolAvailable())
+	{
+		Notify(LOCTEXT("BuildToolMissing", "UnrealBuildTool is not available.\nBuild the host with Scripts/BuildDeviceExplorer.ps1."), true);
+		return false;
+	}
+
+	const EAppReturnType::Type Answer = FMessageDialog::Open(
+		EAppMsgType::YesNo,
+		LOCTEXT("BuildHostPrompt", "DeviceExplorerHost is not built yet.\n\nBuild it now? The editor is blocked until the build finishes, which takes a few minutes the first time."),
+		LOCTEXT("BuildHostTitle", "DeviceExplorer"));
+	if (Answer != EAppReturnType::Yes)
+	{
+		return false;
+	}
+
+	FText InstallError;
+	if (!InstallHostTarget(InstallError))
+	{
+		Notify(InstallError, true);
+		return false;
+	}
+
+	// Only Development produces the unsuffixed executable name FindHostExecutable() expects.
+	const FString Arguments = FString::Printf(
+		TEXT("DeviceExplorerHost Development %s -Project=\"%s\" -Progress -WaitMutex -NoHotReloadFromIDE"),
+		FPlatformMisc::GetUBTPlatform(),
+		*IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::GetProjectFilePath()));
+
+	const bool bBuilt = DesktopPlatform->RunUnrealBuildTool(
+		LOCTEXT("BuildingHost", "Building DeviceExplorerHost..."),
+		FPaths::RootDir(),
+		Arguments,
+		GWarn);
+
+	if (!bBuilt || !FPaths::FileExists(FindHostExecutable()))
+	{
+		Notify(LOCTEXT("BuildFailed", "DeviceExplorerHost build failed.\nSee the Output Log for details."), true);
+		return false;
+	}
+
+	return true;
+}
+
+void FDeviceExplorerEditorModule::OpenDashboard()
+{
+	if (!IsHostRunning())
+	{
+		Notify(LOCTEXT("DashboardNoHost", "DeviceExplorerHost is not running.\nStart it from the toolbar first."), true);
+		return;
+	}
+
 	const FString URL = GetDashboardURL();
 	FPlatformProcess::LaunchURL(*URL, nullptr, nullptr);
 }

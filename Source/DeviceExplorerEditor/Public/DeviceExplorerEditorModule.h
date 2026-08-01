@@ -14,11 +14,13 @@ public:
 	void StartHost();
 	void StopHost();
 	void RestartHost();
-	void OpenDashboard() const;
+	void OpenDashboard();
 
 private:
 	void RegisterMenus();
 	void ToggleHost();
+	bool BuildHost();
+	bool InstallHostTarget(FText& OutError) const;
 	FString FindHostExecutable() const;
 	FString GetDashboardURL() const;
 	void Notify(const FText& Text, bool bFailure = false) const;

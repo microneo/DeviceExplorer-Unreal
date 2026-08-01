@@ -29,9 +29,11 @@ not need Node.js.
 ## Installation
 
 1. Copy this directory to `<Project>/Plugins/DeviceExplorer`.
-2. Enable `DeviceExplorer` in the project.
-3. Regenerate project files.
-4. Build the Editor target.
+2. Regenerate project files and build the Editor target.
+3. Press the DeviceExplorer toolbar button.
+
+The host is a standalone program. On the first press the Editor offers to build
+it and takes care of the rest.
 
 Modules that register commands, roots, or dashboards add this dependency:
 
