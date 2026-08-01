@@ -35,11 +35,30 @@ not need Node.js.
 The host is a standalone program. On the first press the Editor offers to build
 it and takes care of the rest.
 
-Modules that register commands, roots, or dashboards add this dependency:
+Modules that register commands, roots, or dashboards let the plugin add its own
+dependency from their `Build.cs`:
 
 ```csharp
-PrivateDependencyModuleNames.Add("DeviceExplorerCore");
+DeviceExplorerPlugin.AddDependency(this);
 ```
+
+It adds `DeviceExplorerCore` when the plugin is enabled for the target and
+defines `WITH_DEVICEEXPLORER=0` when it is not, which keeps registration code
+compiling with the plugin turned off:
+
+```cpp
+#if WITH_DEVICEEXPLORER
+#include "DeviceExplorerModuleBuilder.h"
+#endif
+```
+
+Pass `true` for a public dependency. A plain
+`PrivateDependencyModuleNames.Add("DeviceExplorerCore")` still works when the
+plugin is never disabled — UnrealBuildTool fails outright on a dependency to a
+disabled plugin, which is what the helper exists to avoid. It is defined by the
+plugin itself, so a project that deletes `Plugins/DeviceExplorer` removes the
+`AddDependency` call as well; disabling the plugin in the `.uproject` needs no
+change.
 
 For iOS discovery, append this to
 `[/Script/IOSRuntimeSettings.IOSRuntimeSettings]` in `DefaultEngine.ini`:
