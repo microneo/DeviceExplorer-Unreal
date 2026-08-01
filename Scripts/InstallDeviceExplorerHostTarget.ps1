@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string] $Project
+    [string] $Project,
+    [switch] $Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +48,11 @@ if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
     $Current = Get-Content -LiteralPath $TargetPath -Raw
     $Expected = Get-Content -LiteralPath $TemplatePath -Raw
     if ($Current -ne $Expected) {
-        throw "A different DeviceExplorerHost.Target.cs already exists: $TargetPath"
+        if (-not $Force) {
+            throw "A different DeviceExplorerHost.Target.cs already exists: $TargetPath. Re-run with -Force to overwrite it."
+        }
+        Copy-Item -LiteralPath $TemplatePath -Destination $TargetPath -Force
+        $Installed = $true
     }
 }
 else {
@@ -60,6 +65,5 @@ Write-Host "$Status DeviceExplorerHost target:" -ForegroundColor Green
 Write-Host "  $TargetPath"
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Enable DeviceExplorer in $([System.IO.Path]::GetFileName($ProjectPath))."
-Write-Host "  2. Regenerate Unreal Engine project files."
-Write-Host "  3. Build DeviceExplorerHost or run Scripts\BuildDeviceExplorer.ps1."
+Write-Host "  1. Regenerate Unreal Engine project files."
+Write-Host "  2. Build DeviceExplorerHost or run Scripts\BuildDeviceExplorer.ps1."
