@@ -33,7 +33,7 @@ void FDeviceExplorerEditorModule::StartupModule()
 	bStopWithEditor = Settings->bStopWithEditor;
 	if (Settings->bAutoStart && FPaths::FileExists(FindHostExecutable()))
 	{
-		StartHost();
+		LaunchHost(false);
 	}
 }
 
@@ -69,9 +69,17 @@ bool FDeviceExplorerEditorModule::IsHostRunning()
 
 void FDeviceExplorerEditorModule::StartHost()
 {
+	LaunchHost(true);
+}
+
+void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
+{
 	if (IsHostRunning())
 	{
-		OpenDashboard();
+		if (bOpenDashboard)
+		{
+			OpenDashboard();
+		}
 		return;
 	}
 
@@ -112,7 +120,7 @@ void FDeviceExplorerEditorModule::StartHost()
 	}
 
 	Notify(FText::Format(LOCTEXT("Started", "DeviceExplorerHost started.\nManual connect token: {0}"), FText::FromString(CurrentHostToken)));
-	if (Settings->bOpenBrowserOnStart)
+	if (bOpenDashboard)
 	{
 		OpenDashboard();
 	}
@@ -136,7 +144,7 @@ void FDeviceExplorerEditorModule::StopHost()
 void FDeviceExplorerEditorModule::RestartHost()
 {
 	StopHost();
-	StartHost();
+	LaunchHost(false);
 }
 
 bool FDeviceExplorerEditorModule::InstallHostTarget(FText& OutError) const

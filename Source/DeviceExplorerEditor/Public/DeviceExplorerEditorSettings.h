@@ -16,9 +16,6 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Startup", meta = (DisplayName = "Start with Unreal Editor"))
 	bool bAutoStart = false;
 
-	UPROPERTY(Config, EditAnywhere, Category = "Startup", meta = (DisplayName = "Open dashboard after starting"))
-	bool bOpenBrowserOnStart = true;
-
 	UPROPERTY(Config, EditAnywhere, Category = "Server", meta = (ClampMin = "1024", ClampMax = "65535"))
 	int32 DashboardPort = 18080;
 

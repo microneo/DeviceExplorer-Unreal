@@ -20,6 +20,7 @@ public:
 
 private:
 	void RegisterMenus();
+	void LaunchHost(bool bOpenDashboard);
 	TSharedRef<SWidget> CreateStatusBarWidget();
 	TSharedRef<SWidget> BuildStatusBarMenu();
 	bool BuildHost();
