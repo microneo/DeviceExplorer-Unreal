@@ -6,7 +6,7 @@ class FJsonObject;
 
 namespace DeviceExplorer
 {
-inline constexpr int32 ProtocolVersion = 5;
+inline constexpr int32 ProtocolVersion = 6;
 
 inline const FName LogsCapability(TEXT("logs"));
 inline const FName ConsoleCapability(TEXT("console"));
@@ -27,7 +27,17 @@ enum class EDeviceExplorerWidget : uint8
 	Badge,
 	Meter,
 	Button,
-	Json
+	Json,
+	Series,
+	Status,
+	Table,
+	Textarea,
+	Vector,
+	Color,
+	Path,
+	Artifact,
+	Flags,
+	ActionForm
 };
 
 enum class EDeviceExplorerApply : uint8
@@ -41,7 +51,8 @@ enum class EDeviceExplorerSectionStyle : uint8
 	Default,
 	Stats,
 	Toolbar,
-	Settings
+	Settings,
+	Hero
 };
 
 enum class EDeviceExplorerNumberDisplay : uint8
@@ -52,11 +63,52 @@ enum class EDeviceExplorerNumberDisplay : uint8
 	SliderAndInput
 };
 
+enum class EDeviceExplorerEnumDisplay : uint8
+{
+	Select,
+	Segmented
+};
+
 enum class EDeviceExplorerActionStyle : uint8
 {
 	Default,
 	Primary,
 	Danger
+};
+
+enum class EDeviceExplorerInputType : uint8
+{
+	String,
+	Number
+};
+
+enum class EDeviceExplorerStatusTone : uint8
+{
+	Idle,
+	Active,
+	Warn,
+	Error
+};
+
+struct FDeviceExplorerStatus
+{
+	FString Label;
+	EDeviceExplorerStatusTone Tone = EDeviceExplorerStatusTone::Idle;
+};
+
+struct FDeviceExplorerArtifact
+{
+	FString Name;
+	FString Size;
+	FString Age;
+};
+
+struct FDeviceExplorerModuleActionInput
+{
+	FName Name;
+	FText DisplayName;
+	FString Type;
+	FString DefaultValue;
 };
 
 struct FDeviceExplorerFieldDescriptor
@@ -67,9 +119,12 @@ struct FDeviceExplorerFieldDescriptor
 	EDeviceExplorerWidget Widget = EDeviceExplorerWidget::Text;
 	bool bReadOnly = true;
 	bool bRequiresConfirmation = false;
+	bool bSeries = false;
 	FName Action;
+	FString ActionLabel;
 	EDeviceExplorerActionStyle ActionStyle = EDeviceExplorerActionStyle::Default;
 	EDeviceExplorerNumberDisplay NumberDisplay = EDeviceExplorerNumberDisplay::Auto;
+	EDeviceExplorerEnumDisplay EnumDisplay = EDeviceExplorerEnumDisplay::Select;
 	FString Unit;
 	TOptional<double> Min;
 	TOptional<double> Max;
@@ -77,6 +132,9 @@ struct FDeviceExplorerFieldDescriptor
 	TOptional<double> WarnAbove;
 	TOptional<double> ErrorAbove;
 	TArray<FString> Options;
+	TArray<FString> Columns;
+	TArray<FDeviceExplorerModuleActionInput> Inputs;
+	int32 Rows = 0;
 	int32 Span = 1;
 };
 
@@ -142,13 +200,6 @@ struct FDeviceExplorerModuleResult
 
 using FDeviceExplorerModuleDataProvider = TFunction<FDeviceExplorerModuleResult()>;
 using FDeviceExplorerModuleActionHandler = TFunction<FDeviceExplorerModuleResult(const TSharedPtr<FJsonObject>& Parameters)>;
-
-struct FDeviceExplorerModuleActionInput
-{
-	FName Name;
-	FText DisplayName;
-	FString Type;
-};
 
 struct FDeviceExplorerModuleActionDescriptor
 {

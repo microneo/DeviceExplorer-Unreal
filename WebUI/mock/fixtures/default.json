@@ -299,7 +299,7 @@
                       { "id": "g_danger_plain", "label": "Danger", "action": "__btn_gallery_danger_plain", "action_style": "danger", "requires_confirmation": false },
                       { "id": "g_running", "label": "Running…", "action": "__btn_gallery_slow", "action_style": "default", "requires_confirmation": false, "busy_ms": 2500 }
                     ] },
-                    { "id": "g_confirm", "label": "Action · Confirm", "description": "Two-step confirmation", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_gallery_danger", "action_style": "danger", "requires_confirmation": true, "api": ".Confirm = true" },
+                    { "id": "g_confirm", "label": "Action · Confirm", "description": "Two-step confirmation", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_gallery_danger", "action_style": "danger", "requires_confirmation": true, "api": ".bRequiresConfirmation" },
                     { "id": "g_params", "label": "Action · with parameters", "description": "Inline form", "widget": "action_form", "readonly": true, "span": 1, "number_display": "auto", "api": ".Action(Inputs)", "action": "__btn_gallery_trace", "action_label": "Trace", "inputs": [
                       { "id": "seconds", "label": "seconds", "type": "number", "default": 10 },
                       { "id": "label", "label": "label", "type": "string", "default": "boss_fight" }

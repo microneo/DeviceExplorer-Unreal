@@ -15,6 +15,75 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerModuleBuilder, Log, All);
 
+namespace
+{
+TSharedPtr<FJsonValue> MakeStringArrayValue(const TArray<FString>& Values)
+{
+	TArray<TSharedPtr<FJsonValue>> Items;
+	Items.Reserve(Values.Num());
+	for (const FString& Value : Values)
+	{
+		Items.Add(MakeShared<FJsonValueString>(Value));
+	}
+	return MakeShared<FJsonValueArray>(MoveTemp(Items));
+}
+
+bool ReadStringArray(const TSharedPtr<FJsonValue>& Value, TArray<FString>& OutValues, FString& OutError)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	if (!Value.IsValid() || !Value->TryGetArray(Items))
+	{
+		OutError = TEXT("Expected an array of strings");
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Item : *Items)
+	{
+		FString Text;
+		if (!Item.IsValid() || !Item->TryGetString(Text))
+		{
+			OutError = TEXT("Expected an array of strings");
+			return false;
+		}
+		OutValues.Add(MoveTemp(Text));
+	}
+	return true;
+}
+
+FString ToHexColor(const FColor& Color)
+{
+	return FString::Printf(TEXT("#%02X%02X%02X"), Color.R, Color.G, Color.B);
+}
+
+const TCHAR* ToWireString(EDeviceExplorerStatusTone Tone)
+{
+	switch (Tone)
+	{
+		case EDeviceExplorerStatusTone::Active: return TEXT("active");
+		case EDeviceExplorerStatusTone::Warn: return TEXT("warn");
+		case EDeviceExplorerStatusTone::Error: return TEXT("error");
+		default: return TEXT("idle");
+	}
+}
+}
+
+FString FDeviceExplorerActionParameters::GetString(const TCHAR* Name, const FString& DefaultValue) const
+{
+	FString Value;
+	return Values.IsValid() && Values->TryGetStringField(Name, Value) ? Value : DefaultValue;
+}
+
+double FDeviceExplorerActionParameters::GetNumber(const TCHAR* Name, double DefaultValue) const
+{
+	double Value = 0.0;
+	return Values.IsValid() && Values->TryGetNumberField(Name, Value) ? Value : DefaultValue;
+}
+
+bool FDeviceExplorerActionParameters::GetBool(const TCHAR* Name, bool bDefaultValue) const
+{
+	bool bValue = false;
+	return Values.IsValid() && Values->TryGetBoolField(Name, bValue) ? bValue : bDefaultValue;
+}
+
 FDeviceExplorerModuleBuilder::FDeviceExplorerModuleBuilder(FName InOwner, const TCHAR* InName, const TCHAR* InDisplayName)
 	: Owner(InOwner)
 	, Name(InName)
@@ -169,6 +238,7 @@ void FDeviceExplorerModuleBuilder::ApplyNumberOptions(FDeviceExplorerFieldDescri
 	}
 	Field.NumberDisplay = Options.Display;
 	Field.Span = Options.Span;
+	Field.bSeries = Options.bSeries;
 }
 
 FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::ReadonlyBool(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<bool()> Getter, const FDeviceExplorerNumberOptions& Options)
@@ -217,6 +287,128 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::MeterImpl(const TCHA
 			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(Value));
 		},
 		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::SeriesSampleImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Series, true);
+	ApplyNumberOptions(Field, Options);
+	AddBinding(FName(InName), [Getter]() { return TSharedPtr<FJsonValue>(MakeShared<FJsonValueNumber>(Getter())); }, nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::SeriesWindowImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TArray<double>()> Getter, const FDeviceExplorerNumberOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Series, true);
+	ApplyNumberOptions(Field, Options);
+	AddBinding(FName(InName),
+		[Getter]()
+		{
+			TArray<TSharedPtr<FJsonValue>> Samples;
+			for (const double Sample : Getter())
+			{
+				Samples.Add(MakeShared<FJsonValueNumber>(Sample));
+			}
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueArray>(MoveTemp(Samples)));
+		},
+		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Status(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FDeviceExplorerStatus()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Status, true);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter]()
+		{
+			const FDeviceExplorerStatus Status = Getter();
+			TSharedRef<FJsonObject> Value = MakeShared<FJsonObject>();
+			Value->SetStringField(TEXT("label"), Status.Label);
+			Value->SetStringField(TEXT("tone"), ToWireString(Status.Tone));
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(Value));
+		},
+		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Json(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TSharedPtr<FJsonObject>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Json, true);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter]()
+		{
+			const TSharedPtr<FJsonObject> Value = Getter();
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(Value.IsValid() ? Value.ToSharedRef() : MakeShared<FJsonObject>()));
+		},
+		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Table(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Columns, TFunction<TArray<TArray<FString>>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Table, true);
+	Field.Columns = MoveTemp(Columns);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter, ColumnNames = Field.Columns]()
+		{
+			TArray<TSharedPtr<FJsonValue>> Rows;
+			for (const TArray<FString>& Cells : Getter())
+			{
+				TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+				for (int32 Index = 0; Index < ColumnNames.Num(); ++Index)
+				{
+					Row->SetStringField(ColumnNames[Index], Cells.IsValidIndex(Index) ? Cells[Index] : FString());
+				}
+				Rows.Add(MakeShared<FJsonValueObject>(Row));
+			}
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueArray>(MoveTemp(Rows)));
+		},
+		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Artifact(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TArray<FDeviceExplorerArtifact>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Artifact, true);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter]()
+		{
+			TArray<TSharedPtr<FJsonValue>> Entries;
+			for (const FDeviceExplorerArtifact& Artifact : Getter())
+			{
+				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("name"), Artifact.Name);
+				if (!Artifact.Size.IsEmpty())
+				{
+					Entry->SetStringField(TEXT("size"), Artifact.Size);
+				}
+				if (!Artifact.Age.IsEmpty())
+				{
+					Entry->SetStringField(TEXT("age"), Artifact.Age);
+				}
+				Entries.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueArray>(MoveTemp(Entries)));
+		},
+		nullptr);
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Path(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Path, true);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName), [Getter]() { return TSharedPtr<FJsonValue>(MakeShared<FJsonValueString>(Getter())); }, nullptr);
 	return *this;
 }
 
@@ -289,12 +481,12 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::StringImpl(const TCH
 	return *this;
 }
 
-FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::EnumImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerFieldOptions& Options)
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::TextImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerTextOptions& Options)
 {
-	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Enum, false);
-	Field.Options = MoveTemp(Values);
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Textarea, false);
 	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
 	Field.Span = Options.Span;
+	Field.Rows = Options.Rows;
 	AddBinding(FName(InName),
 		[Getter]() { return TSharedPtr<FJsonValue>(MakeShared<FJsonValueString>(Getter())); },
 		[Setter](const TSharedPtr<FJsonValue>& Value, FString& OutError)
@@ -306,6 +498,116 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::EnumImpl(const TCHAR
 				return false;
 			}
 			const FDeviceExplorerWriteResult Result = Setter(StringValue);
+			OutError = Result.Error;
+			return Result.bSuccess;
+		});
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::VectorImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FVector()> Getter, TFunction<FDeviceExplorerWriteResult(const FVector&)> Setter, const FDeviceExplorerVectorOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Vector, false);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	if (Options.Step > 0.0)
+	{
+		Field.Step = Options.Step;
+	}
+	AddBinding(FName(InName),
+		[Getter]()
+		{
+			const FVector Vector = Getter();
+			TSharedRef<FJsonObject> Value = MakeShared<FJsonObject>();
+			Value->SetNumberField(TEXT("x"), Vector.X);
+			Value->SetNumberField(TEXT("y"), Vector.Y);
+			Value->SetNumberField(TEXT("z"), Vector.Z);
+			return TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(Value));
+		},
+		[Setter](const TSharedPtr<FJsonValue>& Value, FString& OutError)
+		{
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Value.IsValid() || !Value->TryGetObject(Object))
+			{
+				OutError = TEXT("Expected x, y and z components");
+				return false;
+			}
+			FVector Vector = FVector::ZeroVector;
+			if (!(*Object)->TryGetNumberField(TEXT("x"), Vector.X) || !(*Object)->TryGetNumberField(TEXT("y"), Vector.Y) || !(*Object)->TryGetNumberField(TEXT("z"), Vector.Z))
+			{
+				OutError = TEXT("Expected x, y and z components");
+				return false;
+			}
+			const FDeviceExplorerWriteResult Result = Setter(Vector);
+			OutError = Result.Error;
+			return Result.bSuccess;
+		});
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::ColorImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FColor()> Getter, TFunction<FDeviceExplorerWriteResult(const FColor&)> Setter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Color, false);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter]() { return TSharedPtr<FJsonValue>(MakeShared<FJsonValueString>(ToHexColor(Getter()))); },
+		[Setter](const TSharedPtr<FJsonValue>& Value, FString& OutError)
+		{
+			FString StringValue;
+			const FColor Color = Value.IsValid() && Value->TryGetString(StringValue) ? FColor::FromHex(StringValue) : FColor(ForceInitToZero);
+			// FromHex zeroes the whole color on a malformed string; #RRGGBB always parses opaque.
+			if (Color.A == 0)
+			{
+				OutError = TEXT("Expected an #RRGGBB color");
+				return false;
+			}
+			const FDeviceExplorerWriteResult Result = Setter(Color);
+			OutError = Result.Error;
+			return Result.bSuccess;
+		});
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::EnumImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerEnumOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Enum, false);
+	Field.Options = MoveTemp(Values);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	Field.EnumDisplay = Options.Display;
+	AddBinding(FName(InName),
+		[Getter]() { return TSharedPtr<FJsonValue>(MakeShared<FJsonValueString>(Getter())); },
+		[Setter](const TSharedPtr<FJsonValue>& Value, FString& OutError)
+		{
+			FString StringValue;
+			if (!Value.IsValid() || !Value->TryGetString(StringValue))
+			{
+				OutError = TEXT("Expected a string");
+				return false;
+			}
+			const FDeviceExplorerWriteResult Result = Setter(StringValue);
+			OutError = Result.Error;
+			return Result.bSuccess;
+		});
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::FlagsImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, TFunction<TArray<FString>()> Getter, TFunction<FDeviceExplorerWriteResult(const TArray<FString>&)> Setter, const FDeviceExplorerFieldOptions& Options)
+{
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::Flags, false);
+	Field.Options = MoveTemp(Values);
+	Field.Description = Options.Description != nullptr ? Options.Description : TEXT("");
+	Field.Span = Options.Span;
+	AddBinding(FName(InName),
+		[Getter]() { return MakeStringArrayValue(Getter()); },
+		[Setter](const TSharedPtr<FJsonValue>& Value, FString& OutError)
+		{
+			TArray<FString> Selected;
+			if (!ReadStringArray(Value, Selected, OutError))
+			{
+				return false;
+			}
+			const FDeviceExplorerWriteResult Result = Setter(Selected);
 			OutError = Result.Error;
 			return Result.bSuccess;
 		});
@@ -337,6 +639,50 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::ActionImpl(const TCH
 	ActionDescriptor.Handler = [Handler](const TSharedPtr<FJsonObject>&)
 	{
 		return Handler();
+	};
+	Actions.Add(MoveTemp(ActionDescriptor));
+	return *this;
+}
+
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::ActionFormImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FDeviceExplorerActionInput> Inputs, TFunction<FDeviceExplorerModuleResult(const FDeviceExplorerActionParameters&)> Handler, const FDeviceExplorerActionOptions& Options)
+{
+	const FName ActionName(*(FString(TEXT("__btn_")) + InName));
+
+	TArray<FDeviceExplorerModuleActionInput> InputDescriptors;
+	InputDescriptors.Reserve(Inputs.Num());
+	for (const FDeviceExplorerActionInput& Input : Inputs)
+	{
+		FDeviceExplorerModuleActionInput& InputDescriptor = InputDescriptors.AddDefaulted_GetRef();
+		InputDescriptor.Name = FName(Input.Name);
+		InputDescriptor.DisplayName = FText::FromString(Input.DisplayName != nullptr ? Input.DisplayName : Input.Name);
+		InputDescriptor.Type = Input.Type == EDeviceExplorerInputType::Number ? TEXT("number") : TEXT("string");
+		InputDescriptor.DefaultValue = Input.DefaultValue != nullptr ? Input.DefaultValue : TEXT("");
+	}
+
+	FDeviceExplorerFieldDescriptor& Field = AddField(InName, InDisplayName, EDeviceExplorerWidget::ActionForm, true);
+	Field.bRequiresConfirmation = Options.bRequiresConfirmation;
+	Field.Action = ActionName;
+	Field.ActionStyle = Options.Style;
+	Field.ActionLabel = Options.ActionLabel != nullptr ? Options.ActionLabel : InDisplayName;
+	Field.Span = Options.Span;
+	Field.Inputs = InputDescriptors;
+	if (Options.Description != nullptr)
+	{
+		Field.Description = Options.Description;
+	}
+
+	FDeviceExplorerModuleActionDescriptor ActionDescriptor;
+	ActionDescriptor.Name = ActionName;
+	ActionDescriptor.DisplayName = FText::FromString(InDisplayName);
+	if (Options.Description != nullptr)
+	{
+		ActionDescriptor.Description = Options.Description;
+	}
+	ActionDescriptor.bRequiresConfirmation = Options.bRequiresConfirmation;
+	ActionDescriptor.Inputs = MoveTemp(InputDescriptors);
+	ActionDescriptor.Handler = [Handler](const TSharedPtr<FJsonObject>& Parameters)
+	{
+		return Handler(FDeviceExplorerActionParameters{ Parameters });
 	};
 	Actions.Add(MoveTemp(ActionDescriptor));
 	return *this;
@@ -650,6 +996,41 @@ FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Badge(
 {
 	Activate();
 	Builder.Badge(InName, InDisplayName, MoveTemp(Getter), Options);
+	return *this;
+}
+
+FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Status(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FDeviceExplorerStatus()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	Activate();
+	Builder.Status(InName, InDisplayName, MoveTemp(Getter), Options);
+	return *this;
+}
+
+FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Json(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TSharedPtr<FJsonObject>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	Activate();
+	Builder.Json(InName, InDisplayName, MoveTemp(Getter), Options);
+	return *this;
+}
+
+FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Table(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Columns, TFunction<TArray<TArray<FString>>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	Activate();
+	Builder.Table(InName, InDisplayName, MoveTemp(Columns), MoveTemp(Getter), Options);
+	return *this;
+}
+
+FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Artifact(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TArray<FDeviceExplorerArtifact>()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	Activate();
+	Builder.Artifact(InName, InDisplayName, MoveTemp(Getter), Options);
+	return *this;
+}
+
+FDeviceExplorerModuleSectionBuilder& FDeviceExplorerModuleSectionBuilder::Path(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, const FDeviceExplorerFieldOptions& Options)
+{
+	Activate();
+	Builder.Path(InName, InDisplayName, MoveTemp(Getter), Options);
 	return *this;
 }
 

@@ -409,6 +409,16 @@ FString ToWireString(EDeviceExplorerWidget Widget)
 		case EDeviceExplorerWidget::Meter: return TEXT("meter");
 		case EDeviceExplorerWidget::Button: return TEXT("button");
 		case EDeviceExplorerWidget::Json: return TEXT("json");
+		case EDeviceExplorerWidget::Series: return TEXT("series");
+		case EDeviceExplorerWidget::Status: return TEXT("status");
+		case EDeviceExplorerWidget::Table: return TEXT("table");
+		case EDeviceExplorerWidget::Textarea: return TEXT("textarea");
+		case EDeviceExplorerWidget::Vector: return TEXT("vector");
+		case EDeviceExplorerWidget::Color: return TEXT("color");
+		case EDeviceExplorerWidget::Path: return TEXT("path");
+		case EDeviceExplorerWidget::Artifact: return TEXT("artifact");
+		case EDeviceExplorerWidget::Flags: return TEXT("flags");
+		case EDeviceExplorerWidget::ActionForm: return TEXT("action_form");
 		default: return TEXT("text");
 	}
 }
@@ -425,6 +435,7 @@ FString ToWireString(EDeviceExplorerSectionStyle Style)
 		case EDeviceExplorerSectionStyle::Stats: return TEXT("stats");
 		case EDeviceExplorerSectionStyle::Toolbar: return TEXT("toolbar");
 		case EDeviceExplorerSectionStyle::Settings: return TEXT("settings");
+		case EDeviceExplorerSectionStyle::Hero: return TEXT("hero");
 		default: return TEXT("default");
 	}
 }
@@ -440,6 +451,11 @@ FString ToWireString(EDeviceExplorerNumberDisplay Display)
 	}
 }
 
+FString ToWireString(EDeviceExplorerEnumDisplay Display)
+{
+	return Display == EDeviceExplorerEnumDisplay::Segmented ? TEXT("segmented") : TEXT("select");
+}
+
 FString ToWireString(EDeviceExplorerActionStyle Style)
 {
 	switch (Style)
@@ -448,6 +464,32 @@ FString ToWireString(EDeviceExplorerActionStyle Style)
 		case EDeviceExplorerActionStyle::Danger: return TEXT("danger");
 		default: return TEXT("default");
 	}
+}
+
+TArray<TSharedPtr<FJsonValue>> BuildActionInputsJson(const TArray<FDeviceExplorerModuleActionInput>& Inputs)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	Result.Reserve(Inputs.Num());
+	for (const FDeviceExplorerModuleActionInput& Input : Inputs)
+	{
+		TSharedRef<FJsonObject> InputJson = MakeShared<FJsonObject>();
+		InputJson->SetStringField(TEXT("id"), ToWireId(Input.Name));
+		InputJson->SetStringField(TEXT("label"), Input.DisplayName.ToString());
+		InputJson->SetStringField(TEXT("type"), Input.Type);
+		if (!Input.DefaultValue.IsEmpty())
+		{
+			if (Input.Type == TEXT("number"))
+			{
+				InputJson->SetNumberField(TEXT("default"), FCString::Atod(*Input.DefaultValue));
+			}
+			else
+			{
+				InputJson->SetStringField(TEXT("default"), Input.DefaultValue);
+			}
+		}
+		Result.Add(MakeShared<FJsonValueObject>(InputJson));
+	}
+	return Result;
 }
 
 TArray<TSharedPtr<FJsonValue>> BuildSectionsJson(const TArray<FDeviceExplorerSectionDescriptor>& Layout)
@@ -518,11 +560,38 @@ TArray<TSharedPtr<FJsonValue>> BuildSectionsJson(const TArray<FDeviceExplorerSec
 				}
 				FieldJson->SetArrayField(TEXT("options"), MoveTemp(Options));
 			}
-			if (Field.Widget == EDeviceExplorerWidget::Button)
+			if (!Field.Columns.IsEmpty())
+			{
+				TArray<TSharedPtr<FJsonValue>> Columns;
+				Columns.Reserve(Field.Columns.Num());
+				for (const FString& Column : Field.Columns)
+				{
+					Columns.Add(MakeShared<FJsonValueString>(Column));
+				}
+				FieldJson->SetArrayField(TEXT("columns_spec"), MoveTemp(Columns));
+			}
+			if (Field.Widget == EDeviceExplorerWidget::Enum)
+			{
+				FieldJson->SetStringField(TEXT("enum_display"), ToWireString(Field.EnumDisplay));
+			}
+			if (Field.Widget == EDeviceExplorerWidget::Textarea)
+			{
+				FieldJson->SetNumberField(TEXT("rows"), Field.Rows);
+			}
+			if (Field.bSeries)
+			{
+				FieldJson->SetBoolField(TEXT("series"), true);
+			}
+			if (Field.Widget == EDeviceExplorerWidget::Button || Field.Widget == EDeviceExplorerWidget::ActionForm)
 			{
 				FieldJson->SetStringField(TEXT("action"), ToWireId(Field.Action));
 				FieldJson->SetBoolField(TEXT("requires_confirmation"), Field.bRequiresConfirmation);
 				FieldJson->SetStringField(TEXT("action_style"), ToWireString(Field.ActionStyle));
+			}
+			if (Field.Widget == EDeviceExplorerWidget::ActionForm)
+			{
+				FieldJson->SetStringField(TEXT("action_label"), Field.ActionLabel);
+				FieldJson->SetArrayField(TEXT("inputs"), BuildActionInputsJson(Field.Inputs));
 			}
 			Fields.Add(MakeShared<FJsonValueObject>(FieldJson));
 		}
@@ -836,17 +905,7 @@ void FDeviceExplorerModule::SendHello()
 			Action->SetBoolField(TEXT("requires_confirmation"), ActionDescriptor.bRequiresConfirmation);
 			Action->SetBoolField(TEXT("hidden"), ActionDescriptor.Name.ToString().StartsWith(TEXT("__")));
 
-			TArray<TSharedPtr<FJsonValue>> Inputs;
-			Inputs.Reserve(ActionDescriptor.Inputs.Num());
-			for (const FDeviceExplorerModuleActionInput& InputDescriptor : ActionDescriptor.Inputs)
-			{
-				TSharedRef<FJsonObject> Input = MakeShared<FJsonObject>();
-				Input->SetStringField(TEXT("id"), ToWireId(InputDescriptor.Name));
-				Input->SetStringField(TEXT("label"), InputDescriptor.DisplayName.ToString());
-				Input->SetStringField(TEXT("type"), InputDescriptor.Type);
-				Inputs.Add(MakeShared<FJsonValueObject>(Input));
-			}
-			Action->SetArrayField(TEXT("inputs"), MoveTemp(Inputs));
+			Action->SetArrayField(TEXT("inputs"), BuildActionInputsJson(ActionDescriptor.Inputs));
 
 			Actions.Add(MakeShared<FJsonValueObject>(Action));
 		}
