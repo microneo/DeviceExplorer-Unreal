@@ -261,4 +261,4 @@ the generated `Resources/Web` output.
 
 ## License
 
-DeviceExplorer is available under the MIT License.
+DeviceExplorer is available under the Apache License 2.0.
