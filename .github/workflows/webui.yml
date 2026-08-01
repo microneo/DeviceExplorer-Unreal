@@ -1,0 +1,25 @@
+name: WebUI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: WebUI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: WebUI/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Verify committed bundle
+        working-directory: .
+        run: git diff --exit-code -- Resources/Web

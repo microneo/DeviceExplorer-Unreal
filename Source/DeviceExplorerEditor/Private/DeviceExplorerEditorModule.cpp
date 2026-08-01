@@ -1,0 +1,231 @@
+#include "DeviceExplorerEditorModule.h"
+
+#include "DeviceExplorerEditorSettings.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "HAL/PlatformProcess.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Guid.h"
+#include "Misc/Paths.h"
+#include "Styling/AppStyle.h"
+#include "ToolMenus.h"
+#include "Widgets/Notifications/SNotificationList.h"
+
+#define LOCTEXT_NAMESPACE "DeviceExplorerEditor"
+
+namespace
+{
+const FName ToolbarEntry(TEXT("DeviceExplorer.Toolbar"));
+}
+
+void FDeviceExplorerEditorModule::StartupModule()
+{
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FDeviceExplorerEditorModule::RegisterMenus));
+
+	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
+	bStopWithEditor = Settings->bStopWithEditor;
+	if (Settings->bAutoStart)
+	{
+		StartHost();
+	}
+}
+
+void FDeviceExplorerEditorModule::ShutdownModule()
+{
+	UToolMenus::UnRegisterStartupCallback(this);
+	UToolMenus::UnregisterOwner(this);
+
+	// GetDefault<>() here would crash (SIGBUS on Mac): UObjects are already torn down by the time
+	// ShutdownModule() runs at engine exit. Use the value cached in StartupModule instead.
+	if (bStopWithEditor)
+	{
+		StopHost();
+	}
+}
+
+bool FDeviceExplorerEditorModule::IsHostRunning()
+{
+	if (!HostProcess.IsValid())
+	{
+		return false;
+	}
+	if (FPlatformProcess::IsProcRunning(HostProcess))
+	{
+		return true;
+	}
+
+	FPlatformProcess::CloseProc(HostProcess);
+	HostProcess.Reset();
+	HostProcessId = 0;
+	return false;
+}
+
+void FDeviceExplorerEditorModule::StartHost()
+{
+	if (IsHostRunning())
+	{
+		OpenDashboard();
+		return;
+	}
+
+	const FString Executable = FindHostExecutable();
+	if (!FPaths::FileExists(Executable))
+	{
+		Notify(
+			FText::Format(LOCTEXT("HostNotBuilt", "DeviceExplorerHost is not built.\nExpected: {0}\nBuild the DeviceExplorerHost target in Rider."), FText::FromString(Executable)),
+			true);
+		return;
+	}
+
+	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("DeviceExplorer"));
+	if (!Plugin.IsValid())
+	{
+		Notify(LOCTEXT("PluginMissing", "Cannot locate the DeviceExplorer plugin."), true);
+		return;
+	}
+
+	const FString WebRoot = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Resources"), TEXT("Web"));
+	const FString TransferDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("DeviceExplorer"), TEXT("Transfers"));
+	// Generated here so it can be shown below for the manual -DeviceExplorerServer/-DeviceExplorerToken fallback.
+	CurrentHostToken = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+	// -Project must not be passed: project loading aborts in the host's program target.
+	const FString Arguments = FString::Printf(TEXT("-ParentPID=%u -DashboardPort=%d -DevicePort=%d -WebRoot=\"%s\" -TransferDir=\"%s\" -Token=%s"),
+	                                          FPlatformProcess::GetCurrentProcessId(),
+	                                          Settings->DashboardPort,
+	                                          Settings->DevicePort,
+	                                          *WebRoot,
+	                                          *FPaths::ConvertRelativePathToFull(TransferDir),
+	                                          *CurrentHostToken);
+
+	HostProcess = FPlatformProcess::CreateProc(*Executable, *Arguments, true, false, false, &HostProcessId, 0, *FPaths::ProjectDir(), nullptr);
+	if (!HostProcess.IsValid())
+	{
+		HostProcessId = 0;
+		CurrentHostToken.Reset();
+		Notify(LOCTEXT("StartFailed", "Failed to start DeviceExplorerHost."), true);
+		return;
+	}
+
+	Notify(FText::Format(LOCTEXT("Started", "DeviceExplorerHost started.\nManual connect token: {0}"), FText::FromString(CurrentHostToken)));
+	if (Settings->bOpenBrowserOnStart)
+	{
+		OpenDashboard();
+	}
+}
+
+void FDeviceExplorerEditorModule::StopHost()
+{
+	if (!IsHostRunning())
+	{
+		return;
+	}
+
+	FPlatformProcess::TerminateProc(HostProcess, true);
+	FPlatformProcess::CloseProc(HostProcess);
+	HostProcess.Reset();
+	HostProcessId = 0;
+	CurrentHostToken.Reset();
+	Notify(LOCTEXT("Stopped", "DeviceExplorerHost stopped."));
+}
+
+void FDeviceExplorerEditorModule::RestartHost()
+{
+	StopHost();
+	StartHost();
+}
+
+void FDeviceExplorerEditorModule::OpenDashboard() const
+{
+	const FString URL = GetDashboardURL();
+	FPlatformProcess::LaunchURL(*URL, nullptr, nullptr);
+}
+
+void FDeviceExplorerEditorModule::RegisterMenus()
+{
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	UToolMenu* Toolbar = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.LevelEditorToolBar.PlayToolBar"));
+	FToolMenuSection& ToolbarSection = Toolbar->FindOrAddSection(TEXT("PluginTools"));
+	FToolMenuEntry ToolbarButton = FToolMenuEntry::InitToolBarButton(
+		ToolbarEntry,
+		FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::ToggleHost)),
+		LOCTEXT("ToolbarLabel", "DeviceExplorer"),
+		TAttribute<FText>::CreateLambda([this]() { return IsHostRunning() ? LOCTEXT("ToolbarTooltipRunning", "Open the DeviceExplorerHost dashboard.") : LOCTEXT("ToolbarTooltipStopped", "Start DeviceExplorerHost."); }),
+		TAttribute<FSlateIcon>::CreateLambda([this]() { return FSlateIcon(FAppStyle::GetAppStyleSetName(), IsHostRunning() ? TEXT("Icons.BrowseContent") : TEXT("Icons.Server")); }));
+	ToolbarButton.StyleNameOverride = TEXT("CalloutToolbar");
+	ToolbarSection.AddEntry(ToolbarButton);
+
+	UToolMenu* ToolsMenu = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.MainMenu.Tools"));
+	FToolMenuSection& MenuSection = ToolsMenu->FindOrAddSection(TEXT("DeviceExplorer"));
+	MenuSection.AddMenuEntry(TEXT("DeviceExplorer.Start"),
+	                         LOCTEXT("StartLabel", "Start DeviceExplorer"),
+	                         LOCTEXT("StartTooltip", "Start the standalone DeviceExplorer host."),
+	                         FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Play")),
+	                         FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::StartHost)));
+	MenuSection.AddMenuEntry(TEXT("DeviceExplorer.Open"),
+	                         LOCTEXT("OpenLabel", "Open DeviceExplorer Dashboard"),
+	                         LOCTEXT("OpenTooltip", "Open the local dashboard in a browser."),
+	                         FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.BrowseContent")),
+	                         FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::OpenDashboard)));
+	MenuSection.AddMenuEntry(TEXT("DeviceExplorer.Restart"),
+	                         LOCTEXT("RestartLabel", "Restart DeviceExplorer"),
+	                         LOCTEXT("RestartTooltip", "Restart the standalone host process."),
+	                         FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.ViewportScalabilityReset")),
+	                         FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::RestartHost)));
+	MenuSection.AddMenuEntry(TEXT("DeviceExplorer.Stop"),
+	                         LOCTEXT("StopLabel", "Stop DeviceExplorer"),
+	                         LOCTEXT("StopTooltip", "Stop the host process started by this editor."),
+	                         FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Toolbar.Stop")),
+	                         FUIAction(FExecuteAction::CreateRaw(this, &FDeviceExplorerEditorModule::StopHost)));
+}
+
+void FDeviceExplorerEditorModule::ToggleHost()
+{
+	if (IsHostRunning())
+	{
+		OpenDashboard();
+	}
+	else
+	{
+		StartHost();
+	}
+}
+
+FString FDeviceExplorerEditorModule::FindHostExecutable() const
+{
+#if PLATFORM_WINDOWS
+	const TCHAR* ExecutableName = TEXT("DeviceExplorerHost.exe");
+#else
+	const TCHAR* ExecutableName = TEXT("DeviceExplorerHost");
+#endif
+
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory(), ExecutableName));
+}
+
+FString FDeviceExplorerEditorModule::GetDashboardURL() const
+{
+	return FString::Printf(TEXT("http://127.0.0.1:%d"), GetDefault<UDeviceExplorerEditorSettings>()->DashboardPort);
+}
+
+void FDeviceExplorerEditorModule::Notify(const FText& Text, const bool bFailure) const
+{
+	// Slate can already be torn down when this runs from ShutdownModule() during engine exit.
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	FNotificationInfo Info(Text);
+	Info.ExpireDuration = bFailure ? 8.0f : 3.0f;
+	Info.bUseSuccessFailIcons = true;
+	const TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info);
+	if (Item.IsValid())
+	{
+		Item->SetCompletionState(bFailure ? SNotificationItem::CS_Fail : SNotificationItem::CS_Success);
+	}
+}
+
+IMPLEMENT_MODULE(FDeviceExplorerEditorModule, DeviceExplorerEditor)
+
+#undef LOCTEXT_NAMESPACE

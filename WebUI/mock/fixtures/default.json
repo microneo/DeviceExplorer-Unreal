@@ -1,0 +1,271 @@
+{
+  "devices": [
+    {
+      "id": "mock-ios",
+      "name": "Development iPhone",
+      "project_name": "ExampleProject",
+      "engine_version": "5.7.0-0+++UE5+Release-5.7",
+      "platform": "IOS",
+      "configuration": "Development",
+      "build_version": "0.5.1842",
+      "uptime_seconds": 847,
+      "connected": true,
+      "connected_at": "2026-08-01T08:00:00Z",
+      "last_seen": "2026-08-01T08:14:07Z",
+      "remote_address": "192.168.1.42:53118",
+      "dropped_logs": 2,
+      "log_count": 12,
+      "capabilities": ["logs", "console", "files", "modules", "trace"],
+      "commands": [
+        {
+          "id": "stat_unit",
+          "label": "Stat unit",
+          "category": "Performance",
+          "command": "stat unit",
+          "description": "Print frame, game, draw, GPU, and RHIT timings.",
+          "requires_confirmation": false
+        },
+        {
+          "id": "memreport",
+          "label": "Memory report",
+          "category": "Diagnostics",
+          "command": "memreport -full",
+          "description": "Writes a full memory report to Saved/Profiling.",
+          "requires_confirmation": true
+        }
+      ],
+      "file_roots": [
+        { "id": "saved", "label": "Saved" },
+        { "id": "diagnostics", "label": "Diagnostics" }
+      ],
+      "data_modules": [
+        {
+          "id": "runtime",
+          "label": "Runtime",
+          "description": "Basic runtime information returned without a layout schema.",
+          "icon": "runtime",
+          "refresh_interval_ms": 3000,
+          "actions": []
+        },
+        {
+          "id": "runtime_monitor",
+          "label": "Runtime Monitor",
+          "description": "Complete mock module covering the DeviceExplorer Builder widgets.",
+          "icon": "pulse",
+          "refresh_interval_ms": 1500,
+          "actions": [
+            {
+              "id": "collect_report",
+              "label": "Collect report",
+              "description": "Generates a diagnostic report in the mock state.",
+              "requires_confirmation": false,
+              "hidden": false,
+              "inputs": []
+            }
+          ],
+          "pages": [
+            {
+              "id": "overview",
+              "label": "Overview",
+              "description": "Live session state and common controls.",
+              "icon": "pulse",
+              "sections": [
+                {
+                  "id": "state",
+                  "label": "State",
+                  "description": "Values refreshed from the runtime provider.",
+                  "columns": 3,
+                  "apply": "instant",
+                  "style": "stats",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "active", "label": "Active", "widget": "bool", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "frame_ms", "label": "Frame time", "description": "Smoothed game frame time.", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40 },
+                    { "id": "snapshots", "label": "Snapshots", "widget": "meter", "readonly": true, "span": 1, "number_display": "auto" }
+                  ]
+                },
+                {
+                  "id": "controls",
+                  "label": "Controls",
+                  "columns": 0,
+                  "apply": "instant",
+                  "style": "toolbar",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "capture", "label": "Capture snapshot", "description": "Adds one mock snapshot.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_capture", "action_style": "primary", "requires_confirmation": false },
+                    { "id": "restart", "label": "Restart session", "description": "Exercises confirmation and danger styling.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_restart", "action_style": "danger", "requires_confirmation": true },
+                    { "id": "stat_unit_action", "label": "Stat unit", "description": "Executes a registered console command.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_stat_unit", "action_style": "default", "requires_confirmation": false }
+                  ]
+                },
+                {
+                  "id": "session",
+                  "label": "Session",
+                  "description": "Mixed read-only values.",
+                  "columns": 2,
+                  "apply": "instant",
+                  "style": "default",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "map", "label": "Map", "widget": "text", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "players", "label": "Players", "widget": "number", "readonly": true, "span": 1, "number_display": "input" },
+                    { "id": "session_data", "label": "Session data", "widget": "json", "readonly": true, "span": 2, "number_display": "auto" }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "tuning",
+              "label": "Tuning",
+              "description": "Editable fields with manual Apply and Discard.",
+              "icon": "settings",
+              "sections": [
+                {
+                  "id": "thresholds",
+                  "label": "Runtime tuning",
+                  "description": "Changes stay local until Apply is pressed.",
+                  "columns": 2,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "monitoring_enabled", "label": "Monitoring enabled", "description": "Enables mock sampling.", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "frame_budget_ms", "label": "Frame budget", "description": "Must be greater than zero.", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "unit": "ms", "min": 1, "max": 50, "step": 0.5 },
+                    { "id": "quality", "label": "Quality", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Low", "Medium", "High", "Epic"] },
+                    { "id": "session_label", "label": "Session label", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "settings",
+              "label": "Settings",
+              "description": "Reflected configuration defaults.",
+              "icon": "settings",
+              "sections": [
+                {
+                  "id": "capture",
+                  "label": "Capture defaults",
+                  "columns": 2,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "max_snapshots", "label": "Max snapshots", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "min": 0, "max": 64, "step": 1 },
+                    { "id": "trace_channels", "label": "Trace channels", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mock-android",
+      "name": "QA Android",
+      "project_name": "ExampleProject",
+      "engine_version": "5.7.0-0+++UE5+Release-5.7",
+      "platform": "Android",
+      "configuration": "Test",
+      "build_version": "0.5.1839",
+      "uptime_seconds": 0,
+      "connected": false,
+      "connected_at": "2026-07-31T18:20:00Z",
+      "last_seen": "2026-07-31T18:42:00Z",
+      "remote_address": "192.168.1.51:52810",
+      "dropped_logs": 0,
+      "log_count": 0,
+      "capabilities": ["logs", "console", "files"],
+      "commands": [],
+      "file_roots": [{ "id": "saved", "label": "Saved" }],
+      "data_modules": []
+    }
+  ],
+  "logs": {
+    "mock-ios": [
+      { "sequence": 1, "timestamp": "2026-08-01T08:13:58.104Z", "category": "LogInit", "verbosity": "Display", "message": "DeviceExplorer mock runtime initialized" },
+      { "sequence": 2, "timestamp": "2026-08-01T08:13:58.227Z", "category": "LogNet", "verbosity": "Log", "message": "Connected to local development host" },
+      { "sequence": 3, "timestamp": "2026-08-01T08:13:59.015Z", "category": "LogStreaming", "verbosity": "Warning", "message": "Texture pool is approaching the configured budget" },
+      { "sequence": 4, "timestamp": "2026-08-01T08:14:00.331Z", "category": "LogGame", "verbosity": "Log", "message": "Loaded development map" },
+      { "sequence": 5, "timestamp": "2026-08-01T08:14:01.440Z", "category": "LogDeviceExplorer", "verbosity": "Display", "message": "Registered runtime_monitor module" },
+      { "sequence": 6, "timestamp": "2026-08-01T08:14:02.118Z", "category": "LogTemp", "verbosity": "Error", "message": "Example recoverable error for visual testing" },
+      { "sequence": 7, "timestamp": "2026-08-01T08:14:03.504Z", "category": "LogRender", "verbosity": "Verbose", "message": "Dynamic resolution fraction: 0.92" },
+      { "sequence": 8, "timestamp": "2026-08-01T08:14:05.702Z", "category": "LogGame", "verbosity": "Log", "message": "Runtime heartbeat received" }
+    ]
+  },
+  "console_objects": [
+    { "name": "stat unit", "type": "command", "help": "Displays frame, game, draw, GPU and RHIT times.", "value": "", "read_only": false, "cheat": false },
+    { "name": "stat fps", "type": "command", "help": "Toggles the FPS counter.", "value": "", "read_only": false, "cheat": false },
+    { "name": "memreport", "type": "command", "help": "Writes a memory usage report.", "value": "", "read_only": false, "cheat": false },
+    { "name": "r.Streaming.PoolSize", "type": "variable", "help": "Texture streaming pool size in MB.", "value": "1200", "read_only": false, "cheat": false },
+    { "name": "r.DynamicRes.OperationMode", "type": "variable", "help": "Controls dynamic resolution operation mode.", "value": "2", "read_only": false, "cheat": false },
+    { "name": "t.MaxFPS", "type": "variable", "help": "Caps the game frame rate. Zero disables the cap.", "value": "60", "read_only": false, "cheat": false },
+    { "name": "net.PktLag", "type": "variable", "help": "Adds emulated packet latency for testing.", "value": "0", "read_only": false, "cheat": true }
+  ],
+  "file_trees": {
+    "saved": {
+      "": [
+        { "name": "Logs", "path": "Logs", "is_directory": true, "size": 0, "modified": "2026-08-01T08:13:58Z" },
+        { "name": "Profiling", "path": "Profiling", "is_directory": true, "size": 0, "modified": "2026-08-01T08:12:10Z" },
+        { "name": "Crashes", "path": "Crashes", "is_directory": true, "size": 0, "modified": "2026-07-30T17:20:00Z" },
+        { "name": "Config", "path": "Config", "is_directory": true, "size": 0, "modified": "2026-08-01T07:58:00Z" },
+        { "name": "DeviceProfile.json", "path": "DeviceProfile.json", "is_directory": false, "size": 2841, "modified": "2026-08-01T08:00:01Z" }
+      ],
+      "Logs": [
+        { "name": "ExampleProject.log", "path": "Logs/ExampleProject.log", "is_directory": false, "size": 188322, "modified": "2026-08-01T08:14:05Z" },
+        { "name": "ExampleProject-backup.log", "path": "Logs/ExampleProject-backup.log", "is_directory": false, "size": 92144, "modified": "2026-08-01T07:02:11Z" }
+      ],
+      "Profiling": [
+        { "name": "session_2026-08-01.utrace", "path": "Profiling/session_2026-08-01.utrace", "is_directory": false, "size": 18454937, "modified": "2026-08-01T08:12:10Z" },
+        { "name": "MemoryReport", "path": "Profiling/MemoryReport", "is_directory": true, "size": 0, "modified": "2026-08-01T08:08:00Z" }
+      ],
+      "Profiling/MemoryReport": [
+        { "name": "memreport-full.txt", "path": "Profiling/MemoryReport/memreport-full.txt", "is_directory": false, "size": 428912, "modified": "2026-08-01T08:08:00Z" }
+      ],
+      "Crashes": [],
+      "Config": [
+        { "name": "GameUserSettings.ini", "path": "Config/GameUserSettings.ini", "is_directory": false, "size": 1240, "modified": "2026-08-01T07:58:00Z" }
+      ]
+    },
+    "diagnostics": {
+      "": [
+        { "name": "Snapshots", "path": "Snapshots", "is_directory": true, "size": 0, "modified": "2026-08-01T08:11:00Z" },
+        { "name": "runtime-summary.json", "path": "runtime-summary.json", "is_directory": false, "size": 4096, "modified": "2026-08-01T08:13:00Z" }
+      ],
+      "Snapshots": [
+        { "name": "snapshot-001.json", "path": "Snapshots/snapshot-001.json", "is_directory": false, "size": 8932, "modified": "2026-08-01T08:11:00Z" }
+      ]
+    }
+  },
+  "module_state": {
+    "runtime": {
+      "data": {
+        "Session": { "Map": "DevelopmentMap", "Players": 1, "Uptime": "14m" },
+        "Memory": { "Physical MB": 1420, "GPU MB": 786 }
+      },
+      "values": {}
+    },
+    "runtime_monitor": {
+      "data": {},
+      "values": {
+        "active": true,
+        "frame_ms": 16.7,
+        "snapshots": { "value": 1, "max": 5 },
+        "map": "DevelopmentMap",
+        "players": 1,
+        "session_data": { "session": "mock-session", "network": "wifi", "quality": "good" },
+        "monitoring_enabled": true,
+        "frame_budget_ms": 16.7,
+        "quality": "High",
+        "session_label": "Local development",
+        "max_snapshots": 5,
+        "trace_channels": "cpu,gpu,frame,bookmark"
+      }
+    }
+  }
+}

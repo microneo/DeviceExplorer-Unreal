@@ -1,0 +1,18 @@
+{
+  "name": "@deviceexplorer/dashboard",
+  "private": true,
+  "version": "0.5.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --mode mock",
+    "dev:host": "vite --mode host",
+    "dev:offline": "vite --mode mock-offline",
+    "dev:empty": "vite --mode mock-empty",
+    "dev:errors": "vite --mode mock-errors",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

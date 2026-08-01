@@ -1,0 +1,42 @@
+{
+  "FileVersion": 3,
+  "Version": 5,
+  "VersionName": "0.5.0",
+  "FriendlyName": "DeviceExplorer",
+  "Description": "Local-network diagnostics for Unreal Engine builds: logs, console, files, traces, and extensible runtime dashboards.",
+  "Category": "Developer",
+  "EnabledByDefault": false,
+  "CanContainContent": false,
+  "Modules": [
+    {
+      "Name": "DeviceExplorerCore",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "DeviceExplorer",
+      "Type": "Runtime",
+      "LoadingPhase": "PostEngineInit",
+      "TargetConfigurationDenyList": [
+        "Shipping"
+      ]
+    },
+    {
+      "Name": "DeviceExplorerHost",
+      "Type": "Program",
+      "LoadingPhase": "Default",
+      "ProgramAllowList": [
+        "DeviceExplorerHost"
+      ]
+    },
+    {
+      "Name": "DeviceExplorerEditor",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit",
+      "PlatformAllowList": [
+        "Win64",
+        "Mac"
+      ]
+    }
+  ]
+}

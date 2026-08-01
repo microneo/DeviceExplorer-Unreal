@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>DeviceExplorer</title>
+  <script type="module" crossorigin src="./assets/index-D8TqXPgW.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-B96WuCwS.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><span>DE</span></div>
+        <div class="brand-copy">
+          <strong>DeviceExplorer</strong>
+          <span>Unreal device workspace</span>
+        </div>
+      </div>
+
+      <div class="device-heading">
+        <span>Devices</span>
+        <span id="device-count" class="count-badge">0</span>
+      </div>
+      <label class="search-field sidebar-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+        <input id="device-search" type="search" placeholder="Find a device">
+      </label>
+      <div id="device-list" class="device-list"></div>
+
+      <div class="sidebar-footer">
+        <div class="server-state"><span class="pulse"></span><strong>Host running</strong></div>
+        <span>_ue-deviceexplorer._tcp</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="device-summary">
+          <div class="eyebrow"><span id="project-name">No project</span><span class="separator">/</span><span id="device-platform">Device</span></div>
+          <h1 id="device-title">Waiting for a device</h1>
+          <p id="device-subtitle">Launch a non-Shipping build on the same network.</p>
+        </div>
+        <div class="topbar-side">
+          <div id="device-capabilities" class="capability-list"></div>
+          <div id="connection-state" class="status offline"><span></span> Offline</div>
+        </div>
+      </header>
+
+      <section id="empty-state" class="empty-state">
+        <div>
+          <div class="empty-orbit"><span></span>NO SIGNAL</div>
+          <h2>No connected builds yet</h2>
+          <p>DeviceExplorer discovers non-Shipping builds advertising <code>_ue-deviceexplorer._tcp</code> over Bonjour on the same LAN. Nothing has announced itself yet.</p>
+          <div class="empty-steps">
+            <span><b>1</b>Start host</span><i></i><span><b>2</b>Launch build</span><i></i><span><b>3</b>Select device</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="workspace" class="workspace hidden">
+        <nav id="tabs" class="tabs" aria-label="Device tools">
+          <button class="tab active" data-tab="logs" data-capability="logs"><span class="tab-icon"><svg width="15" height="15" viewBox="0 0 16 16" class="icon"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg></span>Logs</button>
+          <button class="tab" data-tab="console" data-capability="console"><span class="tab-icon"><svg width="15" height="15" viewBox="0 0 16 16" class="icon"><path d="M3 4.5 6.2 8 3 11.5M8 12h5"/></svg></span>Console</button>
+          <button class="tab" data-tab="files" data-capability="files"><span class="tab-icon"><svg width="15" height="15" viewBox="0 0 16 16" class="icon"><path d="M2 4.4h4.1l1.3 1.7H14v7.5H2z"/></svg></span>Files</button>
+          <span id="module-tabs" class="module-tabs"></span>
+        </nav>
+
+        <section id="tab-logs" class="tab-panel">
+          <div class="panel-heading">
+            <div><h2>Live logs</h2><p>Output streamed directly from the selected build.</p></div>
+            <div id="log-stats" class="subtle-chip">0 messages</div>
+          </div>
+          <div class="toolbar">
+            <label class="search-field grow">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+              <input id="log-category" type="search" placeholder="Filter by category">
+            </label>
+            <select id="log-verbosity" aria-label="Log level">
+              <option value="">All levels</option>
+              <option>Fatal</option><option>Error</option><option>Warning</option>
+              <option>Display</option><option>Log</option><option>Verbose</option><option>VeryVerbose</option>
+            </select>
+            <span class="toolbar-spacer"></span>
+            <button id="save-logs" class="button ghost"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 12.5h11"/></svg>Save</button>
+            <button id="clear-logs" class="button ghost" title="Clears the browser view only — the device log is untouched">Clear view</button>
+            <label class="switch"><input id="follow-logs" type="checkbox" checked><span></span>Follow</label>
+          </div>
+          <div class="log-frame">
+            <div class="log-header"><span>Time</span><span>Category</span><span>Level</span><span>Message</span></div>
+            <div id="logs" class="logs"></div>
+          </div>
+        </section>
+
+        <section id="tab-console" class="tab-panel hidden">
+          <div class="panel-heading">
+            <div><h2>Runtime console</h2><p>Commands and variables reported by this exact build.</p></div>
+            <div id="console-count" class="subtle-chip">Catalog not loaded</div>
+          </div>
+          <div class="console-layout">
+            <aside class="console-browser surface">
+              <div class="surface-title">
+                <strong>Supported commands</strong>
+                <button id="refresh-console" class="icon-button" title="Refresh catalog"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4M13.5 2.5V6H10"/></svg></button>
+              </div>
+              <div class="console-browser-controls">
+                <label class="search-field">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+                  <input id="console-search" type="search" placeholder="r.Shadow, stat, gc…">
+                </label>
+                <div class="segmented" id="console-type">
+                  <button class="active" data-type="">All</button>
+                  <button data-type="command">Commands</button>
+                  <button data-type="variable">Variables</button>
+                </div>
+              </div>
+              <div id="console-catalog" class="console-catalog">
+                <div class="inline-empty">Search or refresh to query the build.</div>
+              </div>
+            </aside>
+
+            <div class="console-workspace">
+              <div id="command-shortcuts-wrap" class="quick-actions surface hidden">
+                <div class="surface-title"><strong>Project actions</strong><span>Registered by modules</span></div>
+                <div id="command-shortcuts" class="console-shortcuts"></div>
+              </div>
+              <div id="console-detail" class="console-detail surface">
+                <span class="kind-badge">CONSOLE</span>
+                <h3>Select a command or type below</h3>
+                <p>The catalog includes help, type, current variable value, and flags from Unreal's runtime console manager.</p>
+              </div>
+              <div class="terminal surface">
+                <div class="terminal-head"><strong>Device output</strong><button id="clear-command-output" class="text-button">Clear</button></div>
+                <pre id="command-output" class="command-output"><span class="terminal-muted">Ready. Use ↑ and ↓ to navigate command history.</span></pre>
+                <form id="command-form" class="command-form">
+                  <span class="prompt">&gt;</span>
+                  <input id="command-input" autocomplete="off" spellcheck="false" placeholder="Enter an Unreal console command">
+                  <button type="submit" class="button primary">Execute <kbd>Enter</kbd></button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-files" class="tab-panel hidden">
+          <div class="panel-heading">
+            <div><h2>Device files</h2><p>Browse sandboxed project roots and pull captures without a cable.</p></div>
+            <div id="file-status" class="subtle-chip">Ready</div>
+          </div>
+          <div class="file-toolbar surface">
+            <div class="navigation-buttons">
+              <button id="file-back" class="icon-button" title="Back"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M9.5 3.5 5 8l4.5 4.5"/></svg></button>
+              <button id="file-forward" class="icon-button" title="Forward"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M6.5 3.5 11 8l-4.5 4.5"/></svg></button>
+              <button id="file-up" class="icon-button" title="Parent directory"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M8 12.5v-9m0 0L4 7.5m4-4 4 4"/></svg></button>
+            </div>
+            <span class="file-toolbar-sep"></span>
+            <select id="file-root" aria-label="File root"></select>
+            <nav id="file-breadcrumbs" class="breadcrumbs" aria-label="Current folder"></nav>
+            <button id="download-folder" class="button ghost" title="Download this folder as .zip"><svg width="13" height="13" viewBox="0 0 16 16" class="icon"><path d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 12.5h11"/></svg>Download folder .zip</button>
+            <button id="refresh-files" class="icon-button" title="Refresh"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4M13.5 2.5V6H10"/></svg></button>
+          </div>
+          <div class="file-options">
+            <label class="search-field grow">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+              <input id="file-search" type="search" placeholder="Filter this folder">
+            </label>
+            <select id="file-sort" aria-label="Sort files">
+              <option value="name">Name</option>
+              <option value="modified">Recently modified</option>
+              <option value="size">Largest first</option>
+            </select>
+          </div>
+          <div id="transfer-banner" class="transfer-banner hidden"></div>
+          <div class="file-table surface">
+            <div class="file-header"><span>Name</span><span>Size</span><span>Modified</span><span></span></div>
+            <div id="file-list" class="file-list"></div>
+          </div>
+        </section>
+
+        <section id="tab-module" class="tab-panel hidden">
+          <div class="panel-heading">
+            <div><h2 id="module-title">Module</h2><p id="module-description">Runtime diagnostics.</p></div>
+            <div id="module-actions" class="module-actions"></div>
+          </div>
+          <nav id="module-pages" class="module-pages hidden" aria-label="Module pages"></nav>
+          <div id="module-content" class="module-content"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <div id="confirm-overlay" class="modal-overlay hidden">
+    <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-body"></p>
+      <dl class="modal-meta">
+        <dt>device</dt><dd id="confirm-device"></dd>
+        <dt>action</dt><dd id="confirm-command"></dd>
+      </dl>
+      <div class="modal-actions">
+        <button type="button" id="confirm-cancel" class="cancel">Cancel</button>
+        <button type="button" id="confirm-accept" class="confirm"></button>
+      </div>
+    </div>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</body>
+</html>
