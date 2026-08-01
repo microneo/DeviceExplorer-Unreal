@@ -74,15 +74,26 @@
                   "id": "state",
                   "label": "State",
                   "description": "Values refreshed from the runtime provider.",
-                  "columns": 3,
+                  "columns": 2,
                   "apply": "instant",
                   "style": "stats",
                   "collapsible": false,
                   "collapsed": false,
                   "fields": [
                     { "id": "active", "label": "Active", "widget": "bool", "readonly": true, "span": 1, "number_display": "auto" },
-                    { "id": "frame_ms", "label": "Frame time", "description": "Smoothed game frame time.", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40 },
                     { "id": "snapshots", "label": "Snapshots", "widget": "meter", "readonly": true, "span": 1, "number_display": "auto" }
+                  ]
+                },
+                {
+                  "id": "frame",
+                  "label": "Frame time",
+                  "columns": 1,
+                  "apply": "instant",
+                  "style": "hero",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "frame_ms", "label": "Frame time", "description": "Smoothed game frame time.", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40, "series": true }
                   ]
                 },
                 {
@@ -94,9 +105,11 @@
                   "collapsible": false,
                   "collapsed": false,
                   "fields": [
-                    { "id": "capture", "label": "Capture snapshot", "description": "Adds one mock snapshot.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_capture", "action_style": "primary", "requires_confirmation": false },
-                    { "id": "restart", "label": "Restart session", "description": "Exercises confirmation and danger styling.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_restart", "action_style": "danger", "requires_confirmation": true },
-                    { "id": "stat_unit_action", "label": "Stat unit", "description": "Executes a registered console command.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_stat_unit", "action_style": "default", "requires_confirmation": false }
+                    { "id": "capture", "label": "Capture snapshot", "description": "Writes a diagnostic snapshot.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_capture", "action_style": "primary", "requires_confirmation": false },
+                    { "id": "restart", "label": "Restart", "description": "Exercises confirmation and danger styling.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_restart", "action_style": "default", "requires_confirmation": true },
+                    { "id": "reset_counters", "label": "Reset", "description": "Clears snapshot counters for this session.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_reset_counters", "action_style": "danger", "requires_confirmation": false },
+                    { "id": "stat_unit_action", "label": "Stat unit", "description": "Prints frame timing statistics.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_stat_unit", "action_style": "default", "requires_confirmation": false, "command": "stat unit" },
+                    { "id": "memreport_action", "label": "Memreport", "description": "Writes a memory usage report.", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_memreport", "action_style": "default", "requires_confirmation": false, "command": "memreport -full" }
                   ]
                 },
                 {
@@ -110,8 +123,21 @@
                   "collapsed": false,
                   "fields": [
                     { "id": "map", "label": "Map", "widget": "text", "readonly": true, "span": 1, "number_display": "auto" },
-                    { "id": "players", "label": "Players", "widget": "number", "readonly": true, "span": 1, "number_display": "input" },
-                    { "id": "session_data", "label": "Session data", "widget": "json", "readonly": true, "span": 2, "number_display": "auto" }
+                    { "id": "players", "label": "Players", "widget": "number", "readonly": true, "span": 1, "number_display": "input" }
+                  ]
+                },
+                {
+                  "id": "thresholds",
+                  "label": "Thresholds",
+                  "columns": 1,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "monitoring_enabled", "label": "Enabled", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "frame_budget_ms", "label": "Limit", "description": "Must be greater than zero.", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "unit": "ms", "min": 1, "max": 100, "step": 0.5 },
+                    { "id": "quality", "label": "Quality", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Low", "Medium", "High", "Epic"] }
                   ]
                 }
               ]
@@ -157,6 +183,131 @@
                   "fields": [
                     { "id": "max_snapshots", "label": "Max snapshots", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "min": 0, "max": 64, "step": 1 },
                     { "id": "trace_channels", "label": "Trace channels", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "artifacts",
+              "label": "Runtime artifacts",
+              "description": "Files written into the registered FileRoot.",
+              "icon": "files",
+              "sections": [
+                {
+                  "id": "artifacts",
+                  "label": "Runtime artifacts",
+                  "description": "Files written into the registered FileRoot.",
+                  "columns": 1,
+                  "apply": "instant",
+                  "style": "default",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "artifacts", "label": "Saved/Diagnostics", "widget": "artifact", "readonly": true, "span": 1, "number_display": "auto" }
+                  ]
+                },
+                {
+                  "id": "session_json",
+                  "label": "Session data",
+                  "columns": 1,
+                  "apply": "instant",
+                  "style": "default",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "session_data", "label": "Session data", "widget": "json", "readonly": true, "span": 1, "number_display": "auto" }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "widget_gallery",
+          "label": "Widget Gallery",
+          "description": "Every widget the module builder can register.",
+          "icon": "settings",
+          "refresh_interval_ms": 2000,
+          "actions": [],
+          "pages": [
+            {
+              "id": "gallery",
+              "label": "Widgets",
+              "description": "Each builder widget, how it renders, and the call that registers it.",
+              "icon": "settings",
+              "sections": [
+                {
+                  "id": "readouts",
+                  "label": "Readouts",
+                  "description": "Read-only, refreshed on the module RefreshMs interval.",
+                  "columns": 1,
+                  "apply": "instant",
+                  "style": "reference",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "g_text", "label": "Text", "widget": "text", "readonly": true, "span": 1, "number_display": "auto", "api": ".Readonly(FString)" },
+                    { "id": "g_bool", "label": "Bool", "widget": "bool", "readonly": true, "span": 1, "number_display": "auto", "api": ".Readonly(bool)" },
+                    { "id": "g_number", "label": "Number", "description": "Precision, Unit", "widget": "number", "readonly": true, "span": 1, "number_display": "auto", "unit": "MB", "api": ".Readonly(double)" },
+                    { "id": "g_badge_ok", "label": "Badge", "description": "WarnAbove / ErrorAbove", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40, "api": ".Badge()" },
+                    { "id": "g_badge_warn", "label": "Badge · warn", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40, "api": ".Badge()" },
+                    { "id": "g_badge_error", "label": "Badge · error", "widget": "badge", "readonly": true, "span": 1, "number_display": "auto", "unit": "ms", "warn_above": 25, "error_above": 40, "api": ".Badge()" },
+                    { "id": "g_meter", "label": "Meter", "description": "value / max", "widget": "meter", "readonly": true, "span": 1, "number_display": "auto", "api": ".Meter()" },
+                    { "id": "g_series", "label": "Series", "description": "Value history", "widget": "series", "readonly": true, "span": 1, "number_display": "auto", "api": ".Series()" },
+                    { "id": "g_status", "label": "Status", "widget": "status", "readonly": true, "span": 1, "number_display": "auto", "api": ".Status()" },
+                    { "id": "g_table", "label": "Table", "description": "Rows from an array", "widget": "table", "readonly": true, "span": 1, "number_display": "auto", "columns_spec": ["Subsystem", "ms", "calls"], "api": ".Table()" },
+                    { "id": "g_json", "label": "JSON", "description": "Key / value rows", "widget": "json", "readonly": true, "span": 1, "number_display": "auto", "api": ".Json()" },
+                    { "id": "g_artifact", "label": "Artifact", "description": "Link into a FileRoot", "widget": "artifact", "readonly": true, "span": 1, "number_display": "auto", "api": ".Artifact()" }
+                  ]
+                },
+                {
+                  "id": "editors",
+                  "label": "Editors",
+                  "description": "Get and set, validated through FDeviceExplorerWriteResult.",
+                  "columns": 1,
+                  "apply": "manual",
+                  "style": "reference",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "g_toggle", "label": "Toggle", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto", "api": ".Toggle()" },
+                    { "id": "g_number_input", "label": "Number · Input", "description": "Unbounded", "widget": "number", "readonly": false, "span": 1, "number_display": "input", "step": 1, "api": "Display::Input" },
+                    { "id": "g_number_slider", "label": "Number · Slider", "description": "Min / Max / Step", "widget": "number", "readonly": false, "span": 1, "number_display": "slider", "min": 0, "max": 120, "step": 1, "unit": "s", "api": "Display::Slider" },
+                    { "id": "g_number_both", "label": "Number · Slider + Input", "description": "Must be greater than zero.", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "min": 0, "max": 100, "step": 0.5, "unit": "ms", "api": "Display::SliderAndInput" },
+                    { "id": "g_enum_segmented", "label": "Enum · Segmented", "description": "2–4 options", "widget": "enum", "enum_display": "segmented", "readonly": false, "span": 1, "number_display": "auto", "options": ["Low", "Medium", "High", "Epic"], "api": ".Enum()" },
+                    { "id": "g_enum", "label": "Enum · Select", "description": "5 or more options", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Development · PC", "Development · PS5", "Test · PS5", "Shipping · PS5", "Shipping · Xbox"], "api": ".Enum()" },
+                    { "id": "g_flags", "label": "Flags", "description": "Multiple selection", "widget": "flags", "readonly": false, "span": 1, "number_display": "auto", "options": ["cpu", "gpu", "rhi", "loadtime"], "api": ".Flags()" },
+                    { "id": "g_string", "label": "String", "widget": "string", "readonly": false, "span": 1, "number_display": "auto", "api": ".String()" },
+                    { "id": "g_textarea", "label": "Text", "description": "Multi-line", "widget": "textarea", "readonly": false, "span": 1, "number_display": "auto", "rows": 2, "api": ".Text()" },
+                    { "id": "g_vector", "label": "Vector", "widget": "vector", "readonly": false, "step": 0.5, "span": 1, "number_display": "auto", "api": ".Vector()" },
+                    { "id": "g_color", "label": "Color", "widget": "color", "readonly": false, "span": 1, "number_display": "auto", "api": ".Color()" },
+                    { "id": "g_path", "label": "Path", "description": "Inside a FileRoot", "widget": "path", "readonly": true, "span": 1, "number_display": "auto", "api": ".Path()" }
+                  ]
+                },
+                {
+                  "id": "actions",
+                  "label": "Actions",
+                  "columns": 1,
+                  "apply": "instant",
+                  "style": "reference",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "g_styles", "label": "Action · styles", "widget": "actions", "readonly": true, "span": 1, "number_display": "auto", "api": ".Action()", "items": [
+                      { "id": "g_primary", "label": "Primary", "action": "__btn_gallery_primary", "action_style": "primary", "requires_confirmation": false },
+                      { "id": "g_default", "label": "Default", "action": "__btn_gallery_default", "action_style": "default", "requires_confirmation": false },
+                      { "id": "g_danger_plain", "label": "Danger", "action": "__btn_gallery_danger_plain", "action_style": "danger", "requires_confirmation": false },
+                      { "id": "g_running", "label": "Running…", "action": "__btn_gallery_slow", "action_style": "default", "requires_confirmation": false, "busy_ms": 2500 }
+                    ] },
+                    { "id": "g_confirm", "label": "Action · Confirm", "description": "Two-step confirmation", "widget": "button", "readonly": true, "span": 1, "number_display": "auto", "action": "__btn_gallery_danger", "action_style": "danger", "requires_confirmation": true, "api": ".Confirm = true" },
+                    { "id": "g_params", "label": "Action · with parameters", "description": "Inline form", "widget": "action_form", "readonly": true, "span": 1, "number_display": "auto", "api": ".Action(Inputs)", "action": "__btn_gallery_trace", "action_label": "Trace", "inputs": [
+                      { "id": "seconds", "label": "seconds", "type": "number", "default": 10 },
+                      { "id": "label", "label": "label", "type": "string", "default": "boss_fight" }
+                    ] },
+                    { "id": "g_commands", "label": "Command", "description": "Console line", "widget": "actions", "readonly": true, "span": 1, "number_display": "auto", "api": ".Command()", "items": [
+                      { "id": "g_cmd_stat_unit", "label": "stat unit", "action": "__btn_gallery_stat_unit", "command": "stat unit", "requires_confirmation": false },
+                      { "id": "g_cmd_memreport", "label": "memreport", "action": "__btn_gallery_memreport", "command": "memreport -full", "requires_confirmation": false }
+                    ] }
                   ]
                 }
               ]
@@ -245,8 +396,16 @@
   "module_state": {
     "runtime": {
       "data": {
-        "Session": { "Map": "DevelopmentMap", "Players": 1, "Uptime": "14m" },
-        "Memory": { "Physical MB": 1420, "GPU MB": 786 }
+        "Build": "Development 0.5.1842",
+        "Uptime": "14m",
+        "Session": { "Map": "DevelopmentMap", "Players": 1, "Streaming": true, "Last error": null },
+        "Memory": { "Physical MB": 1420, "GPU MB": 786, "Peak MB": 1611 },
+        "Subsystems": [
+          { "Name": "Physics", "ms": 4.12, "Active": true },
+          { "Name": "Animation", "ms": 2.87, "Active": true },
+          { "Name": "Audio", "ms": 0.64, "Active": false }
+        ],
+        "Enabled channels": ["cpu", "gpu", "frame", "bookmark"]
       },
       "values": {}
     },
@@ -264,7 +423,47 @@
         "quality": "High",
         "session_label": "Local development",
         "max_snapshots": 5,
-        "trace_channels": "cpu,gpu,frame,bookmark"
+        "trace_channels": "cpu,gpu,frame,bookmark",
+        "artifacts": [
+          { "name": "snapshot-001.json", "size": "8.7 KB", "age": "2 min ago" },
+          { "name": "runtime-summary.json", "size": "4.0 KB", "age": "14 min ago" }
+        ]
+      }
+    },
+    "widget_gallery": {
+      "data": {},
+      "values": {
+        "g_text": "Dev_Sandbox",
+        "g_bool": true,
+        "g_number": 1842.06,
+        "g_badge_ok": 14.2,
+        "g_badge_warn": 27.4,
+        "g_badge_error": 42.1,
+        "g_meter": { "value": 3, "max": 5 },
+        "g_series": [12.1, 13.4, 12.8, 15.2, 14.1, 17.9, 15.4, 21.2, 18.6, 24.1, 19.8, 26.4, 22.1],
+        "g_status": { "label": "Recording", "tone": "active" },
+        "g_table": [
+          { "Subsystem": "Physics", "ms": 4.12, "calls": 1 },
+          { "Subsystem": "Animation", "ms": 2.87, "calls": 96 },
+          { "Subsystem": "Rendering", "ms": 9.44, "calls": 1 }
+        ],
+        "g_json": { "session": "7f21c9", "build": "Development", "uptime_s": 1842, "streaming": true, "last_error": null },
+        "g_artifact": [
+          { "name": "snap_0003.utrace", "size": "18.4 MB", "age": "2 min ago" },
+          { "name": "memreport_0001.memreport", "size": "2.1 MB", "age": "31 min ago" }
+        ],
+        "g_toggle": true,
+        "g_number_input": 64,
+        "g_number_slider": 30,
+        "g_number_both": 24.5,
+        "g_enum_segmented": "High",
+        "g_enum": "Shipping · PS5",
+        "g_flags": ["cpu", "gpu"],
+        "g_string": "nightly_perf_pass",
+        "g_textarea": "r.ScreenPercentage 80\nr.Shadow.MaxCSMResolution 1024",
+        "g_vector": { "x": 1240.0, "y": -380.5, "z": 92.0 },
+        "g_color": "#CE9178",
+        "g_path": "Saved/Diagnostics/"
       }
     }
   }

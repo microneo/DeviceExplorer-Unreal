@@ -93,18 +93,31 @@ function moduleData(state, moduleId) {
   if (!module) return null;
   if (moduleId === "runtime_monitor") {
     const current = Number(module.values.frame_ms || 16);
-    module.values.frame_ms = Number((current >= 18.1 ? 15.8 : current + 0.3).toFixed(1));
+    const next = current >= 44 ? 12.4 : current + (Math.random() * 3.4 - 0.9);
+    module.values.frame_ms = Number(Math.max(11, next).toFixed(1));
+  }
+  if (moduleId === "widget_gallery") {
+    const series = Array.isArray(module.values.g_series) ? module.values.g_series.slice(1) : [];
+    series.push(Number((10 + Math.random() * 18).toFixed(1)));
+    module.values.g_series = series;
   }
   return { success: true, error: "", data: clone(module.data), values: clone(module.values) };
 }
+
+const SET_VALIDATION = {
+  frame_budget_ms: "Must be greater than zero",
+  g_number_both: "Must be greater than zero",
+};
 
 function invokeModuleAction(state, body) {
   const module = state.module_state[body.module];
   if (!module) return { status: 404, result: { error: "Unknown module" } };
   const parameters = body.parameters || {};
   if (body.action === "__set") {
-    if (Object.hasOwn(parameters, "frame_budget_ms") && Number(parameters.frame_budget_ms) <= 0) {
-      return { status: 200, result: { success: false, error: "frame_budget_ms: Must be greater than zero", values: clone(module.values) } };
+    for (const [field, message] of Object.entries(SET_VALIDATION)) {
+      if (Object.hasOwn(parameters, field) && Number(parameters[field]) <= 0) {
+        return { status: 200, result: { success: false, error: `${field}: ${message}`, values: clone(module.values) } };
+      }
     }
     Object.assign(module.values, parameters);
     return { status: 200, result: { success: true, error: "", values: clone(module.values) } };
@@ -113,6 +126,12 @@ function invokeModuleAction(state, body) {
     const meter = module.values.snapshots || { value: 0, max: 5 };
     meter.value = Math.min(meter.max, meter.value + 1);
     module.values.snapshots = meter;
+    const artifacts = Array.isArray(module.values.artifacts) ? module.values.artifacts : [];
+    const name = `snapshot-${String(meter.value).padStart(3, "0")}.json`;
+    module.values.artifacts = [{ name, size: "8.7 KB", age: "just now" }, ...artifacts].slice(0, 5);
+  }
+  if (body.action === "__btn_reset_counters") {
+    module.values.snapshots = { value: 0, max: module.values.snapshots?.max || 5 };
   }
   if (body.action === "__btn_restart") {
     module.values.snapshots = { value: 0, max: module.values.snapshots?.max || 5 };
