@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>DeviceExplorer</title>
-  <script type="module" crossorigin src="./assets/index-BdaPB9T-.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BbZxqRic.css">
+  <script type="module" crossorigin src="./assets/index-CBjqFfeW.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CWFGCfLv.css">
 </head>
 <body>
   <div class="app-shell">
@@ -218,18 +218,14 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
                   <input id="console-search" type="search" placeholder="r.Shadow, stat, gc…">
                 </label>
-                <div class="segmented" id="console-type">
-                  <button class="active" data-type="">All</button>
-                  <button data-type="command">Commands</button>
-                  <button data-type="variable">Variables</button>
-                </div>
                 <div class="segmented" id="console-source">
-                  <button class="active" data-source="">All</button>
-                  <button data-source="cvar">CVar</button>
-                  <button data-source="exec">Exec</button>
-                  <button data-source="stat">Stat</button>
-                  <button data-source="show">Show</button>
-                  <button data-source="manual">Cfg</button>
+                  <button class="active" data-source="" title="Everything this build can run">All</button>
+                  <button data-source="cvar" title="Console variables: they hold a value you can read and set">CVar</button>
+                  <button data-source="cvarcmd" title="Console commands registered with IConsoleManager: they run, they hold no value">Cmd</button>
+                  <button data-source="exec" title="UFUNCTION(exec) functions on gameplay classes">Exec</button>
+                  <button data-source="stat" title="Stat groups and engine stat overlays">Stat</button>
+                  <button data-source="show" title="Engine show flags">Show</button>
+                  <button data-source="manual" title="Declared in BaseInput.ini or by a plugin">Cfg</button>
                 </div>
                 <label class="switch" id="console-scope-field"><input id="console-scope" type="checkbox"><span></span>Search descriptions</label>
               </div>

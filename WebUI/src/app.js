@@ -21,7 +21,6 @@ const state = {
   consoleIndexDeviceId: null,
   consoleTotal: 0,
   consoleCatalogTotal: 0,
-  consoleType: "",
   consoleSource: "",
   consoleSelected: null,
   consoleQueryTimer: null,
@@ -378,17 +377,12 @@ async function ensureConsoleIndex(forceRebuild = false) {
   return true;
 }
 
-// Only the CVar registry publishes variables, so pairing Variables with Exec or Stat can never match anything.
-function syncConsoleFilterAvailability() {
-  const indexed = state.consoleIndexDeviceId === state.selectedId && state.consoleIndex.length > 0;
-  const hasAny = (source, kind) => !indexed || state.consoleIndex.some((entry) =>
-    (!source || consoleSourceOf(entry) === source) && (!kind || entry.type === kind));
-  for (const button of elements.consoleSourceFilter.querySelectorAll("button")) {
-    button.disabled = !hasAny(button.dataset.source, state.consoleType);
-  }
-  for (const button of $("#console-type").querySelectorAll("button")) {
-    button.disabled = !hasAny(state.consoleSource, button.dataset.type);
-  }
+// Only the CVar registry holds both kinds, so it is the one bucket split by type. Every other source is commands
+// only, which is why a separate command/variable row had nothing to filter.
+function consoleFilterToQuery(filter) {
+  if (filter === "cvar") return { source: "cvar", kind: "variable" };
+  if (filter === "cvarcmd") return { source: "cvar", kind: "command" };
+  return { source: filter, kind: "" };
 }
 
 async function refreshConsoleCatalog(forceRebuild = false) {
@@ -405,21 +399,21 @@ async function refreshConsoleCatalog(forceRebuild = false) {
     elements.consoleCount.textContent = "Loading catalog";
   }
   const local = !searchHelp && (await ensureConsoleIndex(forceRebuild === true).catch(() => false));
-  syncConsoleFilterAvailability();
+  const { source, kind } = consoleFilterToQuery(state.consoleSource);
   try {
     let entries;
     let total;
     let catalogTotal;
     if (local) {
-      const found = searchConsoleIndex(query, { source: state.consoleSource, kind: state.consoleType });
+      const found = searchConsoleIndex(query, { source, kind });
       entries = found.entries;
       total = found.total;
       catalogTotal = state.consoleIndex.length;
     } else {
       const params = new URLSearchParams({ q: query, limit: String(CONSOLE_PAGE_SIZE) });
-      if (state.consoleType) params.set("kind", state.consoleType);
       if (extended) {
-        if (state.consoleSource) params.set("source", state.consoleSource);
+        if (source) params.set("source", source);
+        if (kind) params.set("kind", kind);
         if (searchHelp) params.set("scope", "all");
         if (forceRebuild === true) params.set("refresh", "1");
       }
@@ -464,7 +458,9 @@ function renderConsoleCatalog() {
 
 function selectConsoleEntry(entry) {
   state.consoleSelected = entry;
-  elements.commandInput.value = entry.name;
+  // A show flag prefills its override variable: "show X" is a bare toggle that an idle Editor cannot handle,
+  // while ShowFlag.X takes a value and applies everywhere.
+  elements.commandInput.value = entry.companion ? `${entry.companion} ` : entry.name;
   renderConsoleDetail(entry, entry.help === undefined);
   renderConsoleCatalog();
   elements.commandInput.focus();
@@ -2515,13 +2511,6 @@ elements.consoleSearch.addEventListener("input", () => {
   state.consoleQueryTimer = setTimeout(refreshConsoleCatalog, 160);
 });
 elements.consoleScope.addEventListener("change", () => refreshConsoleCatalog());
-$("#console-type").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-type]");
-  if (!button) return;
-  state.consoleType = button.dataset.type;
-  $("#console-type").querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
-  refreshConsoleCatalog();
-});
 elements.consoleSourceFilter.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-source]");
   if (!button) return;
