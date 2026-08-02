@@ -520,9 +520,10 @@ function renderConsoleDetail(entry, pendingHelp) {
 
 // A show flag is reachable two ways: "show X" toggles it in the game viewport, while its ShowFlag.X companion is a
 // tri-state override (0 off, 1 on, 2 no override) that also applies in the Editor.
-const SHOW_FLAG_STATES = [["0", "Force off"], ["1", "Force on"], ["2", "No override"]];
+const SHOW_FLAG_STATES = [["0", "Off"], ["1", "On"], ["2", "Default"]];
 
 function showFlagControl(entry) {
+  const block = document.createElement("div");
   const wrap = document.createElement("div");
   wrap.className = "value-line";
   wrap.append(document.createTextNode("Override"));
@@ -532,7 +533,7 @@ function showFlagControl(entry) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
-    button.classList.toggle("active", entry.value === value);
+    button.classList.toggle("active", (entry.value || "2") === value);
     button.addEventListener("click", async () => {
       await executeCommand(`${entry.companion} ${value}`);
       refreshSelectedConsoleEntry();
@@ -546,7 +547,11 @@ function showFlagControl(entry) {
   toggle.textContent = "Toggle in viewport";
   toggle.addEventListener("click", () => executeCommand(entry.name));
   wrap.append(toggle);
-  return wrap;
+  const note = textCell("detail-note",
+    `${entry.name} only reaches a game viewport, so it reports "not handled" in an Editor build that is not playing. `
+    + `${entry.companion} applies everywhere.`);
+  block.append(wrap, note);
+  return block;
 }
 
 async function executeCommand(command, commandId = "") {
@@ -566,7 +571,9 @@ async function executeCommand(command, commandId = "") {
     const logged = result.log_output || "";
     const body = direct || logged ? `${direct}${direct && logged ? "\n" : ""}${logged}` : "(no output)";
     appendCommandOutput(`${result.success ? "" : "[not handled] "}${body}\n[${elapsed} ms]\n\n`);
-    if (state.consoleSelected && command.startsWith(state.consoleSelected.name)) {
+    // A show flag is also set through its companion variable, so watch both names.
+    const touched = [state.consoleSelected?.name, state.consoleSelected?.companion].filter(Boolean);
+    if (touched.some((name) => command.toLowerCase().startsWith(name.toLowerCase()))) {
       clearTimeout(state.consoleQueryTimer);
       state.consoleQueryTimer = setTimeout(refreshSelectedConsoleEntry, 250);
     }
