@@ -126,9 +126,12 @@
                   <span id="log-selected-count">all</span>
                 </div>
               </div>
-              <div class="log-category-head">
-                <button id="toggle-all-log-categories" type="button" class="log-check-row" role="checkbox" aria-checked="true" data-state="all"><i aria-hidden="true"></i><span>All categories</span></button>
-                <span>Rows</span><span>Warn</span><span>Err</span>
+              <div id="log-category-head" class="log-category-head">
+                <button id="toggle-all-log-categories" type="button" class="log-check" role="checkbox" aria-checked="true" data-state="all" title="Show or hide every category" aria-label="Show or hide every category"></button>
+                <button type="button" class="log-sort" data-sort="name">Category</button>
+                <button type="button" class="log-sort" data-sort="rows">Rows</button>
+                <button type="button" class="log-sort" data-sort="warnings">Warn</button>
+                <button type="button" class="log-sort" data-sort="errors">Err</button>
               </div>
               <div id="log-categories" class="log-categories"></div>
               <div class="log-inspector-foot">

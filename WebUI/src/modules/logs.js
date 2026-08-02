@@ -15,6 +15,13 @@ const MAX_VERBOSITY_ROWS = 300;
 const FILTER_PRESET_KEY = "deviceexplorer.logFilterPreset";
 const COPY_ICON = "M5.2 5.2h8v8h-8zM10.8 2.8H3.6a.8.8 0 0 0-.8.8v7.2";
 
+const CATEGORY_SORTS = {
+  name: (left, right) => left.name.localeCompare(right.name),
+  rows: (left, right) => left.rows - right.rows,
+  warnings: (left, right) => left.warnings - right.warnings,
+  errors: (left, right) => left.errors - right.errors,
+};
+
 const VERBOSITY_PRESETS = [
   { id: "quiet", label: "Quiet", hint: "all → Error", level: "Error", matches: () => true },
   { id: "render", label: "Render debug", level: "Verbose", matches: (name) => /(RHI|Render|Shader|Streaming|Texture)/i.test(name) },
@@ -52,6 +59,7 @@ export function createLogsModule({ getDevice }) {
     categoryBulk: $("#log-category-bulk"),
     selectedCount: $("#log-selected-count"),
     categories: $("#log-categories"),
+    categoryHead: $("#log-category-head"),
     toggleAll: $("#toggle-all-log-categories"),
 
     verbositySearch: $("#verbosity-search"),
@@ -84,6 +92,7 @@ export function createLogsModule({ getDevice }) {
     capacity: 0,
     level: "all",
     hidden: new Set(),
+    categorySort: { key: "rows", direction: "desc" },
     categoryRows: new Map(),
     categoryRenderedAt: 0,
     // Verbosity sub-tab.
@@ -318,7 +327,14 @@ export function createLogsModule({ getDevice }) {
     state.categoryRenderedAt = now;
 
     const query = elements.categorySearch.value.trim().toLowerCase();
-    const all = [...state.stats.values()].sort((left, right) => right.rows - left.rows || left.name.localeCompare(right.name));
+    const { key, direction } = state.categorySort;
+    const compare = CATEGORY_SORTS[key] || CATEGORY_SORTS.rows;
+    const all = [...state.stats.values()].sort((left, right) =>
+      (direction === "asc" ? compare(left, right) : compare(right, left)) || left.name.localeCompare(right.name));
+    for (const header of elements.categoryHead.querySelectorAll(".log-sort")) {
+      header.classList.toggle("active", header.dataset.sort === key);
+      header.dataset.direction = header.dataset.sort === key ? direction : "";
+    }
     const shown = all.filter((entry) => !query || entry.name.toLowerCase().includes(query));
 
     const ordered = [];
@@ -413,8 +429,11 @@ export function createLogsModule({ getDevice }) {
   }
 
   function matchesScope(entry) {
-    if (state.scope === "changed") return state.pending.has(entry.name) || entry.source === "runtime";
-    if (state.scope === "active") return effectiveLevel(entry.name) !== "Fatal";
+    // A row with an unapplied edit always stays visible: scoping on the pending level would
+    // make the row vanish from under the click that set it.
+    if (state.pending.has(entry.name)) return true;
+    if (state.scope === "changed") return entry.source === "runtime";
+    if (state.scope === "active") return entry.verbosity !== "Fatal";
     return true;
   }
 
@@ -424,12 +443,8 @@ export function createLogsModule({ getDevice }) {
       .filter((entry) => entry.name !== GLOBAL_CATEGORY)
       .filter((entry) => !query || entry.name.toLowerCase().includes(query))
       .filter(matchesScope)
-      .sort((left, right) => {
-        const pendingOrder = Number(state.pending.has(right.name)) - Number(state.pending.has(left.name));
-        if (pendingOrder) return pendingOrder;
-        const changedOrder = Number(right.source === "runtime") - Number(left.source === "runtime");
-        return changedOrder || left.name.localeCompare(right.name);
-      });
+      // Deliberately stable: reordering on edit would slide the row out from under the click.
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   function verbosityDetail(entry) {
@@ -464,7 +479,8 @@ export function createLogsModule({ getDevice }) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = level;
-      button.className = level === current ? `on ${source}` : "";
+      button.dataset.level = level.toLowerCase();
+      button.className = level === current ? `on${rejected ? " rejected" : ""}` : "";
       button.disabled = state.applying || isBlocked(entry.name, level);
       if (button.disabled && level !== current) button.title = `${level} is compiled out of ${entry.name} in this build`;
       button.setAttribute("aria-pressed", String(level === current));
@@ -693,6 +709,15 @@ export function createLogsModule({ getDevice }) {
     if (action === "none") state.hidden = new Set(names);
     if (action === "invert") state.hidden = new Set(names.filter((name) => !state.hidden.has(name)));
     applyFilters();
+  });
+  elements.categoryHead.addEventListener("click", (event) => {
+    const key = event.target.closest(".log-sort")?.dataset.sort;
+    if (!key) return;
+    // Names read best A-Z, counts read best worst-first, so each key picks its own default.
+    state.categorySort = state.categorySort.key === key
+      ? { key, direction: state.categorySort.direction === "asc" ? "desc" : "asc" }
+      : { key, direction: key === "name" ? "asc" : "desc" };
+    renderCategories(true);
   });
   elements.toggleAll.addEventListener("click", () => {
     state.hidden = state.hidden.size ? new Set() : new Set(state.stats.keys());
