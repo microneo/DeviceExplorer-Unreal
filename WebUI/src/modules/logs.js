@@ -26,7 +26,7 @@ const VERBOSITY_PRESETS = [
   { id: "quiet", label: "Quiet", hint: "all → Error", level: "Error", matches: () => true },
   { id: "render", label: "Render debug", level: "Verbose", matches: (name) => /(RHI|Render|Shader|Streaming|Texture)/i.test(name) },
   { id: "net", label: "Net trace", level: "Verbose", matches: (name) => /(Net|Online|Packet|Replication)/i.test(name) },
-  { id: "boot", label: "Back to boot levels", hint: "as launched", baseline: true },
+  { id: "boot", label: "Restore boot levels", baseline: true },
 ];
 
 /**
@@ -451,6 +451,8 @@ export function createLogsModule({ getDevice }) {
     const rejection = state.rejected.get(entry.name);
     if (rejection) return rejection;
     if (state.pending.has(entry.name)) return `was ${entry.verbosity}`;
+    const cap = state.ceiling.get(entry.name);
+    if (cap) return `compiled out above ${cap}`;
     const stats = state.stats.get(entry.name);
     if (stats) return `${formatCount(stats.rows)} ${stats.rows === 1 ? "row" : "rows"} in buffer`;
     if (entry.source === "runtime") return `boot level ${entry.baseline}`;
@@ -488,12 +490,13 @@ export function createLogsModule({ getDevice }) {
       segments.append(button);
     }
     control.append(segments);
-    if (pending) {
+    if (pending || entry.verbosity !== entry.baseline) {
       const reset = document.createElement("button");
       reset.type = "button";
       reset.className = "text-button verbosity-reset";
       reset.textContent = "Reset";
-      reset.addEventListener("click", () => queueLevel(entry.name, entry.verbosity));
+      reset.title = pending ? `Drop this edit and keep ${entry.verbosity}` : `Queue a change back to the boot level ${entry.baseline}`;
+      reset.addEventListener("click", () => queueLevel(entry.name, pending ? entry.verbosity : entry.baseline));
       control.append(reset);
     }
 
@@ -600,6 +603,9 @@ export function createLogsModule({ getDevice }) {
       baseline: entry.baseline || entry.verbosity || "Log",
       source: entry.source || "boot",
     }]));
+    for (const entry of categories || []) {
+      if (entry.max) state.ceiling.set(entry.name, entry.max);
+    }
     for (const name of [...state.pending.keys()]) {
       if (!state.levels.has(name) || state.pending.get(name) === state.levels.get(name).verbosity) state.pending.delete(name);
     }
@@ -655,7 +661,6 @@ export function createLogsModule({ getDevice }) {
         }
         state.pending.set(outcome.category, outcome.requested);
         state.rejected.set(outcome.category, outcome.error || "The build rejected this level");
-        if (outcome.applied) state.ceiling.set(outcome.category, outcome.applied);
       }
       if (applied) toast(`${applied} log ${applied === 1 ? "level" : "levels"} applied`);
       if (state.rejected.size) toast(`${state.rejected.size} log ${state.rejected.size === 1 ? "level" : "levels"} rejected by the build`, true);

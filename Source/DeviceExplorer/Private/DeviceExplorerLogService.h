@@ -43,6 +43,8 @@ private:
 	TMap<FString, FString> Baseline;
 	/** Categories this session changed, so the dashboard can separate them from boot levels. */
 	TSet<FString> Overrides;
+	/** Compile-time ceilings discovered by being clamped, so the same level is never re-requested. */
+	TMap<FString, FString> Ceiling;
 	bool bAutoRevert = true;
 	bool bStarted = false;
 };

@@ -75,7 +75,8 @@ function logCategories(state) {
     name,
     verbosity: entry.verbosity,
     baseline: entry.boot,
-    source: entry.verbosity === entry.boot ? "boot" : "runtime"
+    source: entry.verbosity === entry.boot ? "boot" : "runtime",
+    ...(entry.discovered ? { max: entry.ceiling } : {})
   }));
 }
 
@@ -92,6 +93,7 @@ function setLogVerbosity(state, body) {
     // Mirrors FLogCategoryBase::SetVerbosity(), which silently clamps to the compiled ceiling.
     const ceiling = entry.ceiling || "VeryVerbose";
     const applied = LOG_LEVELS.indexOf(verbosity) > LOG_LEVELS.indexOf(ceiling) ? ceiling : verbosity;
+    if (applied !== verbosity) entry.discovered = true;
     entry.verbosity = applied;
     results.push({
       category,

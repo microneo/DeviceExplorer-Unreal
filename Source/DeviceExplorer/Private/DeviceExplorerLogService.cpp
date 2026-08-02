@@ -1,5 +1,6 @@
 #include "DeviceExplorerLogService.h"
 
+#include "Algo/IndexOf.h"
 #include "Async/Async.h"
 #include "DeviceExplorerOutputDevice.h"
 #include "Dom/JsonObject.h"
@@ -31,6 +32,11 @@ FString VerbosityToString(const ELogVerbosity::Type Verbosity)
 		case ELogVerbosity::VeryVerbose: return TEXT("VeryVerbose");
 		default: return TEXT("Log");
 	}
+}
+
+int32 VerbosityRank(const FString& Value)
+{
+	return Algo::IndexOfBy(MakeArrayView(VerbosityNames), Value, [](const TCHAR* Name) { return FString(Name); });
 }
 
 /** Returns the canonical spelling, or an empty string when Value is not a verbosity the Log command accepts. */
@@ -192,6 +198,10 @@ TArray<TSharedPtr<FJsonValue>> FDeviceExplorerLogService::BuildCategoryList(cons
 		Json->SetStringField(TEXT("verbosity"), Category.Value);
 		Json->SetStringField(TEXT("baseline"), Baseline.FindOrAdd(Category.Key, Category.Value));
 		Json->SetStringField(TEXT("source"), Overrides.Contains(Category.Key) ? TEXT("runtime") : TEXT("boot"));
+		if (const FString* Max = Ceiling.Find(Category.Key))
+		{
+			Json->SetStringField(TEXT("max"), *Max);
+		}
 		Entries.Add(MakeShared<FJsonValueObject>(Json));
 	}
 	return Entries;
@@ -247,6 +257,13 @@ void FDeviceExplorerLogService::ApplyVerbosity(const FString& RequestId, const T
 		{
 			Level.Error = TEXT("This build has no such log category");
 		}
+		else if (const FString* Max = Ceiling.Find(Level.Category);
+		         Max != nullptr && VerbosityRank(Level.Verbosity) > VerbosityRank(*Max))
+		{
+			// SetVerbosity() ensures when asked to go above the compile-time ceiling, so once a
+			// category's ceiling is known the request is refused here instead of tripping it again.
+			Level.Error = FString::Printf(TEXT("%s is compiled out in this build"), *Level.Verbosity);
+		}
 		else
 		{
 			RunLogCommand(FString::Printf(TEXT("Log %s %s"), *Level.Category, *Level.Verbosity));
@@ -278,6 +295,7 @@ void FDeviceExplorerLogService::ApplyVerbosity(const FString& RequestId, const T
 		if (Applied != Level.Verbosity)
 		{
 			Entry->SetStringField(TEXT("error"), FString::Printf(TEXT("%s is compiled out in this build"), *Level.Verbosity));
+			Ceiling.Add(Level.Category, Applied);
 		}
 
 		if (Applied == Baseline.FindOrAdd(Level.Category, Before.FindRef(Level.Category)))
