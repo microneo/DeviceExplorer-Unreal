@@ -183,11 +183,17 @@ are `Default`, `Primary`, and `Danger`. Status tones are `Idle`, `Active`,
 
 ## Reflected objects
 
-`Object` registers the editable `UObject` properties it can map — booleans as
-toggles, numerics as numbers with `ClampMin`, `ClampMax`, and `Units` metadata,
-strings and names as inputs, enums as selects — grouped into sections by
-property category. `SettingsObject` does the same on a dedicated page with
-manual apply and persistence.
+`Object` registers the `UObject` properties it can map — booleans as toggles,
+numerics as numbers with `ClampMin`, `ClampMax`, and `Units` metadata, strings,
+names, and texts as inputs, enums as selects, `FVector` as a vector, and
+`FLinearColor` and `FColor` as colours — grouped into sections by property
+category. Properties of any other type are skipped. `SettingsObject` does the
+same on a dedicated page with manual apply and persistence.
+
+Labels come from the `DisplayName` metadata, falling back to the property name
+run through the same conversion the details panel uses, so `bTraceOnSnapshot`
+reads as `Trace On Snapshot`. `VisibleAnywhere` properties register as readouts
+with no setter; only `EditAnywhere` ones become editors.
 
 A fifth parameter passes `FDeviceExplorerSectionOptions` to every section the
 call creates, so a reflected object can share a page with live state instead of

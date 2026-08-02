@@ -760,7 +760,7 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 		const FString Tooltip;
 		const FString MetaDisplayName;
 #endif
-		const FString Label = MetaDisplayName.IsEmpty() ? Property->GetName() : MetaDisplayName;
+		const FString Label = MetaDisplayName.IsEmpty() ? FName::NameToDisplayString(Property->GetName(), Property->IsA<FBoolProperty>()) : MetaDisplayName;
 		if (!bHasSection || Category != LastCategory)
 		{
 			const FString SectionId = Category.IsEmpty() ? TEXT("General") : Category;
@@ -778,6 +778,8 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 		}
 
 		const FString PropertyId = Property->GetName();
+		// VisibleAnywhere carries CPF_Edit too, so it reaches here; it must not get a writer.
+		const bool bEditConst = Property->HasAnyPropertyFlags(CPF_EditConst);
 
 		FNumericProperty* UnderlyingNumeric = nullptr;
 		UEnum* PropertyEnum = nullptr;
@@ -794,61 +796,77 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 
 		if (PropertyEnum != nullptr)
 		{
-			TArray<FString> EnumOptions;
-			for (int32 Index = 0; Index < PropertyEnum->NumEnums() - 1; ++Index)
+			auto GetEnumValue = [WeakObject, Property, UnderlyingNumeric, PropertyEnum]() -> FString
 			{
-				EnumOptions.Add(PropertyEnum->GetNameStringByIndex(Index));
+				UObject* Obj = WeakObject.Get();
+				if (Obj == nullptr)
+				{
+					return FString();
+				}
+				const int64 Value = UnderlyingNumeric->GetSignedIntPropertyValue(Property->ContainerPtrToValuePtr<void>(Obj));
+				return PropertyEnum->GetNameStringByValue(Value);
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetEnumValue));
 			}
-			Enum(*PropertyId, *Label, MoveTemp(EnumOptions),
-				[WeakObject, Property, UnderlyingNumeric, PropertyEnum]() -> FString
+			else
+			{
+				TArray<FString> EnumOptions;
+				for (int32 Index = 0; Index < PropertyEnum->NumEnums() - 1; ++Index)
 				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
+					EnumOptions.Add(PropertyEnum->GetNameStringByIndex(Index));
+				}
+				Enum(*PropertyId, *Label, MoveTemp(EnumOptions), MoveTemp(GetEnumValue),
+					[WeakObject, Property, UnderlyingNumeric, PropertyEnum, bPersist](const FString& NewValue) -> bool
 					{
-						return FString();
-					}
-					const int64 Value = UnderlyingNumeric->GetSignedIntPropertyValue(Property->ContainerPtrToValuePtr<void>(Obj));
-					return PropertyEnum->GetNameStringByValue(Value);
-				},
-				[WeakObject, Property, UnderlyingNumeric, PropertyEnum, bPersist](const FString& NewValue) -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
-					{
-						return false;
-					}
-					const int64 Value = PropertyEnum->GetValueByNameString(NewValue);
-					if (Value == INDEX_NONE)
-					{
-						return false;
-					}
-					UnderlyingNumeric->SetIntPropertyValue(Property->ContainerPtrToValuePtr<void>(Obj), Value);
-					NotifyPropertyChanged(Obj, Property, bPersist);
-					return true;
-				});
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						const int64 Value = PropertyEnum->GetValueByNameString(NewValue);
+						if (Value == INDEX_NONE)
+						{
+							return false;
+						}
+						UnderlyingNumeric->SetIntPropertyValue(Property->ContainerPtrToValuePtr<void>(Obj), Value);
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					});
+			}
 			EnsureSection().Fields.Last().Description = Tooltip;
 			continue;
 		}
 
 		if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
 		{
-			Toggle(*PropertyId, *Label,
-				[WeakObject, BoolProperty]() -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					return Obj != nullptr && BoolProperty->GetPropertyValue_InContainer(Obj);
-				},
-				[WeakObject, BoolProperty, Property, bPersist](bool NewValue) -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
+			auto GetBoolValue = [WeakObject, BoolProperty]() -> bool
+			{
+				UObject* Obj = WeakObject.Get();
+				return Obj != nullptr && BoolProperty->GetPropertyValue_InContainer(Obj);
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetBoolValue));
+			}
+			else
+			{
+				Toggle(*PropertyId, *Label, MoveTemp(GetBoolValue),
+					[WeakObject, BoolProperty, Property, bPersist](bool NewValue) -> bool
 					{
-						return false;
-					}
-					BoolProperty->SetPropertyValue_InContainer(Obj, NewValue);
-					NotifyPropertyChanged(Obj, Property, bPersist);
-					return true;
-				});
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						BoolProperty->SetPropertyValue_InContainer(Obj, NewValue);
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					});
+			}
 			EnsureSection().Fields.Last().Description = Tooltip;
 			continue;
 		}
@@ -878,84 +896,236 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 				NumberOptions.Unit = *UnitsMeta;
 			}
 
-			Number(*PropertyId, *Label,
-				[WeakObject, Property, NumericProperty]() -> double
+			auto GetNumericValue = [WeakObject, Property, NumericProperty]() -> double
+			{
+				UObject* Obj = WeakObject.Get();
+				if (Obj == nullptr)
 				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
+					return 0.0;
+				}
+				const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Obj);
+				return NumericProperty->IsFloatingPoint() ? NumericProperty->GetFloatingPointPropertyValue(ValuePtr) : double(NumericProperty->GetSignedIntPropertyValue(ValuePtr));
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetNumericValue), NumberOptions);
+			}
+			else
+			{
+				Number(*PropertyId, *Label, MoveTemp(GetNumericValue),
+					[WeakObject, Property, NumericProperty, bPersist](double NewValue) -> bool
 					{
-						return 0.0;
-					}
-					const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Obj);
-					return NumericProperty->IsFloatingPoint() ? NumericProperty->GetFloatingPointPropertyValue(ValuePtr) : double(NumericProperty->GetSignedIntPropertyValue(ValuePtr));
-				},
-				[WeakObject, Property, NumericProperty, bPersist](double NewValue) -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
-					{
-						return false;
-					}
-					void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Obj);
-					if (NumericProperty->IsFloatingPoint())
-					{
-						NumericProperty->SetFloatingPointPropertyValue(ValuePtr, NewValue);
-					}
-					else
-					{
-						NumericProperty->SetIntPropertyValue(ValuePtr, (int64) NewValue);
-					}
-					NotifyPropertyChanged(Obj, Property, bPersist);
-					return true;
-				},
-				NumberOptions);
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Obj);
+						if (NumericProperty->IsFloatingPoint())
+						{
+							NumericProperty->SetFloatingPointPropertyValue(ValuePtr, NewValue);
+						}
+						else
+						{
+							NumericProperty->SetIntPropertyValue(ValuePtr, (int64) NewValue);
+						}
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					},
+					NumberOptions);
+			}
 			EnsureSection().Fields.Last().Description = Tooltip;
 			continue;
 		}
 
 		if (FStrProperty* StrProperty = CastField<FStrProperty>(Property))
 		{
-			String(*PropertyId, *Label,
-				[WeakObject, StrProperty]() -> FString
-				{
-					UObject* Obj = WeakObject.Get();
-					return Obj != nullptr ? StrProperty->GetPropertyValue_InContainer(Obj) : FString();
-				},
-				[WeakObject, StrProperty, Property, bPersist](const FString& NewValue) -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
+			auto GetStringValue = [WeakObject, StrProperty]() -> FString
+			{
+				UObject* Obj = WeakObject.Get();
+				return Obj != nullptr ? StrProperty->GetPropertyValue_InContainer(Obj) : FString();
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetStringValue));
+			}
+			else
+			{
+				String(*PropertyId, *Label, MoveTemp(GetStringValue),
+					[WeakObject, StrProperty, Property, bPersist](const FString& NewValue) -> bool
 					{
-						return false;
-					}
-					StrProperty->SetPropertyValue_InContainer(Obj, NewValue);
-					NotifyPropertyChanged(Obj, Property, bPersist);
-					return true;
-				});
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						StrProperty->SetPropertyValue_InContainer(Obj, NewValue);
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					});
+			}
 			EnsureSection().Fields.Last().Description = Tooltip;
 			continue;
 		}
 
 		if (FNameProperty* NameProperty = CastField<FNameProperty>(Property))
 		{
-			String(*PropertyId, *Label,
-				[WeakObject, NameProperty]() -> FString
-				{
-					UObject* Obj = WeakObject.Get();
-					return Obj != nullptr ? NameProperty->GetPropertyValue_InContainer(Obj).ToString() : FString();
-				},
-				[WeakObject, NameProperty, Property, bPersist](const FString& NewValue) -> bool
-				{
-					UObject* Obj = WeakObject.Get();
-					if (Obj == nullptr)
+			auto GetNameValue = [WeakObject, NameProperty]() -> FString
+			{
+				UObject* Obj = WeakObject.Get();
+				return Obj != nullptr ? NameProperty->GetPropertyValue_InContainer(Obj).ToString() : FString();
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetNameValue));
+			}
+			else
+			{
+				String(*PropertyId, *Label, MoveTemp(GetNameValue),
+					[WeakObject, NameProperty, Property, bPersist](const FString& NewValue) -> bool
 					{
-						return false;
-					}
-					NameProperty->SetPropertyValue_InContainer(Obj, FName(*NewValue));
-					NotifyPropertyChanged(Obj, Property, bPersist);
-					return true;
-				});
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						NameProperty->SetPropertyValue_InContainer(Obj, FName(*NewValue));
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					});
+			}
 			EnsureSection().Fields.Last().Description = Tooltip;
+			continue;
+		}
+
+		if (FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+		{
+			auto GetTextValue = [WeakObject, TextProperty]() -> FString
+			{
+				UObject* Obj = WeakObject.Get();
+				return Obj != nullptr ? TextProperty->GetPropertyValue_InContainer(Obj).ToString() : FString();
+			};
+
+			if (bEditConst)
+			{
+				Readonly(*PropertyId, *Label, MoveTemp(GetTextValue));
+			}
+			else
+			{
+				String(*PropertyId, *Label, MoveTemp(GetTextValue),
+					[WeakObject, TextProperty, Property, bPersist](const FString& NewValue) -> bool
+					{
+						UObject* Obj = WeakObject.Get();
+						if (Obj == nullptr)
+						{
+							return false;
+						}
+						TextProperty->SetPropertyValue_InContainer(Obj, FText::FromString(NewValue));
+						NotifyPropertyChanged(Obj, Property, bPersist);
+						return true;
+					});
+			}
+			EnsureSection().Fields.Last().Description = Tooltip;
+			continue;
+		}
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			const UScriptStruct* Struct = StructProperty->Struct;
+			if (Struct == TBaseStructure<FVector>::Get())
+			{
+				auto GetVectorValue = [WeakObject, StructProperty]() -> FVector
+				{
+					UObject* Obj = WeakObject.Get();
+					return Obj != nullptr ? *StructProperty->ContainerPtrToValuePtr<FVector>(Obj) : FVector::ZeroVector;
+				};
+
+				if (bEditConst)
+				{
+					Readonly(*PropertyId, *Label, [GetVectorValue]() -> FString { return GetVectorValue().ToString(); });
+				}
+				else
+				{
+					Vector(*PropertyId, *Label, MoveTemp(GetVectorValue),
+						[WeakObject, StructProperty, Property, bPersist](const FVector& NewValue) -> bool
+						{
+							UObject* Obj = WeakObject.Get();
+							if (Obj == nullptr)
+							{
+								return false;
+							}
+							*StructProperty->ContainerPtrToValuePtr<FVector>(Obj) = NewValue;
+							NotifyPropertyChanged(Obj, Property, bPersist);
+							return true;
+						});
+				}
+				EnsureSection().Fields.Last().Description = Tooltip;
+				continue;
+			}
+
+			if (Struct == TBaseStructure<FLinearColor>::Get())
+			{
+				auto GetColorValue = [WeakObject, StructProperty]() -> FLinearColor
+				{
+					UObject* Obj = WeakObject.Get();
+					return Obj != nullptr ? *StructProperty->ContainerPtrToValuePtr<FLinearColor>(Obj) : FLinearColor::Black;
+				};
+
+				if (bEditConst)
+				{
+					Readonly(*PropertyId, *Label, [GetColorValue]() -> FString { return GetColorValue().ToFColor(true).ToHex(); });
+				}
+				else
+				{
+					Color(*PropertyId, *Label, MoveTemp(GetColorValue),
+						[WeakObject, StructProperty, Property, bPersist](const FLinearColor& NewValue) -> bool
+						{
+							UObject* Obj = WeakObject.Get();
+							if (Obj == nullptr)
+							{
+								return false;
+							}
+							*StructProperty->ContainerPtrToValuePtr<FLinearColor>(Obj) = NewValue;
+							NotifyPropertyChanged(Obj, Property, bPersist);
+							return true;
+						});
+				}
+				EnsureSection().Fields.Last().Description = Tooltip;
+				continue;
+			}
+
+			if (Struct == TBaseStructure<FColor>::Get())
+			{
+				auto GetColorValue = [WeakObject, StructProperty]() -> FColor
+				{
+					UObject* Obj = WeakObject.Get();
+					return Obj != nullptr ? *StructProperty->ContainerPtrToValuePtr<FColor>(Obj) : FColor::Black;
+				};
+
+				if (bEditConst)
+				{
+					Readonly(*PropertyId, *Label, [GetColorValue]() -> FString { return GetColorValue().ToHex(); });
+				}
+				else
+				{
+					Color(*PropertyId, *Label, MoveTemp(GetColorValue),
+						[WeakObject, StructProperty, Property, bPersist](const FColor& NewValue) -> bool
+						{
+							UObject* Obj = WeakObject.Get();
+							if (Obj == nullptr)
+							{
+								return false;
+							}
+							*StructProperty->ContainerPtrToValuePtr<FColor>(Obj) = NewValue;
+							NotifyPropertyChanged(Obj, Property, bPersist);
+							return true;
+						});
+				}
+				EnsureSection().Fields.Last().Description = Tooltip;
+			}
 			continue;
 		}
 	}
