@@ -189,6 +189,20 @@ strings and names as inputs, enums as selects — grouped into sections by
 property category. `SettingsObject` does the same on a dedicated page with
 manual apply and persistence.
 
+A fifth parameter passes `FDeviceExplorerSectionOptions` to every section the
+call creates, so a reflected object can share a page with live state instead of
+needing one of its own:
+
+```cpp
+Builder.Object(GetMutableDefault<UPerfWatchdogSettings>(), {}, /*bPersist*/ true, TEXT("Config defaults"),
+    { .Columns = 2, .Apply = EDeviceExplorerApply::Manual, .bCollapsible = true });
+```
+
+`Description` applies to the first section only; the rest of the options apply
+to all of them. Omitting the parameter keeps the sections instant-apply,
+`Default` styled, and auto-width. `SettingsObject` is this call with
+`Manual` apply, the `Settings` style, and collapsible cards.
+
 ## Adding a widget
 
 A widget exists on both sides of the protocol:

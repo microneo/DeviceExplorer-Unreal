@@ -730,7 +730,7 @@ void FDeviceExplorerModuleBuilder::NotifyPropertyChanged(UObject* Object, FPrope
 	}
 }
 
-FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InObject, TArray<FName> PropertyNames, bool bPersist, const TCHAR* SectionPrefix)
+FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InObject, TArray<FName> PropertyNames, bool bPersist, const TCHAR* SectionPrefix, const FDeviceExplorerSectionOptions& SectionOptions)
 {
 	if (InObject == nullptr)
 	{
@@ -738,6 +738,7 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 	}
 
 	const TWeakObjectPtr<UObject> WeakObject(InObject);
+	FDeviceExplorerSectionOptions CategoryOptions = SectionOptions;
 	FString LastCategory;
 	bool bHasSection = false;
 
@@ -768,8 +769,10 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 			{
 				SectionLabel = Category.IsEmpty() ? FString(SectionPrefix) : FString::Printf(TEXT("%s · %s"), SectionPrefix, *Category);
 			}
-			Section(*SectionId);
+			Section(*SectionId, CategoryOptions);
 			EnsureSection().DisplayName = FText::FromString(SectionLabel);
+			// A description documents the object as a whole, not each category it splits into.
+			CategoryOptions.Description = nullptr;
 			LastCategory = Category;
 			bHasSection = true;
 		}
@@ -962,16 +965,8 @@ FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::Object(UObject* InOb
 FDeviceExplorerModuleBuilder& FDeviceExplorerModuleBuilder::SettingsObject(UObject* InObject, TArray<FName> PropertyNames, const bool bPersist, const TCHAR* PageDisplayName)
 {
 	Page(TEXT("settings"), PageDisplayName, { .Icon = TEXT("settings") });
-	const int32 FirstSection = EnsurePage().Sections.Num();
-	Object(InObject, MoveTemp(PropertyNames), bPersist);
-	for (int32 Index = FirstSection; Index < EnsurePage().Sections.Num(); ++Index)
-	{
-		FDeviceExplorerSectionDescriptor& SectionDescriptor = EnsurePage().Sections[Index];
-		SectionDescriptor.Apply = EDeviceExplorerApply::Manual;
-		SectionDescriptor.Style = EDeviceExplorerSectionStyle::Settings;
-		SectionDescriptor.bCollapsible = true;
-	}
-	return *this;
+	return Object(InObject, MoveTemp(PropertyNames), bPersist, nullptr,
+		{ .Apply = EDeviceExplorerApply::Manual, .Style = EDeviceExplorerSectionStyle::Settings, .bCollapsible = true });
 }
 #endif
 

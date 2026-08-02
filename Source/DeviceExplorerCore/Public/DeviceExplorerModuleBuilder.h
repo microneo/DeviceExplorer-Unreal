@@ -266,7 +266,7 @@ public:
 	FDeviceExplorerModuleBuilder& Command(const TCHAR* ConsoleCommand, const TCHAR* DisplayName, const TCHAR* Description);
 
 #if WITH_COREUOBJECT
-	FDeviceExplorerModuleBuilder& Object(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = false, const TCHAR* SectionPrefix = nullptr);
+	FDeviceExplorerModuleBuilder& Object(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = false, const TCHAR* SectionPrefix = nullptr, const FDeviceExplorerSectionOptions& SectionOptions = {});
 	FDeviceExplorerModuleBuilder& SettingsObject(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = true, const TCHAR* PageDisplayName = TEXT("Settings"));
 #endif
 
