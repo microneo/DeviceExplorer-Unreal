@@ -771,6 +771,9 @@ bool FDeviceExplorerHostServer::ReadHttpRequest(FSocket* Socket, FHttpRequest& O
 		FString Value;
 		if (Part.Split(TEXT("="), &Key, &Value))
 		{
+			// UrlDecode only expands %XX, but query strings are form-encoded, where '+' stands for a space.
+			Key.ReplaceInline(TEXT("+"), TEXT(" "), ESearchCase::CaseSensitive);
+			Value.ReplaceInline(TEXT("+"), TEXT(" "), ESearchCase::CaseSensitive);
 			OutRequest.Query.Add(FGenericPlatformHttp::UrlDecode(Key), FGenericPlatformHttp::UrlDecode(Value));
 		}
 	}
