@@ -1318,6 +1318,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 
 		TArray<TSharedPtr<FJsonValue>> Entries;
 		uint64 Dropped = 0;
+		int32 Buffered = 0;
 		{
 			FScopeLock Lock(&StateMutex);
 			const TSharedPtr<FDeviceState>* Device = Devices.Find(DeviceId);
@@ -1327,6 +1328,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 				return;
 			}
 			Dropped = (*Device)->DroppedLogs;
+			Buffered = (*Device)->Logs.Num();
 			for (const FLogEntry& Log : (*Device)->Logs)
 			{
 				if (Log.Sequence <= After || (!Category.IsEmpty() && !Log.Category.Contains(Category, ESearchCase::IgnoreCase)) ||
@@ -1352,7 +1354,60 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetArrayField(TEXT("entries"), MoveTemp(Entries));
 		Result->SetNumberField(TEXT("dropped"), static_cast<double>(Dropped));
+		Result->SetNumberField(TEXT("buffered"), Buffered);
+		Result->SetNumberField(TEXT("capacity"), Config.LogCapacity);
 		SendJsonResponse(Socket, 200, Result);
+		return;
+	}
+
+	if (Action == TEXT("log-categories") && Request.Method == TEXT("GET"))
+	{
+		TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+		Message->SetStringField(TEXT("type"), TEXT("list_log_categories"));
+		Message->SetStringField(TEXT("request_id"), NewRequestId());
+		const TSharedPtr<FJsonObject> Result = SendDeviceRequestAndWait(DeviceId, Message);
+		if (!Result.IsValid())
+		{
+			SendJsonError(Socket, 504, TEXT("Device did not answer the log category request"));
+			return;
+		}
+		SendJsonResponse(Socket, 200, Result.ToSharedRef());
+		return;
+	}
+
+	if (Action == TEXT("log-verbosity") && Request.Method == TEXT("POST"))
+	{
+		if (Request.Headers.FindRef(TEXT("x-deviceexplorer-request")) != TEXT("1") || !ReadRequestBody(Socket, Request, MaximumJsonBodyBytes))
+		{
+			SendJsonError(Socket, 400, TEXT("Invalid request"));
+			return;
+		}
+		const TSharedPtr<FJsonObject> Body = ParseJson(Request.Body);
+		const TArray<TSharedPtr<FJsonValue>>* Levels = nullptr;
+		if (!Body.IsValid() || !Body->TryGetArrayField(TEXT("entries"), Levels))
+		{
+			SendJsonError(Socket, 400, TEXT("Invalid JSON"));
+			return;
+		}
+
+		bool bPersist = false;
+		bool bAutoRevert = true;
+		Body->TryGetBoolField(TEXT("persist"), bPersist);
+		Body->TryGetBoolField(TEXT("auto_revert"), bAutoRevert);
+
+		TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+		Message->SetStringField(TEXT("type"), TEXT("set_log_verbosity"));
+		Message->SetStringField(TEXT("request_id"), NewRequestId());
+		Message->SetArrayField(TEXT("entries"), *Levels);
+		Message->SetBoolField(TEXT("persist"), bPersist);
+		Message->SetBoolField(TEXT("auto_revert"), bAutoRevert);
+		const TSharedPtr<FJsonObject> Result = SendDeviceRequestAndWait(DeviceId, Message);
+		if (!Result.IsValid())
+		{
+			SendJsonError(Socket, 504, TEXT("Device did not apply the log levels"));
+			return;
+		}
+		SendJsonResponse(Socket, 200, Result.ToSharedRef());
 		return;
 	}
 

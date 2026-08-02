@@ -5,7 +5,7 @@
 #include "Containers/Ticker.h"
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
-#include "DeviceExplorerOutputDevice.h"
+#include "DeviceExplorerLogService.h"
 #include "DeviceExplorerTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
@@ -29,7 +29,6 @@
 #include "Misc/Crc.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/Guid.h"
-#include "Misc/OutputDevice.h"
 #include "Misc/Paths.h"
 #include "Misc/StringOutputDevice.h"
 #include "Modules/ModuleManager.h"
@@ -42,7 +41,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorer, Log, All);
 
 namespace
 {
-constexpr int32 MaxLogsPerBatch = 256;
 constexpr int64 ArchiveStreamChunkSize = 1 << 20;    // keeps memory flat regardless of source file size
 const FName RuntimeOwner(TEXT("DeviceExplorerRuntime"));
 
@@ -54,21 +52,6 @@ FString BuildWebSocketURL(const FString& Host, int32 Port, const FString& Token)
 double GetAppUptimeSeconds()
 {
 	return FPlatformTime::Seconds() - GStartTime;
-}
-
-FString VerbosityToString(ELogVerbosity::Type Verbosity)
-{
-	switch (Verbosity)
-	{
-		case ELogVerbosity::Fatal: return TEXT("Fatal");
-		case ELogVerbosity::Error: return TEXT("Error");
-		case ELogVerbosity::Warning: return TEXT("Warning");
-		case ELogVerbosity::Display: return TEXT("Display");
-		case ELogVerbosity::Log: return TEXT("Log");
-		case ELogVerbosity::Verbose: return TEXT("Verbose");
-		case ELogVerbosity::VeryVerbose: return TEXT("VeryVerbose");
-		default: return TEXT("Log");
-	}
 }
 
 FString NormalizeSavedRelativePath(const FString& RawPath)
@@ -628,11 +611,8 @@ void FDeviceExplorerModule::StartupModule()
 	bStarted = true;
 	FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
 	DeviceId = GetOrCreateDeviceId();
-	OutputDevice = MakeUnique<FDeviceExplorerOutputDevice>();
-	if (GLog != nullptr)
-	{
-		GLog->AddOutputDevice(OutputDevice.Get());
-	}
+	LogService = MakeUnique<FDeviceExplorerLogService>([this](const TSharedRef<FJsonObject>& Message) { SendJson(Message); });
+	LogService->Start();
 
 	Discovery = CreateDeviceExplorerDiscovery();
 	Discovery->Start(
@@ -665,11 +645,7 @@ void FDeviceExplorerModule::ShutdownModule()
 		Discovery.Reset();
 	}
 	Disconnect();
-	if (GLog != nullptr && OutputDevice)
-	{
-		GLog->RemoveOutputDevice(OutputDevice.Get());
-	}
-	OutputDevice.Reset();
+	LogService.Reset();
 }
 
 void FDeviceExplorerModule::RegisterDefaultFeatures()
@@ -742,7 +718,7 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 
 	if (Socket.IsValid() && Socket->IsConnected())
 	{
-		FlushLogs();
+		LogService->Flush();
 		if (Now - LastHeartbeatSeconds >= 5.0)
 		{
 			SendHeartbeat();
@@ -808,6 +784,10 @@ void FDeviceExplorerModule::Connect()
 			(void) bWasClean;
 			bConnecting = false;
 			UE_LOG(LogDeviceExplorer, Display, TEXT("Connection closed: %s"), *Reason);
+			if (LogService)
+			{
+				LogService->RevertOverrides();
+			}
 			NextReconnectSeconds = FPlatformTime::Seconds() + ReconnectDelaySeconds;
 			ReconnectDelaySeconds = FMath::Min(ReconnectDelaySeconds * 2.0, 30.0);
 		});
@@ -929,39 +909,6 @@ void FDeviceExplorerModule::SendHeartbeat()
 	SendJson(Message);
 }
 
-void FDeviceExplorerModule::FlushLogs()
-{
-	if (!OutputDevice)
-	{
-		return;
-	}
-
-	TArray<TSharedPtr<FJsonValue>> Entries;
-	Entries.Reserve(MaxLogsPerBatch);
-	FDeviceExplorerQueuedLog Entry;
-	while (Entries.Num() < MaxLogsPerBatch && OutputDevice->Dequeue(Entry))
-	{
-		TSharedRef<FJsonObject> JsonEntry = MakeShared<FJsonObject>();
-		JsonEntry->SetStringField(TEXT("timestamp"), Entry.Timestamp.ToIso8601());
-		JsonEntry->SetStringField(TEXT("category"), Entry.Category.ToString());
-		JsonEntry->SetStringField(TEXT("verbosity"), VerbosityToString(Entry.Verbosity));
-		JsonEntry->SetStringField(TEXT("message"), MoveTemp(Entry.Message));
-		Entries.Add(MakeShared<FJsonValueObject>(JsonEntry));
-	}
-
-	const uint64 Dropped = OutputDevice->ConsumeDroppedCount();
-	if (Entries.IsEmpty() && Dropped == 0)
-	{
-		return;
-	}
-
-	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
-	Message->SetStringField(TEXT("type"), TEXT("log_batch"));
-	Message->SetArrayField(TEXT("entries"), MoveTemp(Entries));
-	Message->SetNumberField(TEXT("dropped"), static_cast<double>(Dropped));
-	SendJson(Message);
-}
-
 void FDeviceExplorerModule::HandleMessage(const FString& Message)
 {
 	TSharedPtr<FJsonObject> Json;
@@ -972,6 +919,10 @@ void FDeviceExplorerModule::HandleMessage(const FString& Message)
 	}
 
 	const FString Type = Json->GetStringField(TEXT("type"));
+	if (LogService && LogService->HandleMessage(Type, Json))
+	{
+		return;
+	}
 	if (Type == TEXT("execute_command"))
 	{
 		ExecuteCommand(Json);

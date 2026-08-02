@@ -6,7 +6,7 @@ class FJsonObject;
 
 namespace DeviceExplorer
 {
-inline constexpr int32 ProtocolVersion = 6;
+inline constexpr int32 ProtocolVersion = 7;
 
 inline const FName LogsCapability(TEXT("logs"));
 inline const FName ConsoleCapability(TEXT("console"));

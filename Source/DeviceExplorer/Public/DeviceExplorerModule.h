@@ -4,7 +4,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-class FDeviceExplorerOutputDevice;
+class FDeviceExplorerLogService;
 class IDeviceExplorerDiscovery;
 class IWebSocket;
 
@@ -22,7 +22,6 @@ private:
 	void Disconnect();
 	void SendHello();
 	void SendHeartbeat();
-	void FlushLogs();
 	void HandleMessage(const FString& Message);
 	void ExecuteCommand(const TSharedPtr<class FJsonObject>& Message);
 	void ListConsoleObjects(const TSharedPtr<class FJsonObject>& Message);
@@ -36,7 +35,7 @@ private:
 	FString GetOrCreateDeviceId() const;
 
 	TUniquePtr<IDeviceExplorerDiscovery> Discovery;
-	TUniquePtr<FDeviceExplorerOutputDevice> OutputDevice;
+	TUniquePtr<FDeviceExplorerLogService> LogService;
 	TSharedPtr<IWebSocket> Socket;
 	FTSTicker::FDelegateHandle TickerHandle;
 
