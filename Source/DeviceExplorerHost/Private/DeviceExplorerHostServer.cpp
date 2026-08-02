@@ -1057,16 +1057,6 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 		return;
 	}
 
-	if (Type == TEXT("command_result") || Type == TEXT("console_objects_result") || Type == TEXT("file_list_result") || Type == TEXT("module_result"))
-	{
-		FString RequestId;
-		if (Json->TryGetStringField(TEXT("request_id"), RequestId))
-		{
-			CompletePendingRequest(RequestId, Json);
-		}
-		return;
-	}
-
 	if (Type == TEXT("transfer_result"))
 	{
 		bool bSuccess = false;
@@ -1085,6 +1075,15 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 				(*Transfer)->UpdatedAt = FDateTime::UtcNow();
 			}
 		}
+		return;
+	}
+
+	// Replies are matched by request_id alone, so a new feature's response type does not have
+	// to be listed here. Unmatched ids are ignored by CompletePendingRequest.
+	FString RequestId;
+	if (Json->TryGetStringField(TEXT("request_id"), RequestId) && !RequestId.IsEmpty())
+	{
+		CompletePendingRequest(RequestId, Json);
 		return;
 	}
 
