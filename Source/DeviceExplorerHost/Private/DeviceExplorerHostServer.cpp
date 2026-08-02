@@ -861,7 +861,7 @@ void FDeviceExplorerHostServer::RouteDashboardRequest(FSocket* Socket, FHttpRequ
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetNumberField(TEXT("protocol_version"), DeviceExplorer::ProtocolVersion);
 		Result->SetNumberField(TEXT("device_port"), Config.DevicePort);
-		Result->SetStringField(TEXT("service_type"), TEXT("_ue-deviceexplorer._tcp.local."));
+		Result->SetStringField(TEXT("service_type"), TEXT("_deviceexplorer._tcp.local."));
 		SendJsonResponse(Socket, 200, Result);
 		return;
 	}

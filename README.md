@@ -67,7 +67,7 @@ For iOS discovery, append this to
 `[/Script/IOSRuntimeSettings.IOSRuntimeSettings]` in `DefaultEngine.ini`:
 
 ```ini
-AdditionalPlistData=<key>NSBonjourServices</key><array><string>_ue-deviceexplorer._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>Connects development builds to local diagnostic tools.</string>
+AdditionalPlistData=<key>NSBonjourServices</key><array><string>_deviceexplorer._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>Connects development builds to local diagnostic tools.</string>
 ```
 
 If `AdditionalPlistData` already exists, extend its value instead of adding a

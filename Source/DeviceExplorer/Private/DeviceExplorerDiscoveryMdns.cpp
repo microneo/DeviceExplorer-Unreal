@@ -26,7 +26,7 @@ constexpr double SlowQueryIntervalSeconds = 30.0;
 constexpr int32 MaxNameCompressionJumps = 64;
 constexpr uint16 DnsClassMask = 0x7FFF;
 constexpr uint16 DnsClassIN = 1;
-const FString ServiceName(TEXT("_ue-deviceexplorer._tcp.local"));
+const FString ServiceName(TEXT("_deviceexplorer._tcp.local"));
 
 void AddU16(TArray<uint8>& Buffer, const uint16 Value)
 {

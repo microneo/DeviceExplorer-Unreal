@@ -186,7 +186,7 @@ FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const
 	: DevicePort(InDevicePort)
 	, DashboardPort(InDashboardPort)
 	, Token(MoveTemp(InToken))
-	, ServiceName(TEXT("_ue-deviceexplorer._tcp.local"))
+	, ServiceName(TEXT("_deviceexplorer._tcp.local"))
 {
 	const FString Machine = SafeDnsLabel(FPlatformProcess::ComputerName());
 	HostName = FString::Printf(TEXT("%s-deviceexplorer.local"), *Machine);

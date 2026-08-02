@@ -65,8 +65,8 @@ FString DataToString(NSData* Data)
 - (void)start:(const FDeviceExplorerDiscoveryCallback&)InCallback
 {
 	Callback = InCallback;
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Display, TEXT("Starting Bonjour browse for _ue-deviceexplorer._tcp.local."));
-	[Browser searchForServicesOfType:@"_ue-deviceexplorer._tcp." inDomain:@"local."];
+	UE_LOG(LogDeviceExplorerDiscoveryIOS, Display, TEXT("Starting Bonjour browse for _deviceexplorer._tcp.local."));
+	[Browser searchForServicesOfType:@"_deviceexplorer._tcp." inDomain:@"local."];
 }
 
 - (void)stop

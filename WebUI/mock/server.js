@@ -245,7 +245,7 @@ async function route(request, response, state) {
     return sendJson(response, 200, {
       protocol_version: DEVICEEXPLORER_PROTOCOL_VERSION,
       device_port: 18081,
-      service_type: "_ue-deviceexplorer._tcp.local.",
+      service_type: "_deviceexplorer._tcp.local.",
       mock: true,
       scenario: state.scenario
     }, state.scenario);
