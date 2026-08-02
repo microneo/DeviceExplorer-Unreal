@@ -6,6 +6,7 @@ import { createLogsModule } from "./modules/logs.js";
 
 const state = {
   devices: [],
+  hostReachable: true,
   selectedId: null,
   tab: "logs",
   fileRoot: "saved",
@@ -107,6 +108,7 @@ async function refreshDevices() {
   try {
     const data = await api("/api/devices");
     state.devices = data.devices || [];
+    state.hostReachable = true;
     if (!state.selectedId && state.devices.length) {
       state.selectedId = (state.devices.find((device) => device.connected) || state.devices[0]).id;
     }
@@ -116,7 +118,14 @@ async function refreshDevices() {
     renderDevices();
     renderSelectedDevice();
   } catch (error) {
-    toast(`Host API unavailable: ${error.message}`, true);
+    // The device list is polled every couple of seconds, so an unreachable host is a state to display once,
+    // not an event to announce on every tick.
+    if (state.hostReachable) toast(`Host API unavailable: ${error.message}`, true);
+    state.hostReachable = false;
+    state.devices = [];
+    state.consoleIndexDeviceId = null;
+    renderDevices();
+    renderSelectedDevice();
   }
 }
 
@@ -153,6 +162,9 @@ function renderDevices() {
   if (!devices.length && state.devices.length) {
     elements.deviceList.append(textCell("inline-empty", "No devices match the filter."));
   }
+  if (!state.hostReachable) {
+    elements.deviceList.append(textCell("inline-empty", "Host is not reachable. Retrying…"));
+  }
 }
 
 function renderSelectedDevice() {
@@ -160,8 +172,10 @@ function renderSelectedDevice() {
   elements.empty.classList.toggle("hidden", Boolean(device));
   elements.workspace.classList.toggle("hidden", !device);
   if (!device) {
-    elements.title.textContent = "Waiting for a device";
-    elements.subtitle.textContent = "Launch a non-Shipping build on the same network.";
+    elements.title.textContent = state.hostReachable ? "Waiting for a device" : "Host is not reachable";
+    elements.subtitle.textContent = state.hostReachable
+      ? "Launch a non-Shipping build on the same network."
+      : "The DeviceExplorer host is not answering. Start it and this page will reconnect on its own.";
     elements.projectName.textContent = "No project";
     elements.devicePlatform.textContent = "Device";
     elements.connection.innerHTML = "<span></span> Offline";
