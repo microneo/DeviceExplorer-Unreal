@@ -485,13 +485,23 @@
     ]
   },
   "console_objects": [
-    { "name": "stat unit", "type": "command", "help": "Displays frame, game, draw, GPU and RHIT times.", "value": "", "read_only": false, "cheat": false },
-    { "name": "stat fps", "type": "command", "help": "Toggles the FPS counter.", "value": "", "read_only": false, "cheat": false },
-    { "name": "memreport", "type": "command", "help": "Writes a memory usage report.", "value": "", "read_only": false, "cheat": false },
-    { "name": "r.Streaming.PoolSize", "type": "variable", "help": "Texture streaming pool size in MB.", "value": "1200", "read_only": false, "cheat": false },
-    { "name": "r.DynamicRes.OperationMode", "type": "variable", "help": "Controls dynamic resolution operation mode.", "value": "2", "read_only": false, "cheat": false },
-    { "name": "t.MaxFPS", "type": "variable", "help": "Caps the game frame rate. Zero disables the cap.", "value": "60", "read_only": false, "cheat": false },
-    { "name": "net.PktLag", "type": "variable", "help": "Adds emulated packet latency for testing.", "value": "0", "read_only": false, "cheat": true }
+    { "name": "stat unit", "type": "command", "source": "stat", "help": "Displays frame, game, draw, GPU and RHIT times.", "value": "", "read_only": false, "cheat": false },
+    { "name": "stat fps", "type": "command", "source": "stat", "help": "Toggles the FPS counter.", "value": "", "read_only": false, "cheat": false },
+    { "name": "stat SceneRendering", "type": "command", "source": "stat", "help": "Toggles the SceneRendering stat group overlay.", "value": "", "read_only": false, "cheat": false },
+    { "name": "show Bounds", "type": "command", "source": "show", "companion": "ShowFlag.Bounds", "help": "Toggles the Bounds show flag in the game viewport.", "value": "2", "read_only": false, "cheat": true },
+    { "name": "show Collision", "type": "command", "source": "show", "companion": "ShowFlag.Collision", "help": "Toggles the Collision show flag in the game viewport.", "value": "0", "read_only": false, "cheat": true },
+    { "name": "ShowFlag.Bounds", "type": "variable", "source": "cvar", "help": "Allows to override a specific showflag. 0: off, 1: on, 2: do not override.", "value": "2", "read_only": false, "cheat": true },
+    { "name": "ShowFlag.Collision", "type": "variable", "source": "cvar", "help": "Allows to override a specific showflag. 0: off, 1: on, 2: do not override.", "value": "0", "read_only": false, "cheat": true },
+    { "name": "Fly", "type": "command", "source": "exec", "help": "Exec function on APlayerController.", "value": "", "read_only": false, "cheat": false },
+    { "name": "Teleport", "type": "command", "source": "exec", "help": "Exec function on APlayerController.", "value": "", "read_only": false, "cheat": false },
+    { "name": "SetSoloAudioBus", "type": "command", "source": "exec", "arguments": "<BusName: FString> <bSolo: bool>", "help": "Exec function on UAudioMixerBlueprintLibrary.", "value": "", "read_only": false, "cheat": false },
+    { "name": "memreport", "type": "command", "source": "exec", "help": "Writes a memory usage report.", "value": "", "read_only": false, "cheat": false },
+    { "name": "Shot", "type": "command", "source": "manual", "help": "Make a screenshot", "value": "", "read_only": false, "cheat": false },
+    { "name": "FreezeRendering", "type": "command", "source": "cvar", "help": "Freezes rendering to inspect the current frame.", "value": "", "read_only": false, "cheat": false },
+    { "name": "r.Streaming.PoolSize", "type": "variable", "source": "cvar", "help": "Texture streaming pool size in MB.", "value": "1200", "read_only": false, "cheat": false },
+    { "name": "r.DynamicRes.OperationMode", "type": "variable", "source": "cvar", "help": "Controls dynamic resolution operation mode.", "value": "2", "read_only": false, "cheat": false },
+    { "name": "t.MaxFPS", "type": "variable", "source": "cvar", "help": "Caps the game frame rate. Zero disables the cap.", "value": "60", "read_only": false, "cheat": false },
+    { "name": "net.PktLag", "type": "variable", "source": "cvar", "help": "Adds emulated packet latency for testing.", "value": "0", "read_only": false, "cheat": true }
   ],
   "file_trees": {
     "saved": {

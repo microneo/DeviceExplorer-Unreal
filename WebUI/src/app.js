@@ -17,11 +17,18 @@ const state = {
   lastTransferRequest: null,
   consoleEntries: [],
   consoleTotal: 0,
+  consoleCatalogTotal: 0,
   consoleType: "",
+  consoleSource: "",
   consoleSelected: null,
   consoleQueryTimer: null,
   commandHistory: JSON.parse(localStorage.getItem("deviceexplorer.commandHistory") || "[]"),
   commandHistoryIndex: -1,
+  completions: [],
+  completionIndex: -1,
+  completionTimer: null,
+  completionPinned: false,
+  commandHint: null,
   moduleTimer: null,
   moduleRequestSerial: 0,
   moduleSchema: null,
@@ -47,8 +54,12 @@ const elements = {
   commandShortcutsWrap: $("#command-shortcuts-wrap"),
   commandShortcuts: $("#command-shortcuts"),
   commandInput: $("#command-input"),
+  completions: $("#command-completions"),
   commandOutput: $("#command-output"),
   consoleSearch: $("#console-search"),
+  consoleScope: $("#console-scope"),
+  consoleScopeField: $("#console-scope-field"),
+  consoleSourceFilter: $("#console-source"),
   consoleCatalog: $("#console-catalog"),
   consoleCount: $("#console-count"),
   consoleDetail: $("#console-detail"),
@@ -290,18 +301,49 @@ function selectDevice(id) {
   if (state.tab.startsWith("module:")) refreshModule();
 }
 
-async function refreshConsoleCatalog() {
+// Builds below this only enumerate IConsoleManager, so the source filter and description search have nothing to act on.
+const CONSOLE_CATALOG_PROTOCOL = 8;
+
+const CONSOLE_SOURCE_LABELS = {
+  cvar: "CVar registry",
+  exec: "Exec function",
+  stat: "Stat command",
+  show: "Show flag",
+  manual: "Declared in config",
+};
+
+function consoleSourceOf(entry) {
+  return entry.source || "cvar";
+}
+
+function supportsConsoleCatalogSources() {
+  return Number(selectedDevice()?.protocol_version || 0) >= CONSOLE_CATALOG_PROTOCOL;
+}
+
+async function refreshConsoleCatalog(forceRebuild = false) {
   if (!requireOnline()) return;
+  const extended = supportsConsoleCatalogSources();
+  elements.consoleSourceFilter.classList.toggle("hidden", !extended);
+  elements.consoleScopeField.classList.toggle("hidden", !extended);
   const query = elements.consoleSearch.value.trim();
   elements.consoleCatalog.innerHTML = '<div class="inline-empty">Querying runtime console…</div>';
   elements.consoleCount.textContent = "Loading catalog";
   try {
     const params = new URLSearchParams({ q: query, limit: "800" });
+    if (state.consoleType) params.set("kind", state.consoleType);
+    if (extended) {
+      if (state.consoleSource) params.set("source", state.consoleSource);
+      if (elements.consoleScope.checked) params.set("scope", "all");
+      if (forceRebuild === true) params.set("refresh", "1");
+    }
     const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
     state.consoleEntries = result.entries || [];
     state.consoleTotal = Number(result.total || state.consoleEntries.length);
+    state.consoleCatalogTotal = Number(result.catalog_total || 0);
+    const matchLabel = query ? `${state.consoleTotal.toLocaleString()} matching` : `${state.consoleTotal.toLocaleString()} supported`;
+    const catalogLabel = query && state.consoleCatalogTotal ? ` of ${state.consoleCatalogTotal.toLocaleString()}` : "";
     elements.consoleCount.textContent =
-      `${state.consoleTotal.toLocaleString()} supported${result.truncated ? ` · showing ${state.consoleEntries.length}` : ""}`;
+      `${matchLabel}${catalogLabel}${result.truncated ? ` · showing ${state.consoleEntries.length}` : ""}`;
     renderConsoleCatalog();
   } catch (error) {
     elements.consoleCount.textContent = "Catalog unavailable";
@@ -310,7 +352,7 @@ async function refreshConsoleCatalog() {
 }
 
 function renderConsoleCatalog() {
-  const entries = state.consoleEntries.filter((entry) => !state.consoleType || entry.type === state.consoleType);
+  const entries = state.consoleEntries;
   elements.consoleCatalog.replaceChildren();
   for (const entry of entries) {
     const button = document.createElement("button");
@@ -319,7 +361,10 @@ function renderConsoleCatalog() {
     const copy = document.createElement("span");
     copy.append(textCell("catalog-name", entry.name));
     if (entry.type === "variable") copy.append(textCell("catalog-value", entry.value || "(empty)"));
-    button.append(copy, textCell(`catalog-type ${entry.type === "variable" ? "variable" : "command"}`, entry.type === "variable" ? "CVar" : "Cmd"));
+    else if (entry.arguments) copy.append(textCell("catalog-value", entry.arguments));
+    const source = consoleSourceOf(entry);
+    const label = source === "cvar" ? (entry.type === "variable" ? "CVar" : "Cmd") : source;
+    button.append(copy, textCell(`catalog-type ${source}`, label));
     button.addEventListener("click", () => selectConsoleEntry(entry));
     elements.consoleCatalog.append(button);
   }
@@ -331,9 +376,11 @@ function selectConsoleEntry(entry) {
   elements.commandInput.value = entry.name;
   const flags = [entry.read_only && "read-only", entry.cheat && "cheat"].filter(Boolean);
   elements.consoleDetail.replaceChildren();
-  const badge = textCell("kind-badge", entry.type === "variable" ? "CONSOLE VARIABLE" : "CONSOLE COMMAND");
+  const kind = entry.type === "variable" ? "CONSOLE VARIABLE" : "CONSOLE COMMAND";
+  const badge = textCell("kind-badge", `${kind} · ${CONSOLE_SOURCE_LABELS[consoleSourceOf(entry)] || "Unknown source"}`);
   const title = document.createElement("h3");
   title.textContent = entry.name;
+  if (entry.arguments) title.append(Object.assign(document.createElement("small"), { textContent: ` ${entry.arguments}` }));
   const help = document.createElement("p");
   help.textContent = entry.help || "No help text was registered.";
   elements.consoleDetail.append(badge, title, help);
@@ -346,9 +393,41 @@ function selectConsoleEntry(entry) {
     if (flags.length) line.append(document.createTextNode(flags.join(" · ")));
     elements.consoleDetail.append(line);
   }
+  if (entry.companion) elements.consoleDetail.append(showFlagControl(entry));
   renderConsoleCatalog();
   elements.commandInput.focus();
   elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length);
+}
+
+// A show flag is reachable two ways: "show X" toggles it in the game viewport, while its ShowFlag.X companion is a
+// tri-state override (0 off, 1 on, 2 no override) that also applies in the Editor.
+const SHOW_FLAG_STATES = [["0", "Force off"], ["1", "Force on"], ["2", "No override"]];
+
+function showFlagControl(entry) {
+  const wrap = document.createElement("div");
+  wrap.className = "value-line";
+  wrap.append(document.createTextNode("Override"));
+  const group = document.createElement("div");
+  group.className = "segmented";
+  for (const [value, label] of SHOW_FLAG_STATES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.classList.toggle("active", entry.value === value);
+    button.addEventListener("click", async () => {
+      await executeCommand(`${entry.companion} ${value}`);
+      refreshConsoleCatalog();
+    });
+    group.append(button);
+  }
+  wrap.append(group);
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "text-button";
+  toggle.textContent = "Toggle in viewport";
+  toggle.addEventListener("click", () => executeCommand(entry.name));
+  wrap.append(toggle);
+  return wrap;
 }
 
 async function executeCommand(command, commandId = "") {
@@ -363,7 +442,11 @@ async function executeCommand(command, commandId = "") {
       body: JSON.stringify({ command, command_id: commandId }),
     });
     const elapsed = Math.round(performance.now() - started);
-    appendCommandOutput(`${result.success ? "" : "[not handled] "}${result.output || "(no direct output)"}\n[${elapsed} ms]\n\n`);
+    // Most commands answer through UE_LOG, not the output device they are handed; the device reports both.
+    const direct = result.output || "";
+    const logged = result.log_output || "";
+    const body = direct || logged ? `${direct}${direct && logged ? "\n" : ""}${logged}` : "(no output)";
+    appendCommandOutput(`${result.success ? "" : "[not handled] "}${body}\n[${elapsed} ms]\n\n`);
     if (state.consoleSelected?.type === "variable" && command.startsWith(state.consoleSelected.name)) {
       clearTimeout(state.consoleQueryTimer);
       state.consoleQueryTimer = setTimeout(refreshConsoleCatalog, 250);
@@ -393,6 +476,95 @@ function navigateCommandHistory(delta) {
   state.commandHistoryIndex = Math.max(-1, Math.min(state.commandHistory.length - 1, state.commandHistoryIndex + delta));
   elements.commandInput.value = state.commandHistoryIndex < 0 ? "" : state.commandHistory[state.commandHistoryIndex];
   queueMicrotask(() => elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length));
+}
+
+function closeCompletions() {
+  state.completions = [];
+  state.completionIndex = -1;
+  state.completionPinned = false;
+  elements.completions.replaceChildren();
+  elements.completions.classList.add("hidden");
+}
+
+function showPinnedHint(entry) {
+  state.completions = [entry];
+  state.completionIndex = -1;
+  state.completionPinned = true;
+  renderCompletions();
+}
+
+async function requestCompletions() {
+  const prefix = elements.commandInput.value;
+  if (!prefix.trim() || !state.selectedId || !selectedDevice()?.connected) {
+    state.commandHint = null;
+    return closeCompletions();
+  }
+  // Once the input has moved past a known name the entry stays pinned, so its signature is still on screen while
+  // the arguments are being typed.
+  const pinned = state.commandHint;
+  if (pinned && prefix.toLowerCase().startsWith(`${pinned.name.toLowerCase()} `)) {
+    showPinnedHint(pinned);
+    return;
+  }
+  try {
+    // Names can contain spaces ("stat Unit"), so the whole input is the needle.
+    const params = new URLSearchParams({ q: prefix.trim(), limit: "8" });
+    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+    if (elements.commandInput.value !== prefix) return;
+    state.completions = result.entries || [];
+    state.completionIndex = -1;
+    state.completionPinned = false;
+    const exact = state.completions.find((entry) => entry.name.toLowerCase() === prefix.trim().toLowerCase());
+    state.commandHint = exact || null;
+    renderCompletions();
+  } catch {
+    closeCompletions();
+  }
+}
+
+function renderCompletions() {
+  elements.completions.replaceChildren();
+  elements.completions.classList.toggle("hidden", !state.completions.length);
+  state.completions.forEach((entry, index) => {
+    const option = document.createElement(state.completionPinned ? "div" : "button");
+    if (!state.completionPinned) option.type = "button";
+    option.className = `completion ${state.completionPinned ? "pinned" : ""} ${index === state.completionIndex ? "active" : ""}`;
+    const label = document.createElement("span");
+    label.className = "completion-name";
+    label.textContent = entry.name;
+    if (entry.arguments) label.append(Object.assign(document.createElement("em"), { textContent: ` ${entry.arguments}` }));
+    else if (entry.type === "variable") label.append(Object.assign(document.createElement("em"), { textContent: " <value>" }));
+    option.append(label, textCell("completion-hint", entry.type === "variable" ? entry.value || "(empty)" : consoleSourceOf(entry)));
+    if (!state.completionPinned) {
+      option.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        acceptCompletion(index);
+      });
+    }
+    elements.completions.append(option);
+  });
+}
+
+function moveCompletion(delta) {
+  // Slots run -1 (nothing selected) through count-1, so shift by one to make the wrap-around arithmetic simple.
+  const slots = state.completions.length + 1;
+  state.completionIndex = ((state.completionIndex + 1 + delta) % slots + slots) % slots - 1;
+  renderCompletions();
+  const active = elements.completions.querySelector(".completion.active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+function acceptCompletion(index = state.completionIndex) {
+  const entry = state.completions[index];
+  if (!entry) return;
+  state.commandHint = entry;
+  // A command that takes arguments is left open for typing, with its signature still pinned above the prompt.
+  const takesArgument = Boolean(entry.arguments) || entry.type === "variable";
+  elements.commandInput.value = takesArgument ? `${entry.name} ` : entry.name;
+  if (takesArgument) showPinnedHint(entry);
+  else closeCompletions();
+  elements.commandInput.focus();
+  elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length);
 }
 
 function resetFileNavigation(root) {
@@ -2179,23 +2351,44 @@ elements.commandForm.addEventListener("submit", (event) => {
   executeCommand(elements.commandInput.value);
 });
 elements.commandInput.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowUp") { event.preventDefault(); navigateCommandHistory(1); }
-  if (event.key === "ArrowDown") { event.preventDefault(); navigateCommandHistory(-1); }
+  // A pinned hint is a signature reminder, not a menu, so it must not swallow keys.
+  const open = state.completions.length > 0 && !state.completionPinned;
+  if (event.key === "Escape" && state.completions.length) { event.preventDefault(); closeCompletions(); return; }
+  if (event.key === "Tab" && open) { event.preventDefault(); acceptCompletion(state.completionIndex < 0 ? 0 : state.completionIndex); return; }
+  if (event.key === "Enter" && open && state.completionIndex >= 0) { event.preventDefault(); acceptCompletion(); return; }
+  if (event.key === "ArrowUp") { event.preventDefault(); open ? moveCompletion(-1) : navigateCommandHistory(1); }
+  if (event.key === "ArrowDown") { event.preventDefault(); open ? moveCompletion(1) : navigateCommandHistory(-1); }
+});
+elements.commandInput.addEventListener("input", () => {
+  clearTimeout(state.completionTimer);
+  state.completionTimer = setTimeout(requestCompletions, 140);
+});
+elements.commandInput.addEventListener("blur", () => {
+  clearTimeout(state.completionTimer);
+  closeCompletions();
 });
 $("#clear-command-output").addEventListener("click", () => {
   elements.commandOutput.innerHTML = '<span class="terminal-muted">Output cleared.</span>';
 });
-$("#refresh-console").addEventListener("click", refreshConsoleCatalog);
+$("#refresh-console").addEventListener("click", () => refreshConsoleCatalog(true));
 elements.consoleSearch.addEventListener("input", () => {
   clearTimeout(state.consoleQueryTimer);
-  state.consoleQueryTimer = setTimeout(refreshConsoleCatalog, 280);
+  state.consoleQueryTimer = setTimeout(refreshConsoleCatalog, 160);
 });
+elements.consoleScope.addEventListener("change", () => refreshConsoleCatalog());
 $("#console-type").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-type]");
   if (!button) return;
   state.consoleType = button.dataset.type;
   $("#console-type").querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
-  renderConsoleCatalog();
+  refreshConsoleCatalog();
+});
+elements.consoleSourceFilter.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-source]");
+  if (!button) return;
+  state.consoleSource = button.dataset.source;
+  elements.consoleSourceFilter.querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
+  refreshConsoleCatalog();
 });
 $("#download-folder").addEventListener("click", () => requestTransfer(state.filePath, true));
 $("#refresh-files").addEventListener("click", refreshFiles);

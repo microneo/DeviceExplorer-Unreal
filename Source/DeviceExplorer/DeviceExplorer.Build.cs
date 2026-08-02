@@ -17,6 +17,7 @@ public class DeviceExplorer : ModuleRules
         {
             "CoreUObject",
             "Engine",
+            "EngineSettings",
             "HTTP",
             "Json",
             "Networking",

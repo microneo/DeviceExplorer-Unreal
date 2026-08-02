@@ -62,12 +62,34 @@ function requirePostHeader(request, response, scenario) {
   return false;
 }
 
+function rankConsoleMatch(entry, query, searchHelp) {
+  if (!query) return 3;
+  const name = entry.name.toLowerCase();
+  if (name === query) return 0;
+  if (name.startsWith(query)) return 1;
+  if (name.includes(query)) return 2;
+  if (searchHelp && (entry.help || "").toLowerCase().includes(query)) return 3;
+  return -1;
+}
+
 function listConsole(state, url) {
   const query = (url.searchParams.get("q") || "").toLowerCase();
+  const searchHelp = url.searchParams.get("scope") === "all";
+  const source = url.searchParams.get("source") || "";
+  const kind = url.searchParams.get("kind") || "";
   const limit = Math.max(1, Number(url.searchParams.get("limit") || 400));
-  const matches = state.console_objects.filter((entry) =>
-    !query || `${entry.name} ${entry.help}`.toLowerCase().includes(query));
-  return { entries: matches.slice(0, limit), total: matches.length, truncated: matches.length > limit };
+  const matches = state.console_objects
+    .filter((entry) => (!source || (entry.source || "cvar") === source) && (!kind || entry.type === kind))
+    .map((entry) => ({ entry, rank: rankConsoleMatch(entry, query, searchHelp) }))
+    .filter((match) => match.rank >= 0)
+    .sort((left, right) => left.rank - right.rank || left.entry.name.localeCompare(right.entry.name))
+    .map((match) => match.entry);
+  return {
+    entries: matches.slice(0, limit),
+    total: matches.length,
+    catalog_total: state.console_objects.length,
+    truncated: matches.length > limit
+  };
 }
 
 function logCategories(state) {
@@ -108,21 +130,28 @@ function setLogVerbosity(state, body) {
 
 function executeCommand(state, body) {
   const command = String(body.command || body.command_id || "").trim();
-  if (!command) return { success: false, output: "Command is empty" };
+  if (!command) return { success: false, output: "Command is empty", log_output: "" };
   const [name, ...argumentsList] = command.split(/\s+/);
   const variable = state.console_objects.find((entry) => entry.type === "variable" && entry.name.toLowerCase() === name.toLowerCase());
   if (variable && argumentsList.length) {
     variable.value = argumentsList.join(" ");
-    return { success: true, output: `${variable.name} = ${variable.value}` };
+    for (const entry of state.console_objects) {
+      if (entry.companion === variable.name) entry.value = variable.value;
+    }
+    return { success: true, output: `${variable.name} = ${variable.value}`, log_output: "" };
   }
-  if (variable) return { success: true, output: `${variable.name} = ${variable.value}` };
+  if (variable) return { success: true, output: `${variable.name} = ${variable.value}`, log_output: "" };
   if (command.toLowerCase() === "stat unit") {
-    return { success: true, output: "Frame 16.70 ms | Game 8.24 ms | Draw 5.10 ms | GPU 13.82 ms" };
+    return { success: true, output: "", log_output: "Frame 16.70 ms | Game 8.24 ms | Draw 5.10 ms | GPU 13.82 ms" };
   }
   if (command.toLowerCase().startsWith("memreport")) {
-    return { success: true, output: "Memory report saved to Saved/Profiling/MemoryReport/memreport-full.txt" };
+    return {
+      success: true,
+      output: "",
+      log_output: "Memory report saved to Saved/Profiling/MemoryReport/memreport-full.txt"
+    };
   }
-  return { success: true, output: `Mock executed: ${command}` };
+  return { success: true, output: "", log_output: `Mock executed: ${command}` };
 }
 
 function moduleData(state, moduleId) {

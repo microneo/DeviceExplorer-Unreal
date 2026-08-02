@@ -3,6 +3,8 @@
 #include "Async/Async.h"
 #include "Containers/StringConv.h"
 #include "Containers/Ticker.h"
+#include "DeviceExplorerCommandCapture.h"
+#include "DeviceExplorerConsoleCatalog.h"
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
 #include "DeviceExplorerLogService.h"
@@ -52,6 +54,34 @@ FString BuildWebSocketURL(const FString& Host, int32 Port, const FString& Token)
 double GetAppUptimeSeconds()
 {
 	return FPlatformTime::Seconds() - GStartTime;
+}
+
+// Lower ranks sort first. LowerQuery is compared case-sensitively against the entry's cached lowercase name: an
+// IgnoreCase scan over the whole catalog on every keystroke is what makes the search feel slow.
+// CVar help is long and prose-like, so matching it by default would bury the name matches.
+int32 RankConsoleMatch(const FDeviceExplorerConsoleEntry& Entry, const FString& LowerQuery, const bool bSearchHelp)
+{
+	if (LowerQuery.IsEmpty())
+	{
+		return 3;
+	}
+	if (Entry.LowerName.Equals(LowerQuery, ESearchCase::CaseSensitive))
+	{
+		return 0;
+	}
+	if (Entry.LowerName.StartsWith(LowerQuery, ESearchCase::CaseSensitive))
+	{
+		return 1;
+	}
+	if (Entry.LowerName.Contains(LowerQuery, ESearchCase::CaseSensitive))
+	{
+		return 2;
+	}
+	if (bSearchHelp && Entry.Help.Contains(LowerQuery, ESearchCase::IgnoreCase))
+	{
+		return 3;
+	}
+	return INDEX_NONE;
 }
 
 FString NormalizeSavedRelativePath(const FString& RawPath)
@@ -613,6 +643,7 @@ void FDeviceExplorerModule::StartupModule()
 	DeviceId = GetOrCreateDeviceId();
 	LogService = MakeUnique<FDeviceExplorerLogService>([this](const TSharedRef<FJsonObject>& Message) { SendJson(Message); });
 	LogService->Start();
+	ConsoleCatalog = MakeUnique<FDeviceExplorerConsoleCatalog>();
 
 	Discovery = CreateDeviceExplorerDiscovery();
 	Discovery->Start(
@@ -646,6 +677,7 @@ void FDeviceExplorerModule::ShutdownModule()
 	}
 	Disconnect();
 	LogService.Reset();
+	ConsoleCatalog.Reset();
 }
 
 void FDeviceExplorerModule::RegisterDefaultFeatures()
@@ -983,24 +1015,30 @@ void FDeviceExplorerModule::ExecuteCommand(const TSharedPtr<FJsonObject>& Messag
 	          [this, RequestId = MoveTemp(RequestId), Command = MoveTemp(Command), Arguments = MoveTemp(Arguments), Descriptor = MoveTemp(Descriptor), bRegistered]()
 	          {
 				  FDeviceExplorerCommandResult CommandResult;
-				  if (bRegistered && Descriptor.Handler)
+				  FString LogOutput;
 				  {
-					  CommandResult = Descriptor.Handler(Arguments);
-				  }
-				  else
-				  {
-					  FStringOutputDevice Output;
-					  CommandResult.bSuccess = IConsoleManager::Get().ProcessUserConsoleInput(*Command, Output, GWorld);
-					  if (!CommandResult.bSuccess && GEngine != nullptr)
+					  FDeviceExplorerCommandCapture Capture;
+					  if (bRegistered && Descriptor.Handler)
 					  {
-						  CommandResult.bSuccess = GEngine->Exec(GWorld, *Command, Output);
+						  CommandResult = Descriptor.Handler(Arguments);
 					  }
-					  CommandResult.Output = Output;
+					  else
+					  {
+						  FStringOutputDevice Output;
+						  CommandResult.bSuccess = IConsoleManager::Get().ProcessUserConsoleInput(*Command, Output, GWorld);
+						  if (!CommandResult.bSuccess && GEngine != nullptr)
+						  {
+							  CommandResult.bSuccess = GEngine->Exec(GWorld, *Command, Output);
+						  }
+						  CommandResult.Output = Output;
+					  }
+					  LogOutput = Capture.BuildOutput(CommandResult.Output);
 				  }
 
 				  TSharedRef<FJsonObject> Result = MakeResponse(TEXT("command_result"), RequestId);
 				  Result->SetBoolField(TEXT("success"), CommandResult.bSuccess);
 				  Result->SetStringField(TEXT("output"), CommandResult.Output);
+				  Result->SetStringField(TEXT("log_output"), LogOutput);
 				  SendJson(Result);
 			  });
 }
@@ -1009,82 +1047,99 @@ void FDeviceExplorerModule::ListConsoleObjects(const TSharedPtr<FJsonObject>& Me
 {
 	FString RequestId;
 	FString Query;
+	FString Scope;
+	FString SourceFilter;
+	FString KindFilter;
+	bool bRefresh = false;
 	double RequestedLimit = 400.0;
 	if (!Message->TryGetStringField(TEXT("request_id"), RequestId))
 	{
 		return;
 	}
 	Message->TryGetStringField(TEXT("query"), Query);
+	Message->TryGetStringField(TEXT("scope"), Scope);
+	Message->TryGetStringField(TEXT("source"), SourceFilter);
+	Message->TryGetStringField(TEXT("kind"), KindFilter);
+	Message->TryGetBoolField(TEXT("refresh"), bRefresh);
 	Message->TryGetNumberField(TEXT("limit"), RequestedLimit);
 	const int32 Limit = FMath::Clamp(FMath::RoundToInt(RequestedLimit), 1, 2000);
+	const bool bSearchHelp = Scope == TEXT("all");
 
 	AsyncTask(ENamedThreads::GameThread,
-	          [this, RequestId = MoveTemp(RequestId), Query = MoveTemp(Query), Limit]()
+	          [this, RequestId = MoveTemp(RequestId), Query = MoveTemp(Query), SourceFilter = MoveTemp(SourceFilter),
+	           KindFilter = MoveTemp(KindFilter), Limit, bSearchHelp, bRefresh]()
 	          {
-				  struct FConsoleEntry
+				  if (!ConsoleCatalog)
 				  {
-					  FString Name;
-					  FString Type;
-					  FString Help;
-					  FString Value;
-					  bool bReadOnly = false;
-					  bool bCheat = false;
-				  };
+					  return;
+				  }
 
-				  TArray<FConsoleEntry> Found;
-				  int32 TotalMatches = 0;
-				  IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(
-					  FConsoleObjectVisitor::CreateLambda(
-					  [&Found, &TotalMatches, &Query, Limit](const TCHAR* Name, IConsoleObject* Object)
+				  // Source and kind are filtered here rather than in the dashboard: the limit truncates a
+				  // name-sorted catalog, so a client-side filter would only ever see its first page.
+				  const TArray<FDeviceExplorerConsoleEntry>& Catalog = ConsoleCatalog->Get(bRefresh);
+				  const FString LowerQuery = Query.ToLower();
+				  TArray<TPair<int32, const FDeviceExplorerConsoleEntry*>> Matches;
+				  Matches.Reserve(Catalog.Num());
+				  for (const FDeviceExplorerConsoleEntry& Entry : Catalog)
+				  {
+					  if (!SourceFilter.IsEmpty() && SourceFilter != FDeviceExplorerConsoleCatalog::SourceToString(Entry.Source))
 					  {
-						  if (Object == nullptr || (!Query.IsEmpty() && !FString(Name).Contains(Query, ESearchCase::IgnoreCase)))
-						  {
-							  return;
-						  }
-						  ++TotalMatches;
-						  if (Found.Num() >= Limit)
-						  {
-							  return;
-						  }
+						  continue;
+					  }
+					  if (!KindFilter.IsEmpty() && KindFilter != (Entry.bIsVariable ? TEXT("variable") : TEXT("command")))
+					  {
+						  continue;
+					  }
+					  const int32 Rank = RankConsoleMatch(Entry, LowerQuery, bSearchHelp);
+					  if (Rank != INDEX_NONE)
+					  {
+						  Matches.Emplace(Rank, &Entry);
+					  }
+				  }
 
-						  FConsoleEntry& Entry = Found.AddDefaulted_GetRef();
-						  Entry.Name = Name;
-						  Entry.Help = Object->GetHelp();
-						  Entry.Help.LeftInline(4096);
-						  Entry.bReadOnly = Object->TestFlags(ECVF_ReadOnly);
-						  Entry.bCheat = Object->TestFlags(ECVF_Cheat);
-						  if (IConsoleVariable* Variable = Object->AsVariable())
-						  {
-							  Entry.Type = TEXT("variable");
-							  Entry.Value = Variable->GetString();
-							  Entry.Value.LeftInline(4096);
-						  }
-						  else
-						  {
-							  Entry.Type = TEXT("command");
-						  }
-					  }),
-					  TEXT(""));
+				  // The catalog is already name-sorted, so a stable sort keeps names ordered inside each rank.
+				  Matches.StableSort(
+					  [](const TPair<int32, const FDeviceExplorerConsoleEntry*>& Left, const TPair<int32, const FDeviceExplorerConsoleEntry*>& Right)
+					  {
+						  return Left.Key < Right.Key;
+					  });
 
-				  Found.Sort([](const FConsoleEntry& Left, const FConsoleEntry& Right) { return Left.Name < Right.Name; });
+				  const int32 EmitCount = FMath::Min(Matches.Num(), Limit);
 				  TArray<TSharedPtr<FJsonValue>> Entries;
-				  Entries.Reserve(Found.Num());
-				  for (const FConsoleEntry& Entry : Found)
+				  Entries.Reserve(EmitCount);
+				  for (int32 Index = 0; Index < EmitCount; ++Index)
 				  {
+					  const FDeviceExplorerConsoleEntry& Entry = *Matches[Index].Value;
 					  TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
 					  Json->SetStringField(TEXT("name"), Entry.Name);
-					  Json->SetStringField(TEXT("type"), Entry.Type);
+					  Json->SetStringField(TEXT("type"), Entry.bIsVariable ? TEXT("variable") : TEXT("command"));
+					  Json->SetStringField(TEXT("source"), FDeviceExplorerConsoleCatalog::SourceToString(Entry.Source));
 					  Json->SetStringField(TEXT("help"), Entry.Help);
-					  Json->SetStringField(TEXT("value"), Entry.Value);
+					  Json->SetStringField(TEXT("arguments"), Entry.Arguments);
+					  Json->SetStringField(TEXT("companion"), Entry.Companion);
 					  Json->SetBoolField(TEXT("read_only"), Entry.bReadOnly);
 					  Json->SetBoolField(TEXT("cheat"), Entry.bCheat);
+
+					  // A show flag reports its ShowFlag.X override, so the dashboard can show state, not just a toggle.
+					  const FString& ValueSource = Entry.bIsVariable ? Entry.Name : Entry.Companion;
+					  FString Value;
+					  if (!ValueSource.IsEmpty())
+					  {
+						  if (const IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*ValueSource, false))
+						  {
+							  Value = Variable->GetString();
+							  Value.LeftInline(4096);
+						  }
+					  }
+					  Json->SetStringField(TEXT("value"), Value);
 					  Entries.Add(MakeShared<FJsonValueObject>(Json));
 				  }
 
 				  TSharedRef<FJsonObject> Result = MakeResponse(TEXT("console_objects_result"), RequestId);
 				  Result->SetStringField(TEXT("query"), Query);
-				  Result->SetNumberField(TEXT("total"), TotalMatches);
-				  Result->SetBoolField(TEXT("truncated"), TotalMatches > Entries.Num());
+				  Result->SetNumberField(TEXT("total"), Matches.Num());
+				  Result->SetNumberField(TEXT("catalog_total"), Catalog.Num());
+				  Result->SetBoolField(TEXT("truncated"), Matches.Num() > Entries.Num());
 				  Result->SetArrayField(TEXT("entries"), MoveTemp(Entries));
 				  SendJson(Result);
 			  });

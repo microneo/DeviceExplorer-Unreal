@@ -1463,6 +1463,10 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		Message->SetStringField(TEXT("type"), TEXT("list_console_objects"));
 		Message->SetStringField(TEXT("request_id"), RequestId);
 		Message->SetStringField(TEXT("query"), Request.Query.FindRef(TEXT("q")));
+		Message->SetStringField(TEXT("scope"), Request.Query.FindRef(TEXT("scope")));
+		Message->SetStringField(TEXT("source"), Request.Query.FindRef(TEXT("source")));
+		Message->SetStringField(TEXT("kind"), Request.Query.FindRef(TEXT("kind")));
+		Message->SetBoolField(TEXT("refresh"), Request.Query.FindRef(TEXT("refresh")) == TEXT("1"));
 		const int32 RequestedLimit = FCString::Atoi(*Request.Query.FindRef(TEXT("limit")));
 		Message->SetNumberField(TEXT("limit"), RequestedLimit > 0 ? RequestedLimit : 400);
 		const TSharedPtr<FJsonObject> Result = SendDeviceRequestAndWait(DeviceId, Message);

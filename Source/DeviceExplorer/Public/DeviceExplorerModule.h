@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+class FDeviceExplorerConsoleCatalog;
 class FDeviceExplorerLogService;
 class IDeviceExplorerDiscovery;
 class IWebSocket;
@@ -36,6 +37,7 @@ private:
 
 	TUniquePtr<IDeviceExplorerDiscovery> Discovery;
 	TUniquePtr<FDeviceExplorerLogService> LogService;
+	TUniquePtr<FDeviceExplorerConsoleCatalog> ConsoleCatalog;
 	TSharedPtr<IWebSocket> Socket;
 	FTSTicker::FDelegateHandle TickerHandle;
 

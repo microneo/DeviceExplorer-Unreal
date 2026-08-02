@@ -8,7 +8,9 @@ Features:
 
 - live logs with a client-side category filter and a Verbosity tab that sets
   per-category levels on the running build;
-- runtime console catalog, autocomplete, history, and command execution;
+- runtime console catalog spanning console variables and commands, exec
+  functions, stat commands, and show flags, with history and command execution
+  that reports both direct and logged output;
 - sandboxed file browsing and downloads, including directory archives;
 - trace and profiling artifact transfer;
 - reusable C++ runtime modules rendered automatically by the WebUI;

@@ -307,8 +307,12 @@ select {
   font: 500 9px/1 var(--mono);
   letter-spacing: .08em;
 }
-.catalog-type.variable { color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-line); }
-.catalog-type.command { color: var(--blue); background: var(--blue-bg); border: 1px solid var(--blue-line); }
+.catalog-type { text-transform: uppercase; }
+.catalog-type.cvar { color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-line); }
+.catalog-type.exec,
+.catalog-type.manual { color: var(--blue); background: var(--blue-bg); border: 1px solid var(--blue-line); }
+.catalog-type.stat,
+.catalog-type.show { color: var(--muted); background: var(--surface-2); border: 1px solid var(--line-strong); }
 .inline-empty { padding: 34px 18px; color: var(--faint); font-size: 12px; line-height: 1.6; text-align: center; }
 .console-workspace { display: flex; flex-direction: column; min-height: 0; gap: 12px; }
 .quick-actions { padding: 12px 14px; }
@@ -326,17 +330,27 @@ select {
 .console-detail { min-height: 100px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .kind-badge { display: inline-block; align-self: flex-start; padding: 4px 6px; color: var(--blue); font: 500 9px/1 var(--mono); letter-spacing: .1em; }
 .console-detail h3 { margin: 0; font: 500 15px/1.2 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.console-detail h3 small { color: var(--dim); font: 400 13px/1.2 var(--mono); }
 .console-detail p { margin: 0; color: var(--muted-3); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; }
 .console-detail .value-line { display: flex; align-items: center; gap: 10px; margin-top: 2px; color: var(--faint); font: 600 9.5px/1 var(--sans); letter-spacing: .12em; }
 .console-detail .value-line code { padding: 5px 8px; border: 1px solid var(--accent-line); border-radius: 4px; background: var(--accent-bg); color: var(--accent); font: 500 12.5px/1 var(--mono); letter-spacing: normal; }
+.console-detail .value-line .segmented { flex: none; letter-spacing: normal; }
+.console-detail .value-line .segmented button { padding: 0 10px; }
 .terminal { flex: 1; min-height: 200px; display: flex; flex-direction: column; background: var(--bg); }
 .terminal-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; height: 32px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
 .terminal-head strong { color: var(--faint); font: 600 9.5px/1 var(--sans); letter-spacing: .12em; text-transform: uppercase; }
 .command-output { flex: 1; margin: 0; padding: 12px; overflow: auto; background: transparent; color: var(--muted); font: 400 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-muted { color: var(--dim); }
-.command-form { flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 10px 9px 12px; border-top: 1px solid var(--line); background: var(--bg); }
+.command-form { position: relative; flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 10px 9px 12px; border-top: 1px solid var(--line); background: var(--bg); }
 .prompt { color: var(--accent); font: 500 13px/1 var(--mono); }
 .command-form input { height: 30px; border: 0; outline: 0; background: transparent; color: var(--text); font: 400 12.5px/1 var(--mono); }
+.command-completions { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 4px); z-index: 5; max-height: 236px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-2); box-shadow: 0 10px 26px rgba(0,0,0,.45); }
+.completion { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: inherit; text-align: left; cursor: pointer; }
+.completion:hover, .completion.active { background: var(--selected-bg); }
+.completion.pinned, .completion.pinned:hover { background: transparent; cursor: default; }
+.completion-name { overflow: hidden; color: var(--text); font: 500 12px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.completion-name em { color: var(--dim); font-style: normal; }
+.completion-hint { flex: none; color: var(--faint); font: 400 10.5px/1.2 var(--mono); }
 kbd { margin-left: 4px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.12); border-radius: 3px; color: rgba(255,255,255,.6); font: 500 9.5px/1 var(--mono); }
 
 .file-toolbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px; flex-wrap: wrap; }

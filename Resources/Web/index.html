@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>DeviceExplorer</title>
-  <script type="module" crossorigin src="./assets/index-BVaGajKO.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CwW9qgfh.css">
+  <script type="module" crossorigin src="./assets/index-CSWAaraI.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CxKNX1BA.css">
 </head>
 <body>
   <div class="app-shell">
@@ -223,6 +223,15 @@
                   <button data-type="command">Commands</button>
                   <button data-type="variable">Variables</button>
                 </div>
+                <div class="segmented" id="console-source">
+                  <button class="active" data-source="">All</button>
+                  <button data-source="cvar">CVar</button>
+                  <button data-source="exec">Exec</button>
+                  <button data-source="stat">Stat</button>
+                  <button data-source="show">Show</button>
+                  <button data-source="manual">Cfg</button>
+                </div>
+                <label class="switch" id="console-scope-field"><input id="console-scope" type="checkbox"><span></span>Search descriptions</label>
               </div>
               <div id="console-catalog" class="console-catalog">
                 <div class="inline-empty">Search or refresh to query the build.</div>
@@ -237,7 +246,7 @@
               <div id="console-detail" class="console-detail surface">
                 <span class="kind-badge">CONSOLE</span>
                 <h3>Select a command or type below</h3>
-                <p>The catalog includes help, type, current variable value, and flags from Unreal's runtime console manager.</p>
+                <p>The catalog spans console variables and commands, exec functions, stat groups, and show flags reported by this build.</p>
               </div>
               <div class="terminal surface">
                 <div class="terminal-head"><strong>Device output</strong><button id="clear-command-output" class="text-button">Clear</button></div>
@@ -246,6 +255,7 @@
                   <span class="prompt">&gt;</span>
                   <input id="command-input" autocomplete="off" spellcheck="false" placeholder="Enter an Unreal console command">
                   <button type="submit" class="button primary">Execute <kbd>Enter</kbd></button>
+                  <div id="command-completions" class="command-completions hidden"></div>
                 </form>
               </div>
             </div>
@@ -312,6 +322,6 @@
       </div>
     </div>
   </div>
-  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
 </body>
 </html>
