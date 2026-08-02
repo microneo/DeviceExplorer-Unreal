@@ -344,8 +344,9 @@ select {
 .command-output { flex: 1; margin: 0; padding: 12px; overflow: auto; background: transparent; color: var(--muted); font: 400 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-muted { color: var(--dim); }
 .command-form { position: relative; flex: none; display: flex; align-items: center; gap: 9px; padding: 9px 10px 9px 12px; border-top: 1px solid var(--line); background: var(--bg); }
-.prompt { color: var(--accent); font: 500 13px/1 var(--mono); }
-.command-form input { height: 30px; border: 0; outline: 0; background: transparent; color: var(--text); font: 400 12.5px/1 var(--mono); }
+.prompt { flex: none; color: var(--accent); font: 500 13px/1 var(--mono); }
+.command-form input { flex: 1; min-width: 0; height: 30px; border: 0; outline: 0; background: transparent; color: var(--text); font: 400 12.5px/1 var(--mono); }
+.command-form button[type="submit"] { flex: none; }
 .command-completions { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 4px); z-index: 5; max-height: 236px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-2); box-shadow: 0 10px 26px rgba(0,0,0,.45); }
 .completion { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: inherit; text-align: left; cursor: pointer; }
 .completion:hover, .completion.active { background: var(--selected-bg); }
