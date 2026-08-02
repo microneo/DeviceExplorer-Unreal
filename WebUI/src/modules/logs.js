@@ -26,8 +26,10 @@ const VERBOSITY_PRESETS = [
   { id: "quiet", label: "Quiet", hint: "all → Error", level: "Error", matches: () => true },
   { id: "render", label: "Render debug", level: "Verbose", matches: (name) => /(RHI|Render|Shader|Streaming|Texture)/i.test(name) },
   { id: "net", label: "Net trace", level: "Verbose", matches: (name) => /(Net|Online|Packet|Replication)/i.test(name) },
-  { id: "boot", label: "Restore boot levels", baseline: true },
 ];
+
+/** Pseudo-preset behind Reset all: every category back to the level the build launched with. */
+const BOOT_TARGET = { baseline: true };
 
 /**
  * Owns the Logs tab: the streaming table with its client-side category filter, and the
@@ -68,6 +70,7 @@ export function createLogsModule({ getDevice }) {
     verbosityRows: $("#verbosity-rows"),
     verbosityStatus: $("#verbosity-status"),
     verbosityShowAll: $("#show-all-verbosity"),
+    verbosityResetAll: $("#reset-all-verbosity"),
     verbosityPresets: $("#verbosity-presets"),
     verbosityPending: $("#verbosity-pending"),
     verbosityValidation: $("#verbosity-validation"),
@@ -531,6 +534,12 @@ export function createLogsModule({ getDevice }) {
       : `${formatCount(capped.length)} of ${formatCount(total)} categories shown`;
     elements.verbosityShowAll.classList.toggle("hidden", capped.length >= entries.length && state.scope === "all" && !elements.verbositySearch.value);
 
+    const resettable = presetTargets(BOOT_TARGET).length;
+    elements.verbosityResetAll.disabled = state.applying || resettable === 0;
+    elements.verbosityResetAll.title = resettable
+      ? `Queue ${formatCount(resettable)} ${resettable === 1 ? "category" : "categories"} back to the levels the build launched with`
+      : "Every category is already at its boot level";
+
     renderPending();
     renderPresets();
   }
@@ -574,15 +583,19 @@ export function createLogsModule({ getDevice }) {
         textCell("", preset.hint || `${formatCount(targets.length)} ${targets.length === 1 ? "category" : "categories"}`),
       );
       button.addEventListener("click", () => {
-        for (const [name, level] of targets) {
-          if (level === state.levels.get(name).verbosity) state.pending.delete(name);
-          else state.pending.set(name, level);
-          state.rejected.delete(name);
-        }
-        renderVerbosity();
+        queueTargets(targets);
       });
       return button;
     }));
+  }
+
+  function queueTargets(targets) {
+    for (const [name, level] of targets) {
+      if (level === state.levels.get(name).verbosity) state.pending.delete(name);
+      else state.pending.set(name, level);
+      state.rejected.delete(name);
+    }
+    renderVerbosity();
   }
 
   function presetTargets(preset) {
@@ -789,6 +802,7 @@ export function createLogsModule({ getDevice }) {
     for (const item of elements.verbosityScope.querySelectorAll("button")) item.classList.toggle("active", item.dataset.scope === "all");
     renderVerbosity();
   });
+  elements.verbosityResetAll.addEventListener("click", () => queueTargets(presetTargets(BOOT_TARGET)));
   $("#refresh-verbosity").addEventListener("click", loadVerbosity);
   elements.discard.addEventListener("click", () => {
     state.pending.clear();
