@@ -383,6 +383,10 @@ public:
 	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* Name, const TCHAR* DisplayName, const FDeviceExplorerSectionOptions& Options = {});
 	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* DisplayName, const FDeviceExplorerSectionOptions& Options = {});
 
+#if WITH_COREUOBJECT
+	FDeviceExplorerModuleBuilder& Object(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = false, const TCHAR* SectionPrefix = nullptr, const FDeviceExplorerSectionOptions& SectionOptions = {});
+#endif
+
 private:
 	friend class FDeviceExplorerModuleBuilder;
 	FDeviceExplorerModulePageBuilder(FDeviceExplorerModuleBuilder& InBuilder, int32 InPageIndex)

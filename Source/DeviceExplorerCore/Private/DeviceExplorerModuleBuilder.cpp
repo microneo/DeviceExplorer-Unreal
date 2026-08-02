@@ -1152,6 +1152,15 @@ FDeviceExplorerModuleSectionBuilder FDeviceExplorerModulePageBuilder::Section(co
 	return Section(InDisplayName, InDisplayName, Options);
 }
 
+#if WITH_COREUOBJECT
+FDeviceExplorerModuleBuilder& FDeviceExplorerModulePageBuilder::Object(UObject* InObject, TArray<FName> PropertyNames, bool bPersist, const TCHAR* SectionPrefix, const FDeviceExplorerSectionOptions& SectionOptions)
+{
+	Builder.ActivePage = PageIndex;
+	Builder.ActiveSection = INDEX_NONE;
+	return Builder.Object(InObject, MoveTemp(PropertyNames), bPersist, SectionPrefix, SectionOptions);
+}
+#endif
+
 void FDeviceExplorerModuleSectionBuilder::Activate()
 {
 	Builder.Activate(PageIndex, SectionIndex);

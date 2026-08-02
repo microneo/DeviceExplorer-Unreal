@@ -204,6 +204,10 @@ Builder.Object(GetMutableDefault<UPerfWatchdogSettings>(), {}, /*bPersist*/ true
     { .Columns = 2, .Apply = EDeviceExplorerApply::Manual, .bCollapsible = true });
 ```
 
+`Object` fills the page that is currently active, which is whichever page the
+last `Page(...)` or section call selected. Call it on the handle returned by
+`Page(...)` to pin it to that page regardless of what runs before it.
+
 `Description` applies to the first section only; the rest of the options apply
 to all of them. Omitting the parameter keeps the sections instant-apply,
 `Default` styled, and auto-width. `SettingsObject` is this call with
