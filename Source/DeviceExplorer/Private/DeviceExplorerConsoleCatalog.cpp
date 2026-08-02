@@ -1,6 +1,7 @@
 #include "DeviceExplorerConsoleCatalog.h"
 
 #include "ConsoleSettings.h"
+#include "DeviceExplorerTrace.h"
 #include "Engine/Console.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -227,6 +228,7 @@ void FDeviceExplorerConsoleCatalog::SyncStatGroups()
 	{
 		return;
 	}
+	TRACE_CPUPROFILER_EVENT_SCOPE(DeviceExplorer::SyncStatGroups);
 	CachedStatGroupCount = GroupCount;
 
 	const int32 PreviousNum = Entries.Num();
@@ -241,12 +243,17 @@ void FDeviceExplorerConsoleCatalog::SyncStatGroups()
 	if (Entries.Num() != PreviousNum)
 	{
 		SortAndReindex();
+		TRACE_COUNTER_SET(DeviceExplorerCatalogEntries, Entries.Num());
 	}
 #endif
 }
 
 void FDeviceExplorerConsoleCatalog::Rebuild()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DeviceExplorer::RebuildConsoleCatalog);
+	SCOPE_CYCLE_COUNTER(STAT_DeviceExplorerCatalogRebuild);
+	TRACE_COUNTER_INCREMENT(DeviceExplorerCatalogRebuilds);
+
 	Entries.Reset();
 	IndexByLowerName.Reset();
 	IndexByLowerName.Reserve(16384);
@@ -381,4 +388,5 @@ void FDeviceExplorerConsoleCatalog::Rebuild()
 #endif
 
 	SortAndReindex();
+	TRACE_COUNTER_SET(DeviceExplorerCatalogEntries, Entries.Num());
 }

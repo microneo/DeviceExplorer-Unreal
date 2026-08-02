@@ -8,6 +8,7 @@
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
 #include "DeviceExplorerLogService.h"
+#include "DeviceExplorerTrace.h"
 #include "DeviceExplorerTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
@@ -1014,6 +1015,10 @@ void FDeviceExplorerModule::ExecuteCommand(const TSharedPtr<FJsonObject>& Messag
 	AsyncTask(ENamedThreads::GameThread,
 	          [this, RequestId = MoveTemp(RequestId), Command = MoveTemp(Command), Arguments = MoveTemp(Arguments), Descriptor = MoveTemp(Descriptor), bRegistered]()
 	          {
+				  TRACE_CPUPROFILER_EVENT_SCOPE(DeviceExplorer::ExecuteCommand);
+				  SCOPE_CYCLE_COUNTER(STAT_DeviceExplorerCommand);
+				  TRACE_COUNTER_INCREMENT(DeviceExplorerCommandsExecuted);
+
 				  FDeviceExplorerCommandResult CommandResult;
 				  FString LogOutput;
 				  {
@@ -1052,6 +1057,9 @@ void FDeviceExplorerModule::SendConsoleIndex(const FString& RequestId, const boo
 				  {
 					  return;
 				  }
+
+				  TRACE_CPUPROFILER_EVENT_SCOPE(DeviceExplorer::BuildConsoleIndex);
+				  SCOPE_CYCLE_COUNTER(STAT_DeviceExplorerCatalogIndex);
 
 				  // Help text is the bulk of the catalog and is only ever read one entry at a time, so the index
 				  // leaves it out and the dashboard fetches it when an entry is selected.
@@ -1142,6 +1150,10 @@ void FDeviceExplorerModule::ListConsoleObjects(const TSharedPtr<FJsonObject>& Me
 				  {
 					  return;
 				  }
+
+				  TRACE_CPUPROFILER_EVENT_SCOPE(DeviceExplorer::QueryConsoleCatalog);
+				  SCOPE_CYCLE_COUNTER(STAT_DeviceExplorerCatalogQuery);
+				  TRACE_COUNTER_INCREMENT(DeviceExplorerConsoleQueries);
 
 				  // Source and kind are filtered here rather than in the dashboard: the limit truncates a
 				  // name-sorted catalog, so a client-side filter would only ever see its first page.
