@@ -378,6 +378,19 @@ async function ensureConsoleIndex(forceRebuild = false) {
   return true;
 }
 
+// Only the CVar registry publishes variables, so pairing Variables with Exec or Stat can never match anything.
+function syncConsoleFilterAvailability() {
+  const indexed = state.consoleIndexDeviceId === state.selectedId && state.consoleIndex.length > 0;
+  const hasAny = (source, kind) => !indexed || state.consoleIndex.some((entry) =>
+    (!source || consoleSourceOf(entry) === source) && (!kind || entry.type === kind));
+  for (const button of elements.consoleSourceFilter.querySelectorAll("button")) {
+    button.disabled = !hasAny(button.dataset.source, state.consoleType);
+  }
+  for (const button of $("#console-type").querySelectorAll("button")) {
+    button.disabled = !hasAny(state.consoleSource, button.dataset.type);
+  }
+}
+
 async function refreshConsoleCatalog(forceRebuild = false) {
   if (!requireOnline()) return;
   const extended = supportsConsoleCatalogSources();
@@ -392,6 +405,7 @@ async function refreshConsoleCatalog(forceRebuild = false) {
     elements.consoleCount.textContent = "Loading catalog";
   }
   const local = !searchHelp && (await ensureConsoleIndex(forceRebuild === true).catch(() => false));
+  syncConsoleFilterAvailability();
   try {
     let entries;
     let total;

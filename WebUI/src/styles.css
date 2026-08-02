@@ -294,6 +294,8 @@ select {
 .segmented { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--input-line); border-radius: 6px; background: var(--input-bg); }
 .segmented button { flex: 1; height: 26px; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--dim); font: 500 11.5px/26px var(--sans); cursor: pointer; transition: all .14s ease; }
 .segmented button.active { background: var(--selected-bg); color: var(--text); }
+.segmented button:disabled { color: var(--faint); opacity: .45; cursor: default; }
+.segmented button:disabled.active { background: transparent; }
 .console-catalog { flex: 1; overflow-y: auto; }
 .catalog-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 12px; border: 0; border-bottom: 1px solid #252525; background: transparent; box-shadow: none; color: inherit; text-align: left; cursor: pointer; transition: background .12s ease; }
 .catalog-row:hover { background: var(--row-hover); }
