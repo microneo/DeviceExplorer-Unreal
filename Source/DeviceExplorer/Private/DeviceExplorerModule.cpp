@@ -1043,6 +1043,67 @@ void FDeviceExplorerModule::ExecuteCommand(const TSharedPtr<FJsonObject>& Messag
 			  });
 }
 
+void FDeviceExplorerModule::SendConsoleIndex(const FString& RequestId, const bool bRefresh)
+{
+	AsyncTask(ENamedThreads::GameThread,
+	          [this, RequestId, bRefresh]()
+	          {
+				  if (!ConsoleCatalog)
+				  {
+					  return;
+				  }
+
+				  // Help text is the bulk of the catalog and is only ever read one entry at a time, so the index
+				  // leaves it out and the dashboard fetches it when an entry is selected.
+				  const TArray<FDeviceExplorerConsoleEntry>& Catalog = ConsoleCatalog->Get(bRefresh);
+				  TArray<TSharedPtr<FJsonValue>> Entries;
+				  Entries.Reserve(Catalog.Num());
+				  for (const FDeviceExplorerConsoleEntry& Entry : Catalog)
+				  {
+					  TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+					  Json->SetStringField(TEXT("name"), Entry.Name);
+					  Json->SetStringField(TEXT("type"), Entry.bIsVariable ? TEXT("variable") : TEXT("command"));
+					  Json->SetStringField(TEXT("source"), FDeviceExplorerConsoleCatalog::SourceToString(Entry.Source));
+					  if (!Entry.Arguments.IsEmpty())
+					  {
+						  Json->SetStringField(TEXT("arguments"), Entry.Arguments);
+					  }
+					  if (!Entry.Companion.IsEmpty())
+					  {
+						  Json->SetStringField(TEXT("companion"), Entry.Companion);
+					  }
+					  if (Entry.bReadOnly)
+					  {
+						  Json->SetBoolField(TEXT("read_only"), true);
+					  }
+					  if (Entry.bCheat)
+					  {
+						  Json->SetBoolField(TEXT("cheat"), true);
+					  }
+
+					  const FString& ValueSource = Entry.bIsVariable ? Entry.Name : Entry.Companion;
+					  if (!ValueSource.IsEmpty())
+					  {
+						  if (const IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*ValueSource, false))
+						  {
+							  FString Value = Variable->GetString();
+							  Value.LeftInline(128);
+							  Json->SetStringField(TEXT("value"), Value);
+						  }
+					  }
+					  Entries.Add(MakeShared<FJsonValueObject>(Json));
+				  }
+
+				  TSharedRef<FJsonObject> Result = MakeResponse(TEXT("console_objects_result"), RequestId);
+				  Result->SetBoolField(TEXT("index"), true);
+				  Result->SetNumberField(TEXT("total"), Entries.Num());
+				  Result->SetNumberField(TEXT("catalog_total"), Entries.Num());
+				  Result->SetBoolField(TEXT("truncated"), false);
+				  Result->SetArrayField(TEXT("entries"), MoveTemp(Entries));
+				  SendJson(Result);
+			  });
+}
+
 void FDeviceExplorerModule::ListConsoleObjects(const TSharedPtr<FJsonObject>& Message)
 {
 	FString RequestId;
@@ -1050,6 +1111,7 @@ void FDeviceExplorerModule::ListConsoleObjects(const TSharedPtr<FJsonObject>& Me
 	FString Scope;
 	FString SourceFilter;
 	FString KindFilter;
+	bool bIndex = false;
 	bool bRefresh = false;
 	double RequestedLimit = 400.0;
 	if (!Message->TryGetStringField(TEXT("request_id"), RequestId))
@@ -1060,10 +1122,17 @@ void FDeviceExplorerModule::ListConsoleObjects(const TSharedPtr<FJsonObject>& Me
 	Message->TryGetStringField(TEXT("scope"), Scope);
 	Message->TryGetStringField(TEXT("source"), SourceFilter);
 	Message->TryGetStringField(TEXT("kind"), KindFilter);
+	Message->TryGetBoolField(TEXT("index"), bIndex);
 	Message->TryGetBoolField(TEXT("refresh"), bRefresh);
 	Message->TryGetNumberField(TEXT("limit"), RequestedLimit);
 	const int32 Limit = FMath::Clamp(FMath::RoundToInt(RequestedLimit), 1, 2000);
 	const bool bSearchHelp = Scope == TEXT("all");
+
+	if (bIndex)
+	{
+		SendConsoleIndex(RequestId, bRefresh);
+		return;
+	}
 
 	AsyncTask(ENamedThreads::GameThread,
 	          [this, RequestId = MoveTemp(RequestId), Query = MoveTemp(Query), SourceFilter = MoveTemp(SourceFilter),

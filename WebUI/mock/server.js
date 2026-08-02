@@ -73,6 +73,13 @@ function rankConsoleMatch(entry, query, searchHelp) {
 }
 
 function listConsole(state, url) {
+  if (url.searchParams.get("index") === "1") {
+    // Mirrors the device: the index omits help, arrives name-sorted, and the dashboard filters it locally.
+    const entries = state.console_objects
+      .map(({ help, ...rest }) => rest)
+      .sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()));
+    return { index: true, entries, total: entries.length, catalog_total: entries.length, truncated: false };
+  }
   const query = (url.searchParams.get("q") || "").toLowerCase();
   const searchHelp = url.searchParams.get("scope") === "all";
   const source = url.searchParams.get("source") || "";

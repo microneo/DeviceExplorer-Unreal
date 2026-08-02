@@ -1466,6 +1466,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		Message->SetStringField(TEXT("scope"), Request.Query.FindRef(TEXT("scope")));
 		Message->SetStringField(TEXT("source"), Request.Query.FindRef(TEXT("source")));
 		Message->SetStringField(TEXT("kind"), Request.Query.FindRef(TEXT("kind")));
+		Message->SetBoolField(TEXT("index"), Request.Query.FindRef(TEXT("index")) == TEXT("1"));
 		Message->SetBoolField(TEXT("refresh"), Request.Query.FindRef(TEXT("refresh")) == TEXT("1"));
 		const int32 RequestedLimit = FCString::Atoi(*Request.Query.FindRef(TEXT("limit")));
 		Message->SetNumberField(TEXT("limit"), RequestedLimit > 0 ? RequestedLimit : 400);

@@ -16,6 +16,8 @@ const state = {
   transferPoll: null,
   lastTransferRequest: null,
   consoleEntries: [],
+  consoleIndex: [],
+  consoleIndexDeviceId: null,
   consoleTotal: 0,
   consoleCatalogTotal: 0,
   consoleType: "",
@@ -303,6 +305,9 @@ function selectDevice(id) {
 
 // Builds below this only enumerate IConsoleManager, so the source filter and description search have nothing to act on.
 const CONSOLE_CATALOG_PROTOCOL = 8;
+// Builds below this cannot serve the name index, so every filter change has to go back to the device.
+const CONSOLE_INDEX_PROTOCOL = 9;
+const CONSOLE_PAGE_SIZE = 800;
 
 const CONSOLE_SOURCE_LABELS = {
   cvar: "CVar registry",
@@ -320,30 +325,88 @@ function supportsConsoleCatalogSources() {
   return Number(selectedDevice()?.protocol_version || 0) >= CONSOLE_CATALOG_PROTOCOL;
 }
 
+function supportsConsoleIndex() {
+  return Number(selectedDevice()?.protocol_version || 0) >= CONSOLE_INDEX_PROTOCOL;
+}
+
+// Mirrors RankConsoleMatch on the device so local and server-side results are ordered the same way.
+function rankConsoleEntry(entry, lowerQuery) {
+  if (!lowerQuery) return 3;
+  const name = entry.lowerName;
+  if (name === lowerQuery) return 0;
+  if (name.startsWith(lowerQuery)) return 1;
+  if (name.includes(lowerQuery)) return 2;
+  return -1;
+}
+
+function searchConsoleIndex(query, { source = "", kind = "", limit = CONSOLE_PAGE_SIZE } = {}) {
+  const lowerQuery = query.trim().toLowerCase();
+  const matches = [];
+  for (const entry of state.consoleIndex) {
+    if (source && consoleSourceOf(entry) !== source) continue;
+    if (kind && entry.type !== kind) continue;
+    const rank = rankConsoleEntry(entry, lowerQuery);
+    if (rank >= 0) matches.push({ entry, rank });
+  }
+  // The index arrives name-sorted, so a stable sort by rank keeps names ordered inside each rank.
+  matches.sort((left, right) => left.rank - right.rank);
+  return { entries: matches.slice(0, limit).map((match) => match.entry), total: matches.length };
+}
+
+async function ensureConsoleIndex(forceRebuild = false) {
+  if (!supportsConsoleIndex()) return false;
+  if (state.consoleIndexDeviceId === state.selectedId && !forceRebuild) return true;
+  const params = new URLSearchParams({ index: "1" });
+  if (forceRebuild) params.set("refresh", "1");
+  const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+  state.consoleIndex = (result.entries || []).map((entry) => ({ ...entry, lowerName: entry.name.toLowerCase() }));
+  state.consoleIndexDeviceId = state.selectedId;
+  return true;
+}
+
 async function refreshConsoleCatalog(forceRebuild = false) {
   if (!requireOnline()) return;
   const extended = supportsConsoleCatalogSources();
   elements.consoleSourceFilter.classList.toggle("hidden", !extended);
   elements.consoleScopeField.classList.toggle("hidden", !extended);
   const query = elements.consoleSearch.value.trim();
-  elements.consoleCatalog.innerHTML = '<div class="inline-empty">Querying runtime console…</div>';
-  elements.consoleCount.textContent = "Loading catalog";
+  // Description search needs help text, which the index deliberately omits, so it always asks the device.
+  const searchHelp = extended && elements.consoleScope.checked;
+  const indexReady = state.consoleIndexDeviceId === state.selectedId && forceRebuild !== true;
+  if (searchHelp || !indexReady) {
+    elements.consoleCatalog.innerHTML = '<div class="inline-empty">Querying runtime console…</div>';
+    elements.consoleCount.textContent = "Loading catalog";
+  }
+  const local = !searchHelp && (await ensureConsoleIndex(forceRebuild === true).catch(() => false));
   try {
-    const params = new URLSearchParams({ q: query, limit: "800" });
-    if (state.consoleType) params.set("kind", state.consoleType);
-    if (extended) {
-      if (state.consoleSource) params.set("source", state.consoleSource);
-      if (elements.consoleScope.checked) params.set("scope", "all");
-      if (forceRebuild === true) params.set("refresh", "1");
+    let entries;
+    let total;
+    let catalogTotal;
+    if (local) {
+      const found = searchConsoleIndex(query, { source: state.consoleSource, kind: state.consoleType });
+      entries = found.entries;
+      total = found.total;
+      catalogTotal = state.consoleIndex.length;
+    } else {
+      const params = new URLSearchParams({ q: query, limit: String(CONSOLE_PAGE_SIZE) });
+      if (state.consoleType) params.set("kind", state.consoleType);
+      if (extended) {
+        if (state.consoleSource) params.set("source", state.consoleSource);
+        if (searchHelp) params.set("scope", "all");
+        if (forceRebuild === true) params.set("refresh", "1");
+      }
+      const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+      entries = result.entries || [];
+      total = Number(result.total || entries.length);
+      catalogTotal = Number(result.catalog_total || 0);
     }
-    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
-    state.consoleEntries = result.entries || [];
-    state.consoleTotal = Number(result.total || state.consoleEntries.length);
-    state.consoleCatalogTotal = Number(result.catalog_total || 0);
-    const matchLabel = query ? `${state.consoleTotal.toLocaleString()} matching` : `${state.consoleTotal.toLocaleString()} supported`;
-    const catalogLabel = query && state.consoleCatalogTotal ? ` of ${state.consoleCatalogTotal.toLocaleString()}` : "";
+    state.consoleEntries = entries;
+    state.consoleTotal = total;
+    state.consoleCatalogTotal = catalogTotal;
+    const matchLabel = query ? `${total.toLocaleString()} matching` : `${total.toLocaleString()} supported`;
+    const catalogLabel = query && catalogTotal ? ` of ${catalogTotal.toLocaleString()}` : "";
     elements.consoleCount.textContent =
-      `${matchLabel}${catalogLabel}${result.truncated ? ` · showing ${state.consoleEntries.length}` : ""}`;
+      `${matchLabel}${catalogLabel}${total > entries.length ? ` · showing ${entries.length}` : ""}`;
     renderConsoleCatalog();
   } catch (error) {
     elements.consoleCount.textContent = "Catalog unavailable";
@@ -374,6 +437,36 @@ function renderConsoleCatalog() {
 function selectConsoleEntry(entry) {
   state.consoleSelected = entry;
   elements.commandInput.value = entry.name;
+  renderConsoleDetail(entry, entry.help === undefined);
+  renderConsoleCatalog();
+  elements.commandInput.focus();
+  elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length);
+  // The index carries no help text, so the selected entry is the one place worth a round trip.
+  if (entry.help === undefined) loadConsoleEntryDetail(entry);
+}
+
+function refreshSelectedConsoleEntry() {
+  const entry = state.consoleSelected;
+  if (entry) loadConsoleEntryDetail(entry).then(renderConsoleCatalog);
+}
+
+async function loadConsoleEntryDetail(entry) {
+  try {
+    const params = new URLSearchParams({ q: entry.name, limit: "1" });
+    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+    const detail = (result.entries || []).find((item) => item.name === entry.name);
+    if (!detail) {
+      entry.help = "";
+      return;
+    }
+    Object.assign(entry, detail);
+    if (state.consoleSelected?.name === entry.name) renderConsoleDetail(entry, false);
+  } catch {
+    entry.help = "";
+  }
+}
+
+function renderConsoleDetail(entry, pendingHelp) {
   const flags = [entry.read_only && "read-only", entry.cheat && "cheat"].filter(Boolean);
   elements.consoleDetail.replaceChildren();
   const kind = entry.type === "variable" ? "CONSOLE VARIABLE" : "CONSOLE COMMAND";
@@ -382,7 +475,8 @@ function selectConsoleEntry(entry) {
   title.textContent = entry.name;
   if (entry.arguments) title.append(Object.assign(document.createElement("small"), { textContent: ` ${entry.arguments}` }));
   const help = document.createElement("p");
-  help.textContent = entry.help || "No help text was registered.";
+  if (pendingHelp) help.classList.add("pending");
+  help.textContent = pendingHelp ? "Reading help text…" : entry.help || "No help text was registered.";
   elements.consoleDetail.append(badge, title, help);
   if (entry.type === "variable" || flags.length) {
     const line = document.createElement("div");
@@ -394,9 +488,6 @@ function selectConsoleEntry(entry) {
     elements.consoleDetail.append(line);
   }
   if (entry.companion) elements.consoleDetail.append(showFlagControl(entry));
-  renderConsoleCatalog();
-  elements.commandInput.focus();
-  elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length);
 }
 
 // A show flag is reachable two ways: "show X" toggles it in the game viewport, while its ShowFlag.X companion is a
@@ -416,7 +507,7 @@ function showFlagControl(entry) {
     button.classList.toggle("active", entry.value === value);
     button.addEventListener("click", async () => {
       await executeCommand(`${entry.companion} ${value}`);
-      refreshConsoleCatalog();
+      refreshSelectedConsoleEntry();
     });
     group.append(button);
   }
@@ -447,9 +538,9 @@ async function executeCommand(command, commandId = "") {
     const logged = result.log_output || "";
     const body = direct || logged ? `${direct}${direct && logged ? "\n" : ""}${logged}` : "(no output)";
     appendCommandOutput(`${result.success ? "" : "[not handled] "}${body}\n[${elapsed} ms]\n\n`);
-    if (state.consoleSelected?.type === "variable" && command.startsWith(state.consoleSelected.name)) {
+    if (state.consoleSelected && command.startsWith(state.consoleSelected.name)) {
       clearTimeout(state.consoleQueryTimer);
-      state.consoleQueryTimer = setTimeout(refreshConsoleCatalog, 250);
+      state.consoleQueryTimer = setTimeout(refreshSelectedConsoleEntry, 250);
     }
   } catch (error) {
     appendCommandOutput(`[error] ${error.message}\n\n`);
@@ -508,10 +599,16 @@ async function requestCompletions() {
   }
   try {
     // Names can contain spaces ("stat Unit"), so the whole input is the needle.
-    const params = new URLSearchParams({ q: prefix.trim(), limit: "8" });
-    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+    let entries;
+    if (await ensureConsoleIndex().catch(() => false)) {
+      entries = searchConsoleIndex(prefix, { limit: 8 }).entries;
+    } else {
+      const params = new URLSearchParams({ q: prefix.trim(), limit: "8" });
+      const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/console-objects?${params}`);
+      entries = result.entries || [];
+    }
     if (elements.commandInput.value !== prefix) return;
-    state.completions = result.entries || [];
+    state.completions = entries;
     state.completionIndex = -1;
     state.completionPinned = false;
     const exact = state.completions.find((entry) => entry.name.toLowerCase() === prefix.trim().toLowerCase());

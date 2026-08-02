@@ -26,6 +26,7 @@ private:
 	void HandleMessage(const FString& Message);
 	void ExecuteCommand(const TSharedPtr<class FJsonObject>& Message);
 	void ListConsoleObjects(const TSharedPtr<class FJsonObject>& Message);
+	void SendConsoleIndex(const FString& RequestId, bool bRefresh);
 	void ListFiles(const TSharedPtr<class FJsonObject>& Message);
 	void GetModuleData(const TSharedPtr<class FJsonObject>& Message);
 	void InvokeModuleAction(const TSharedPtr<class FJsonObject>& Message);
