@@ -872,6 +872,7 @@ function renderModuleActionForm(module, action, inputs) {
     const numberInput = document.createElement("input");
     numberInput.type = "number";
     numberInput.step = "any";
+    attachNumberScrub(numberInput, input);
     const currentValue = state.moduleData?.Settings?.[input.id];
     if (currentValue !== undefined) numberInput.value = currentValue;
     field.append(text, numberInput);
@@ -1248,6 +1249,7 @@ function buildActionFormControl(module, field) {
     const control = document.createElement("input");
     control.type = input.type === "number" ? "number" : "text";
     control.value = String(input.default ?? "");
+    if (input.type === "number") attachNumberScrub(control, input);
     control.addEventListener("input", () => { values[input.id] = input.type === "number" ? Number(control.value) : control.value; });
     cell.append(control);
     wrap.append(cell);
@@ -1542,6 +1544,7 @@ function buildNumberControl(module, field, updaters, dirty, onDirtyChange) {
   };
   const slider = hasBounds && (display === "slider" || display === "slider_input") ? addInput("range") : null;
   const number = display === "input" || display === "slider_input" ? addInput("number") : null;
+  if (number) attachNumberScrub(number, field);
   const decimals = String(field.step ?? "").split(".")[1]?.length ?? 0;
   const formatReadout = (value) => Number(value).toLocaleString(undefined, {
     minimumFractionDigits: decimals,
@@ -1588,6 +1591,77 @@ function buildNumberControl(module, field, updaters, dirty, onDirtyChange) {
     });
   }
   return wrap;
+}
+
+// Editor-style numeric entry: dragging the field horizontally spins the value, a click that never
+// travelled drops into text entry. Scrubbing writes through the input event so the field's own
+// debounce, peer sync and commit path stay the single owner of the value.
+function attachNumberScrub(input, bounds = {}) {
+  const min = Number.isFinite(bounds.min) ? bounds.min : null;
+  const max = Number.isFinite(bounds.max) ? bounds.max : null;
+  const step = Number.isFinite(bounds.step) && bounds.step > 0 ? bounds.step : null;
+  const origin = min ?? 0;
+  input.classList.add("scrub-number");
+
+  const unitFor = (value) => {
+    if (step) return step;
+    if (min !== null && max !== null) return (max - min) / 250;
+    // Unbounded and unstepped: scale the per-pixel increment with the value so 0.5 and 5000 both stay controllable.
+    return Math.max(0.001, Math.abs(value) / 100);
+  };
+  const quantize = (value, unit) => {
+    const snapped = step ? origin + Math.round((value - origin) / step) * step : value;
+    const decimals = Math.min(6, Math.max(0, Math.ceil(-Math.log10(step ?? unit)) + 1));
+    return Number(snapped.toFixed(decimals));
+  };
+  const clamp = (value) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, value));
+
+  let scrub = null;
+  input.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.pointerType === "touch" || input.disabled || input.readOnly) return;
+    if (document.activeElement === input) return;
+    const start = Number(input.value);
+    const value = Number.isFinite(start) ? start : 0;
+    scrub = { pointerId: event.pointerId, lastX: event.clientX, travel: 0, dragging: false, value, unit: unitFor(value) };
+    input.setPointerCapture(event.pointerId);
+    // Preventing pointerdown suppresses the compatibility mousedown, so nothing else blurs either: do it here.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    event.preventDefault();
+  });
+
+  input.addEventListener("pointermove", (event) => {
+    if (!scrub || event.pointerId !== scrub.pointerId) return;
+    const delta = event.clientX - scrub.lastX;
+    scrub.lastX = event.clientX;
+    if (!scrub.dragging) {
+      scrub.travel += Math.abs(delta);
+      if (scrub.travel < 3) return;
+      scrub.dragging = true;
+      document.body.classList.add("scrubbing");
+      input.classList.add("scrubbing");
+    }
+    const speed = event.shiftKey ? 0.1 : event.ctrlKey || event.metaKey ? 10 : 1;
+    scrub.value = clamp(scrub.value + delta * scrub.unit * speed);
+    const next = String(quantize(scrub.value, scrub.unit));
+    if (next === input.value) return;
+    input.value = next;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const release = (event) => {
+    if (!scrub || event.pointerId !== scrub.pointerId) return;
+    const dragged = scrub.dragging;
+    scrub = null;
+    document.body.classList.remove("scrubbing");
+    input.classList.remove("scrubbing");
+    if (dragged) return;
+    input.focus();
+    input.select();
+  };
+  input.addEventListener("pointerup", release);
+  input.addEventListener("pointercancel", release);
+  // Capture can be lost without a pointerup (window focus stolen mid-drag); do not strand the scrub cursor.
+  input.addEventListener("lostpointercapture", release);
 }
 
 function buildStringControl(module, field, updaters, dirty, onDirtyChange) {
@@ -1779,6 +1853,7 @@ function buildVectorControl(module, field, updaters, dirty, onDirtyChange) {
         node.type = "number";
         node.className = "vector-input";
         node.step = field.step ? String(field.step) : "any";
+        attachNumberScrub(node, field);
         node.addEventListener("input", commit);
         node.addEventListener("blur", () => { if (!busy()) revertModuleField(field.id); });
       }

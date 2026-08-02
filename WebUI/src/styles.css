@@ -335,7 +335,7 @@ select {
 .module-action-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
 .module-action-form-title { flex-basis: 100%; font: 600 11px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
 .module-action-field { display: flex; flex-direction: column; gap: 4px; font: 500 11px/1 var(--sans); color: var(--muted); }
-.module-action-field input { height: 30px; width: 110px; background: var(--surface-2); border: 1px solid var(--input-line); border-radius: 4px; color: var(--text); padding: 0 8px; font: 500 12px/1 var(--mono); }
+.module-action-field input { height: 30px; width: 110px; background: var(--surface-2); border: 1px solid var(--input-line); border-radius: 4px; color: var(--text); padding: 0 13px; font: 500 12px/1 var(--mono); }
 .action-dot { width: 5px; height: 5px; border-radius: 1px; background: var(--muted-2); }
 .action-dot.confirm { background: var(--warning); }
 .console-detail { min-height: 100px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -484,6 +484,7 @@ kbd { margin-left: 4px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.12
 .action-input { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--input-bg); }
 .action-input-label { color: var(--faint); font: 400 11px/1 var(--sans); }
 .action-input input { width: 84px; border: 0; background: transparent; color: var(--text); font: 400 12px/1 var(--mono); outline: none; }
+.action-input input[type="number"] { padding: 0 12px; }
 .button.busy { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-3); }
 .button.busy > i { width: 9px; height: 9px; border: 1.5px solid var(--line-strong); border-top-color: var(--muted-3); border-radius: 50%; animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -599,8 +600,25 @@ kbd { margin-left: 4px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.12
 .field-row .field-json { padding: 0; }
 .field-checkbox { align-self: flex-start; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .field-number { display: flex; align-items: center; gap: 9px; }
-.field-number input[type="number"] { width: 88px; height: 28px; padding: 0 8px; border: 1px solid var(--input-line); border-radius: 4px; background: var(--input-bg); color: var(--text); font: 500 12px/1 var(--mono); }
+.field-number input[type="number"] { width: 88px; height: 28px; padding: 0 13px; border: 1px solid var(--input-line); border-radius: 4px; background: var(--input-bg); color: var(--text); font: 500 12px/1 var(--mono); }
 .field-number input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.scrub-number { cursor: ew-resize; appearance: textfield; -moz-appearance: textfield; }
+/* Native spinners sit under the drag gesture and the field never uses them. */
+.scrub-number::-webkit-outer-spin-button, .scrub-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* Drag affordance: chevrons occupy the reserved side padding, so the value never shifts when they appear. */
+.scrub-number:hover:not(:focus), .scrub-number.scrubbing {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7' viewBox='0 0 4 7'%3E%3Cpath d='M3.5.5.5 3.5 3.5 6.5' fill='none' stroke='%236E6E6E'/%3E%3C/svg%3E"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7' viewBox='0 0 4 7'%3E%3Cpath d='M.5.5 3.5 3.5.5 6.5' fill='none' stroke='%236E6E6E'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left 4px center, right 4px center;
+}
+/* The dragged field stays hovered, so the active state has to outrank the hover rule. */
+.scrub-number.scrubbing:not(:focus) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7' viewBox='0 0 4 7'%3E%3Cpath d='M3.5.5.5 3.5 3.5 6.5' fill='none' stroke='%239FC98C'/%3E%3C/svg%3E"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7' viewBox='0 0 4 7'%3E%3Cpath d='M.5.5 3.5 3.5.5 6.5' fill='none' stroke='%239FC98C'/%3E%3C/svg%3E");
+}
+.field-number .scrub-number:hover:not(:focus) { border-color: var(--line-strong); }
+.field-number .scrub-number.scrubbing:not(:focus) { border-color: var(--accent-btn-line); }
+.scrub-number:focus { cursor: text; }
+body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: none !important; }
 .field-number-readout { flex: none; display: inline-flex; align-items: baseline; gap: 4px; color: var(--muted-2); font: 500 11.5px/1 var(--mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .readout-value { text-align: right; font-variant-numeric: tabular-nums; }
 .readout-unit { color: var(--dim); }
@@ -664,8 +682,7 @@ kbd { margin-left: 4px; padding: 3px 4px; border: 1px solid rgba(255,255,255,.12
 .vector-axis.axis-y .vector-label { color: var(--accent-bright); }
 .vector-axis.axis-z .vector-label { color: var(--blue-bright); }
 .vector-value { color: var(--muted); font: 400 12px/1 var(--mono); }
-.vector-input { width: 72px; border: 0; padding: 0; background: transparent; color: var(--text); font: 400 12px/1 var(--mono); outline: none; }
-.vector-input::-webkit-outer-spin-button, .vector-input::-webkit-inner-spin-button { opacity: .35; }
+.vector-input { width: 78px; border: 0; padding: 0 12px; background: transparent; color: var(--text); font: 400 12px/1 var(--mono); outline: none; }
 
 .field-color { display: inline-flex; align-items: center; gap: 9px; align-self: flex-start; padding: 6px 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--input-bg); }
 .field-color > i { width: 15px; height: 15px; border: 1px solid var(--line-strong); border-radius: 2px; }
