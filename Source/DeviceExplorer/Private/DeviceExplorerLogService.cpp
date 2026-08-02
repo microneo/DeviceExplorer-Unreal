@@ -53,6 +53,9 @@ FString NormalizeVerbosity(const FString& Value)
 FString RunLogCommand(const FString& Command)
 {
 	FStringOutputDevice Output;
+	// FStringOutputDevice concatenates without separators by default, which would collapse the
+	// one-category-per-line listing into a single unparseable line.
+	Output.SetAutoEmitLineTerminator(true);
 	FSelfRegisteringExec::StaticExec(GWorld, *Command, Output);
 	return Output;
 }
