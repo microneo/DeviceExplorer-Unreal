@@ -604,13 +604,6 @@ async function requestCompletions() {
     state.commandHint = null;
     return closeCompletions();
   }
-  // Once the input has moved past a known name the entry stays pinned, so its signature is still on screen while
-  // the arguments are being typed.
-  const pinned = state.commandHint;
-  if (pinned && prefix.toLowerCase().startsWith(`${pinned.name.toLowerCase()} `)) {
-    showPinnedHint(pinned);
-    return;
-  }
   try {
     // Names can contain spaces ("stat Unit"), so the whole input is the needle.
     let entries;
@@ -622,15 +615,29 @@ async function requestCompletions() {
       entries = result.entries || [];
     }
     if (elements.commandInput.value !== prefix) return;
-    state.completions = entries;
-    state.completionIndex = -1;
-    state.completionPinned = false;
-    const exact = state.completions.find((entry) => entry.name.toLowerCase() === prefix.trim().toLowerCase());
-    state.commandHint = exact || null;
-    renderCompletions();
+    const exact = entries.find((entry) => entry.name.toLowerCase() === prefix.trim().toLowerCase());
+    if (exact) state.commandHint = exact;
+    if (entries.length) {
+      state.completions = entries;
+      state.completionIndex = -1;
+      state.completionPinned = false;
+      renderCompletions();
+      return;
+    }
+    // Only once the search is dry: names like "stat Unit" are catalog entries, not arguments to "stat".
+    const pinned = state.commandHint;
+    if (pinned && takesArgument(pinned) && prefix.toLowerCase().startsWith(`${pinned.name.toLowerCase()} `)) {
+      showPinnedHint(pinned);
+      return;
+    }
+    closeCompletions();
   } catch {
     closeCompletions();
   }
+}
+
+function takesArgument(entry) {
+  return Boolean(entry.arguments) || entry.type === "variable";
 }
 
 function renderCompletions() {
@@ -670,9 +677,9 @@ function acceptCompletion(index = state.completionIndex) {
   if (!entry) return;
   state.commandHint = entry;
   // A command that takes arguments is left open for typing, with its signature still pinned above the prompt.
-  const takesArgument = Boolean(entry.arguments) || entry.type === "variable";
-  elements.commandInput.value = takesArgument ? `${entry.name} ` : entry.name;
-  if (takesArgument) showPinnedHint(entry);
+  const open = takesArgument(entry);
+  elements.commandInput.value = open ? `${entry.name} ` : entry.name;
+  if (open) showPinnedHint(entry);
   else closeCompletions();
   elements.commandInput.focus();
   elements.commandInput.setSelectionRange(elements.commandInput.value.length, elements.commandInput.value.length);
