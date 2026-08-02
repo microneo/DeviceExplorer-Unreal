@@ -1106,7 +1106,10 @@ function buildModuleSection(module, section, updaters) {
   }
   const grid = document.createElement("div");
   grid.className = "field-grid";
-  if (section.columns > 0) grid.style.setProperty("--field-columns", String(section.columns));
+  if (section.columns > 0) {
+    grid.style.setProperty("--field-columns", String(section.columns));
+    grid.style.setProperty("--field-min", "0");
+  }
 
   const dirty = section.apply === "manual" ? new Map() : null;
   let applyButton = null;
@@ -1425,13 +1428,15 @@ function buildModuleField(module, field, updaters, dirty, onDirtyChange, section
     return row;
   }
 
-  const label = textCell("field-label", field.label || field.id);
+  const label = textCell("field-label", "");
+  label.append(textCell("field-label-text", field.label || field.id));
   if (field.description && !reference) {
     const help = textCell("field-help", "?");
     help.title = field.description;
     label.append(help);
   }
-  if (dirty && !field.readonly) label.append(textCell("field-was", ""));
+  const was = dirty && !field.readonly ? textCell("field-was", "") : null;
+  if (was && !reference) label.append(was);
 
   if (reference) {
     const head = document.createElement("div");
@@ -1441,6 +1446,8 @@ function buildModuleField(module, field, updaters, dirty, onDirtyChange, section
     const control = document.createElement("div");
     control.className = "reference-control";
     control.append(field.widget === "button" ? buildModuleFieldButton(module, field) : buildFieldControl(module, field, updaters, dirty, onDirtyChange));
+    // The label sits in a narrow fixed column here, so the previous value belongs with the control.
+    if (was) control.append(was);
     row.append(head, control, textCell("reference-api", field.api || ""));
     return row;
   }
@@ -1544,7 +1551,8 @@ function buildNumberControl(module, field, updaters, dirty, onDirtyChange) {
   const readout = document.createElement("span");
   readout.className = "field-number-readout";
   const readoutValue = textCell("readout-value", "");
-  readout.append(readoutValue);
+  // A number input already shows the value; the readout then only carries the unit.
+  if (!number) readout.append(readoutValue);
   if (field.unit) readout.append(textCell("readout-unit", field.unit));
   if (!number || field.unit) wrap.append(readout);
   if (hasBounds) {

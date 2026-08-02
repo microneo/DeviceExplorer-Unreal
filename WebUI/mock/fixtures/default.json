@@ -223,6 +223,121 @@
           ]
         },
         {
+          "id": "developer_settings",
+          "label": "Developer Settings",
+          "description": "Reflected settings object registered with Builder.Object().",
+          "icon": "settings",
+          "refresh_interval_ms": 4000,
+          "actions": [],
+          "pages": [
+            {
+              "id": "categories",
+              "label": "Categories",
+              "description": "One section per reflected property category.",
+              "icon": "settings",
+              "sections": [
+                {
+                  "id": "rendering",
+                  "label": "Rendering",
+                  "description": "Category: Rendering",
+                  "columns": 2,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "dynamic_resolution_enabled", "label": "Enable dynamic resolution scaling", "description": "Mirrors r.DynamicRes.OperationMode on the running build.", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "default_screen_percentage", "label": "Default screen percentage", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "unit": "%", "min": 25, "max": 200, "step": 5 },
+                    { "id": "shadow_quality_preset", "label": "Shadow map quality preset", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Low", "Medium", "High", "Epic", "Cinematic"] },
+                    { "id": "max_csm_resolution", "label": "Maximum cascaded shadow map resolution", "description": "Rounded up to the next power of two.", "widget": "number", "readonly": false, "span": 1, "number_display": "input", "unit": "px", "step": 256 },
+                    { "id": "motion_blur_intensity", "label": "Motion blur intensity multiplier", "widget": "number", "readonly": false, "span": 1, "number_display": "slider", "min": 0, "max": 1, "step": 0.05 },
+                    { "id": "view_distance_scale", "label": "View distance scale for streaming proxies", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "min": 0.25, "max": 4, "step": 0.25 }
+                  ]
+                },
+                {
+                  "id": "streaming",
+                  "label": "Streaming",
+                  "description": "Category: Streaming",
+                  "columns": 2,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "texture_pool_size_mb", "label": "Texture streaming pool size", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "unit": "MB", "min": 256, "max": 4096, "step": 64 },
+                    { "id": "streaming_distance_boost", "label": "Streaming distance boost factor", "widget": "number", "readonly": false, "span": 1, "number_display": "input", "step": 0.1 },
+                    { "id": "async_loading_thread", "label": "Use the asynchronous loading thread", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "hlod_streaming_enabled", "label": "Enable hierarchical level of detail streaming", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "world_partition_priority", "label": "World partition streaming priority", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Background", "Normal", "Elevated", "Blocking"] },
+                    { "id": "streaming_cache_directory", "label": "Streaming cache directory inside Saved", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" }
+                  ]
+                },
+                {
+                  "id": "network",
+                  "label": "Network emulation",
+                  "description": "Category: NetworkEmulation",
+                  "columns": 3,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": true,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "emulated_latency_ms", "label": "Additional emulated latency", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "unit": "ms", "min": 0, "max": 500, "step": 5 },
+                    { "id": "simulated_packet_loss", "label": "Simulated packet loss", "widget": "number", "readonly": false, "span": 1, "number_display": "slider", "unit": "%", "min": 0, "max": 25, "step": 0.5 },
+                    { "id": "emulation_profile", "label": "Network emulation profile", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Disabled", "Average residential", "Mobile 4G", "Congested wifi"] },
+                    { "id": "replay_capture_enabled", "label": "Capture a replay for every session", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "replay_directory", "label": "Replay output directory", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "net_log_verbosity", "label": "Networking log verbosity", "widget": "enum", "readonly": false, "span": 1, "number_display": "auto", "options": ["Log", "Verbose", "VeryVerbose"] }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "reflection",
+              "label": "Reflection",
+              "description": "Read-only view of the reflected object with a settings panel beside it.",
+              "icon": "runtime",
+              "sections": [
+                {
+                  "id": "reflection_summary",
+                  "label": "Reflected property summary",
+                  "description": "Section without an explicit column count.",
+                  "columns": 0,
+                  "apply": "instant",
+                  "style": "default",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "settings_class", "label": "Settings object class", "widget": "text", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "config_section_name", "label": "Configuration file section name", "widget": "text", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "exposed_property_count", "label": "Properties exposed by reflection", "widget": "number", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "skipped_property_count", "label": "Properties skipped as unsupported", "widget": "number", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "last_write_acknowledged", "label": "Last write acknowledged at", "widget": "text", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "matches_default_object", "label": "Values match the class default object", "widget": "bool", "readonly": true, "span": 1, "number_display": "auto" },
+                    { "id": "container_is_transient", "label": "Settings container is transient", "widget": "bool", "readonly": true, "span": 1, "number_display": "auto" }
+                  ]
+                },
+                {
+                  "id": "capture_defaults",
+                  "label": "Capture defaults",
+                  "description": "Category: Capture",
+                  "columns": 2,
+                  "apply": "manual",
+                  "style": "settings",
+                  "collapsible": false,
+                  "collapsed": false,
+                  "fields": [
+                    { "id": "capture_frame_count", "label": "Frames captured per snapshot", "widget": "number", "readonly": false, "span": 1, "number_display": "slider_input", "min": 1, "max": 240, "step": 1 },
+                    { "id": "capture_trace_channels", "label": "Trace channels enabled at startup", "widget": "flags", "readonly": false, "span": 2, "number_display": "auto", "options": ["cpu", "gpu", "rhi", "loadtime", "counters"] },
+                    { "id": "capture_output_directory", "label": "Snapshot output directory", "widget": "string", "readonly": false, "span": 1, "number_display": "auto" },
+                    { "id": "capture_compress_artifacts", "label": "Compress artifacts before download", "widget": "bool", "readonly": false, "span": 1, "number_display": "auto" }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
           "id": "widget_gallery",
           "label": "Widget Gallery",
           "description": "Every widget the module builder can register.",
@@ -428,6 +543,40 @@
           { "name": "snapshot-001.json", "size": "8.7 KB", "age": "2 min ago" },
           { "name": "runtime-summary.json", "size": "4.0 KB", "age": "14 min ago" }
         ]
+      }
+    },
+    "developer_settings": {
+      "data": {},
+      "values": {
+        "dynamic_resolution_enabled": true,
+        "default_screen_percentage": 85,
+        "shadow_quality_preset": "High",
+        "max_csm_resolution": 2048,
+        "motion_blur_intensity": 0.35,
+        "view_distance_scale": 1.5,
+        "texture_pool_size_mb": 1200,
+        "streaming_distance_boost": 1.2,
+        "async_loading_thread": true,
+        "hlod_streaming_enabled": false,
+        "world_partition_priority": "Normal",
+        "streaming_cache_directory": "Saved/StreamingCache",
+        "emulated_latency_ms": 40,
+        "simulated_packet_loss": 1.5,
+        "emulation_profile": "Average residential",
+        "replay_capture_enabled": false,
+        "replay_directory": "Saved/Demos",
+        "net_log_verbosity": "Log",
+        "settings_class": "UExampleDeveloperSettings",
+        "config_section_name": "/Script/ExampleProject.ExampleDeveloperSettings",
+        "exposed_property_count": 18,
+        "skipped_property_count": 3,
+        "last_write_acknowledged": "2026-08-01T08:13:44Z",
+        "matches_default_object": false,
+        "container_is_transient": false,
+        "capture_frame_count": 60,
+        "capture_trace_channels": ["cpu", "gpu"],
+        "capture_output_directory": "Saved/Diagnostics/Snapshots",
+        "capture_compress_artifacts": true
       }
     },
     "widget_gallery": {
