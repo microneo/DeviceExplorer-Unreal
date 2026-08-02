@@ -99,16 +99,16 @@ struct DEVICEEXPLORERCORE_API FDeviceExplorerActionParameters
 class DEVICEEXPLORERCORE_API FDeviceExplorerModuleBuilder
 {
 public:
-	FDeviceExplorerModuleBuilder(FName Owner, const TCHAR* Name, const TCHAR* DisplayName);
+	FDeviceExplorerModuleBuilder(FName InOwner, const TCHAR* InName, const TCHAR* InDisplayName);
 
 	FDeviceExplorerModuleBuilder& Description(const TCHAR* Text);
-	FDeviceExplorerModuleBuilder& Icon(const TCHAR* Icon);
+	FDeviceExplorerModuleBuilder& Icon(const TCHAR* InIcon);
 	FDeviceExplorerModuleBuilder& RefreshMs(int32 Milliseconds);
-	FDeviceExplorerModuleBuilder& FileRoot(const TCHAR* Name, const FString& AbsolutePath, const TCHAR* DisplayName = nullptr, bool bAllowDownload = true);
+	FDeviceExplorerModuleBuilder& FileRoot(const TCHAR* InName, const FString& AbsolutePath, const TCHAR* InDisplayName = nullptr, bool bAllowDownload = true);
 
-	FDeviceExplorerModulePageBuilder Page(const TCHAR* Name, const TCHAR* DisplayName = nullptr, const FDeviceExplorerPageOptions& Options = {});
-	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* Name, const TCHAR* DisplayName, const FDeviceExplorerSectionOptions& Options = {});
-	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* DisplayName, const FDeviceExplorerSectionOptions& Options = {});
+	FDeviceExplorerModulePageBuilder Page(const TCHAR* InName, const TCHAR* InDisplayName = nullptr, const FDeviceExplorerPageOptions& Options = {});
+	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* InName, const TCHAR* InDisplayName, const FDeviceExplorerSectionOptions& Options = {});
+	FDeviceExplorerModuleSectionBuilder Section(const TCHAR* InDisplayName, const FDeviceExplorerSectionOptions& Options = {});
 
 	template <typename GetterType>
 	FDeviceExplorerModuleBuilder& Readonly(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, const FDeviceExplorerNumberOptions& Options = {})
@@ -136,7 +136,7 @@ public:
 		}
 	}
 
-	FDeviceExplorerModuleBuilder& Badge(const TCHAR* Name, const TCHAR* DisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Badge(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options = {});
 
 	template <typename GetterType, typename MaxGetterType>
 	FDeviceExplorerModuleBuilder& Meter(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, MaxGetterType MaxGetter)
@@ -169,105 +169,105 @@ public:
 		}
 	}
 
-	FDeviceExplorerModuleBuilder& Status(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FDeviceExplorerStatus()> Getter, const FDeviceExplorerFieldOptions& Options = {});
-	FDeviceExplorerModuleBuilder& Json(const TCHAR* Name, const TCHAR* DisplayName, TFunction<TSharedPtr<FJsonObject>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
-	FDeviceExplorerModuleBuilder& Table(const TCHAR* Name, const TCHAR* DisplayName, TArray<FString> Columns, TFunction<TArray<TArray<FString>>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
-	FDeviceExplorerModuleBuilder& Artifact(const TCHAR* Name, const TCHAR* DisplayName, TFunction<TArray<FDeviceExplorerArtifact>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
-	FDeviceExplorerModuleBuilder& Path(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FString()> Getter, const FDeviceExplorerFieldOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Status(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FDeviceExplorerStatus()> Getter, const FDeviceExplorerFieldOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Json(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TSharedPtr<FJsonObject>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Table(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Columns, TFunction<TArray<TArray<FString>>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Artifact(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TArray<FDeviceExplorerArtifact>()> Getter, const FDeviceExplorerFieldOptions& Options = {});
+	FDeviceExplorerModuleBuilder& Path(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, const FDeviceExplorerFieldOptions& Options = {});
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Toggle(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Toggle(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
 	{
-		return ToggleImpl(Name, DisplayName, TFunction<bool()>(MoveTemp(Getter)),
+		return ToggleImpl(InName, InDisplayName, TFunction<bool()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(bool)>([Setter = MoveTemp(Setter)](bool Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Number(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerNumberOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Number(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerNumberOptions& Options = {})
 	{
-		return NumberImpl(Name, DisplayName,
+		return NumberImpl(InName, InDisplayName,
 			TFunction<double()>([Getter = MoveTemp(Getter)]() mutable { return double(Getter()); }),
 			TFunction<FDeviceExplorerWriteResult(double)>([Setter = MoveTemp(Setter)](double Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& String(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
+	FDeviceExplorerModuleBuilder& String(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
 	{
-		return StringImpl(Name, DisplayName, TFunction<FString()>(MoveTemp(Getter)),
+		return StringImpl(InName, InDisplayName, TFunction<FString()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(const FString&)>([Setter = MoveTemp(Setter)](const FString& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Enum(const TCHAR* Name, const TCHAR* DisplayName, TArray<FString> Values, GetterType Getter, SetterType Setter, const FDeviceExplorerEnumOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Enum(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, GetterType Getter, SetterType Setter, const FDeviceExplorerEnumOptions& Options = {})
 	{
-		return EnumImpl(Name, DisplayName, MoveTemp(Values), TFunction<FString()>(MoveTemp(Getter)),
+		return EnumImpl(InName, InDisplayName, MoveTemp(Values), TFunction<FString()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(const FString&)>([Setter = MoveTemp(Setter)](const FString& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Flags(const TCHAR* Name, const TCHAR* DisplayName, TArray<FString> Values, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Flags(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
 	{
-		return FlagsImpl(Name, DisplayName, MoveTemp(Values), TFunction<TArray<FString>()>(MoveTemp(Getter)),
+		return FlagsImpl(InName, InDisplayName, MoveTemp(Values), TFunction<TArray<FString>()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(const TArray<FString>&)>([Setter = MoveTemp(Setter)](const TArray<FString>& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Text(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerTextOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Text(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerTextOptions& Options = {})
 	{
-		return TextImpl(Name, DisplayName, TFunction<FString()>(MoveTemp(Getter)),
+		return TextImpl(InName, InDisplayName, TFunction<FString()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(const FString&)>([Setter = MoveTemp(Setter)](const FString& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Vector(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerVectorOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Vector(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerVectorOptions& Options = {})
 	{
-		return VectorImpl(Name, DisplayName, TFunction<FVector()>(MoveTemp(Getter)),
+		return VectorImpl(InName, InDisplayName, TFunction<FVector()>(MoveTemp(Getter)),
 			TFunction<FDeviceExplorerWriteResult(const FVector&)>([Setter = MoveTemp(Setter)](const FVector& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 	}
 
 	template <typename GetterType, typename SetterType>
-	FDeviceExplorerModuleBuilder& Color(const TCHAR* Name, const TCHAR* DisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Color(const TCHAR* InName, const TCHAR* InDisplayName, GetterType Getter, SetterType Setter, const FDeviceExplorerFieldOptions& Options = {})
 	{
 		using FReturnType = std::decay_t<decltype(Getter())>;
 		if constexpr (std::is_same_v<FReturnType, FLinearColor>)
 		{
-			return ColorImpl(Name, DisplayName,
+			return ColorImpl(InName, InDisplayName,
 				TFunction<FColor()>([Getter = MoveTemp(Getter)]() mutable { return Getter().ToFColor(true); }),
 				TFunction<FDeviceExplorerWriteResult(const FColor&)>([Setter = MoveTemp(Setter)](const FColor& Value) mutable { return InvokeSetter(Setter, FLinearColor(Value)); }), Options);
 		}
 		else
 		{
-			return ColorImpl(Name, DisplayName, TFunction<FColor()>(MoveTemp(Getter)),
+			return ColorImpl(InName, InDisplayName, TFunction<FColor()>(MoveTemp(Getter)),
 				TFunction<FDeviceExplorerWriteResult(const FColor&)>([Setter = MoveTemp(Setter)](const FColor& Value) mutable { return InvokeSetter(Setter, Value); }), Options);
 		}
 	}
 
 	template <typename HandlerType>
-	FDeviceExplorerModuleBuilder& Action(const TCHAR* Name, const TCHAR* DisplayName, HandlerType Handler, const FDeviceExplorerActionOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Action(const TCHAR* InName, const TCHAR* InDisplayName, HandlerType Handler, const FDeviceExplorerActionOptions& Options = {})
 	{
-		return ActionImpl(Name, DisplayName,
+		return ActionImpl(InName, InDisplayName,
 			TFunction<FDeviceExplorerModuleResult()>([Handler = MoveTemp(Handler)]() mutable { return InvokeHandler(Handler); }), Options);
 	}
 
 	template <typename HandlerType>
-	FDeviceExplorerModuleBuilder& Action(const TCHAR* Name, const TCHAR* DisplayName, TArray<FDeviceExplorerActionInput> Inputs, HandlerType Handler, const FDeviceExplorerActionOptions& Options = {})
+	FDeviceExplorerModuleBuilder& Action(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FDeviceExplorerActionInput> Inputs, HandlerType Handler, const FDeviceExplorerActionOptions& Options = {})
 	{
-		return ActionFormImpl(Name, DisplayName, MoveTemp(Inputs),
+		return ActionFormImpl(InName, InDisplayName, MoveTemp(Inputs),
 			TFunction<FDeviceExplorerModuleResult(const FDeviceExplorerActionParameters&)>(
 				[Handler = MoveTemp(Handler)](const FDeviceExplorerActionParameters& Parameters) mutable { return InvokeHandler(Handler, Parameters); }), Options);
 	}
 
 	template <typename HandlerType>
-	FDeviceExplorerModuleBuilder& Button(const TCHAR* Name, const TCHAR* DisplayName, HandlerType Handler, const TCHAR* Description = nullptr, bool bRequiresConfirmation = false)
+	FDeviceExplorerModuleBuilder& Button(const TCHAR* InName, const TCHAR* InDisplayName, HandlerType Handler, const TCHAR* InDescription = nullptr, bool bRequiresConfirmation = false)
 	{
-		return Action(Name, DisplayName, MoveTemp(Handler), { .Description = Description, .bRequiresConfirmation = bRequiresConfirmation });
+		return Action(InName, InDisplayName, MoveTemp(Handler), { .Description = InDescription, .bRequiresConfirmation = bRequiresConfirmation });
 	}
 
-	FDeviceExplorerModuleBuilder& Command(const TCHAR* ConsoleCommand, const TCHAR* DisplayName, const TCHAR* Description);
+	FDeviceExplorerModuleBuilder& Command(const TCHAR* ConsoleCommand, const TCHAR* InDisplayName, const TCHAR* InDescription);
 
 #if WITH_COREUOBJECT
-	FDeviceExplorerModuleBuilder& Object(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = false, const TCHAR* SectionPrefix = nullptr, const FDeviceExplorerSectionOptions& SectionOptions = {});
-	FDeviceExplorerModuleBuilder& SettingsObject(UObject* Object, TArray<FName> PropertyNames = {}, bool bPersist = true, const TCHAR* PageDisplayName = TEXT("Settings"));
+	FDeviceExplorerModuleBuilder& Object(UObject* InObject, TArray<FName> PropertyNames = {}, bool bPersist = false, const TCHAR* SectionPrefix = nullptr, const FDeviceExplorerSectionOptions& SectionOptions = {});
+	FDeviceExplorerModuleBuilder& SettingsObject(UObject* InObject, TArray<FName> PropertyNames = {}, bool bPersist = true, const TCHAR* PageDisplayName = TEXT("Settings"));
 #endif
 
 	bool Register();
@@ -338,29 +338,29 @@ private:
 	void Activate(int32 PageIndex, int32 SectionIndex);
 	FDeviceExplorerPageDescriptor& EnsurePage();
 	FDeviceExplorerSectionDescriptor& EnsureSection();
-	FDeviceExplorerFieldDescriptor& AddField(const TCHAR* Name, const TCHAR* DisplayName, EDeviceExplorerWidget Widget, bool bReadOnly);
-	void AddBinding(FName Name, TFunction<TSharedPtr<FJsonValue>()> Reader, TFunction<bool(const TSharedPtr<FJsonValue>&, FString& OutError)> Writer);
+	FDeviceExplorerFieldDescriptor& AddField(const TCHAR* InName, const TCHAR* InDisplayName, EDeviceExplorerWidget Widget, bool bReadOnly);
+	void AddBinding(FName InName, TFunction<TSharedPtr<FJsonValue>()> Reader, TFunction<bool(const TSharedPtr<FJsonValue>&, FString& OutError)> Writer);
 	static void ApplyNumberOptions(FDeviceExplorerFieldDescriptor& Field, const FDeviceExplorerNumberOptions& Options);
 
-	FDeviceExplorerModuleBuilder& ReadonlyBool(const TCHAR* Name, const TCHAR* DisplayName, TFunction<bool()> Getter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& ReadonlyNumber(const TCHAR* Name, const TCHAR* DisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& ReadonlyText(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FString()> Getter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& MeterImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<double()> Getter, TFunction<double()> MaxGetter);
-	FDeviceExplorerModuleBuilder& SeriesSampleImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& SeriesWindowImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<TArray<double>()> Getter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& ToggleImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<bool()> Getter, TFunction<FDeviceExplorerWriteResult(bool)> Setter, const FDeviceExplorerFieldOptions& Options);
-	FDeviceExplorerModuleBuilder& NumberImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<double()> Getter, TFunction<FDeviceExplorerWriteResult(double)> Setter, const FDeviceExplorerNumberOptions& Options);
-	FDeviceExplorerModuleBuilder& StringImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerFieldOptions& Options);
-	FDeviceExplorerModuleBuilder& TextImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerTextOptions& Options);
-	FDeviceExplorerModuleBuilder& EnumImpl(const TCHAR* Name, const TCHAR* DisplayName, TArray<FString> Values, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerEnumOptions& Options);
-	FDeviceExplorerModuleBuilder& FlagsImpl(const TCHAR* Name, const TCHAR* DisplayName, TArray<FString> Values, TFunction<TArray<FString>()> Getter, TFunction<FDeviceExplorerWriteResult(const TArray<FString>&)> Setter, const FDeviceExplorerFieldOptions& Options);
-	FDeviceExplorerModuleBuilder& VectorImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FVector()> Getter, TFunction<FDeviceExplorerWriteResult(const FVector&)> Setter, const FDeviceExplorerVectorOptions& Options);
-	FDeviceExplorerModuleBuilder& ColorImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FColor()> Getter, TFunction<FDeviceExplorerWriteResult(const FColor&)> Setter, const FDeviceExplorerFieldOptions& Options);
-	FDeviceExplorerModuleBuilder& ActionImpl(const TCHAR* Name, const TCHAR* DisplayName, TFunction<FDeviceExplorerModuleResult()> Handler, const FDeviceExplorerActionOptions& Options);
-	FDeviceExplorerModuleBuilder& ActionFormImpl(const TCHAR* Name, const TCHAR* DisplayName, TArray<FDeviceExplorerActionInput> Inputs, TFunction<FDeviceExplorerModuleResult(const FDeviceExplorerActionParameters&)> Handler, const FDeviceExplorerActionOptions& Options);
+	FDeviceExplorerModuleBuilder& ReadonlyBool(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<bool()> Getter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& ReadonlyNumber(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& ReadonlyText(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& MeterImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, TFunction<double()> MaxGetter);
+	FDeviceExplorerModuleBuilder& SeriesSampleImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& SeriesWindowImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<TArray<double>()> Getter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& ToggleImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<bool()> Getter, TFunction<FDeviceExplorerWriteResult(bool)> Setter, const FDeviceExplorerFieldOptions& Options);
+	FDeviceExplorerModuleBuilder& NumberImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<double()> Getter, TFunction<FDeviceExplorerWriteResult(double)> Setter, const FDeviceExplorerNumberOptions& Options);
+	FDeviceExplorerModuleBuilder& StringImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerFieldOptions& Options);
+	FDeviceExplorerModuleBuilder& TextImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerTextOptions& Options);
+	FDeviceExplorerModuleBuilder& EnumImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, TFunction<FString()> Getter, TFunction<FDeviceExplorerWriteResult(const FString&)> Setter, const FDeviceExplorerEnumOptions& Options);
+	FDeviceExplorerModuleBuilder& FlagsImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FString> Values, TFunction<TArray<FString>()> Getter, TFunction<FDeviceExplorerWriteResult(const TArray<FString>&)> Setter, const FDeviceExplorerFieldOptions& Options);
+	FDeviceExplorerModuleBuilder& VectorImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FVector()> Getter, TFunction<FDeviceExplorerWriteResult(const FVector&)> Setter, const FDeviceExplorerVectorOptions& Options);
+	FDeviceExplorerModuleBuilder& ColorImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FColor()> Getter, TFunction<FDeviceExplorerWriteResult(const FColor&)> Setter, const FDeviceExplorerFieldOptions& Options);
+	FDeviceExplorerModuleBuilder& ActionImpl(const TCHAR* InName, const TCHAR* InDisplayName, TFunction<FDeviceExplorerModuleResult()> Handler, const FDeviceExplorerActionOptions& Options);
+	FDeviceExplorerModuleBuilder& ActionFormImpl(const TCHAR* InName, const TCHAR* InDisplayName, TArray<FDeviceExplorerActionInput> Inputs, TFunction<FDeviceExplorerModuleResult(const FDeviceExplorerActionParameters&)> Handler, const FDeviceExplorerActionOptions& Options);
 
 #if WITH_COREUOBJECT
-	static void NotifyPropertyChanged(UObject* Object, class FProperty* Property, bool bPersist);
+	static void NotifyPropertyChanged(UObject* InObject, class FProperty* Property, bool bPersist);
 #endif
 
 	FName Owner;
