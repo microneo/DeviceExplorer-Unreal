@@ -41,6 +41,7 @@ function makeState(scenario) {
   state.scenario = scenario;
   state.transfers = new Map();
   state.nextTransfer = 1;
+  state.log_levels = new Map(Object.entries(state.log_categories).map(([name, entry]) => [name, { ...entry, verbosity: entry.boot }]));
   for (const device of state.devices) device.protocol_version = DEVICEEXPLORER_PROTOCOL_VERSION;
   if (scenario === "empty") state.devices = [];
   if (scenario === "offline") {
@@ -67,6 +68,40 @@ function listConsole(state, url) {
   const matches = state.console_objects.filter((entry) =>
     !query || `${entry.name} ${entry.help}`.toLowerCase().includes(query));
   return { entries: matches.slice(0, limit), total: matches.length, truncated: matches.length > limit };
+}
+
+function logCategories(state) {
+  return [...state.log_levels.entries()].map(([name, entry]) => ({
+    name,
+    verbosity: entry.verbosity,
+    baseline: entry.boot,
+    source: entry.verbosity === entry.boot ? "boot" : "runtime"
+  }));
+}
+
+const LOG_LEVELS = ["Fatal", "Error", "Warning", "Display", "Log", "Verbose", "VeryVerbose"];
+
+function setLogVerbosity(state, body) {
+  const results = [];
+  for (const { category, verbosity } of body.entries || []) {
+    const entry = state.log_levels.get(category);
+    if (!entry || !LOG_LEVELS.includes(verbosity)) {
+      results.push({ category, requested: verbosity, success: false, error: "This build has no such log category" });
+      continue;
+    }
+    // Mirrors FLogCategoryBase::SetVerbosity(), which silently clamps to the compiled ceiling.
+    const ceiling = entry.ceiling || "VeryVerbose";
+    const applied = LOG_LEVELS.indexOf(verbosity) > LOG_LEVELS.indexOf(ceiling) ? ceiling : verbosity;
+    entry.verbosity = applied;
+    results.push({
+      category,
+      requested: verbosity,
+      applied,
+      success: applied === verbosity,
+      error: applied === verbosity ? "" : `${verbosity} is compiled out in this build`
+    });
+  }
+  return { success: true, auto_revert: Boolean(body.auto_revert), results, categories: logCategories(state) };
 }
 
 function executeCommand(state, body) {
@@ -198,7 +233,19 @@ async function route(request, response, state) {
         entry.sequence > after &&
         (!category || entry.category.toLowerCase().includes(category)) &&
         (!verbosity || entry.verbosity.toLowerCase() === verbosity));
-      return sendJson(response, 200, { entries, dropped: device.dropped_logs || 0 }, state.scenario);
+      return sendJson(response, 200, {
+        entries,
+        dropped: device.dropped_logs || 0,
+        buffered: (state.logs[deviceId] || []).length,
+        capacity: 100000
+      }, state.scenario);
+    }
+    if (action === "log-categories" && method === "GET") {
+      return sendJson(response, 200, { success: true, auto_revert: true, categories: logCategories(state) }, state.scenario);
+    }
+    if (action === "log-verbosity" && method === "POST") {
+      if (!requirePostHeader(request, response, state.scenario)) return;
+      return sendJson(response, 200, setLogVerbosity(state, await readJson(request)), state.scenario);
     }
     if (action === "console-objects" && method === "GET") {
       return sendJson(response, 200, listConsole(state, url), state.scenario);

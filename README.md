@@ -6,7 +6,8 @@ a cable or a running Editor.
 
 Features:
 
-- live logs with category and verbosity filters;
+- live logs with a client-side category filter and a Verbosity tab that sets
+  per-category levels on the running build;
 - runtime console catalog, autocomplete, history, and command execution;
 - sandboxed file browsing and downloads, including directory archives;
 - trace and profiling artifact transfer;

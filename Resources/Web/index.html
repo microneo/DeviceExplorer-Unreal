@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>DeviceExplorer</title>
-  <script type="module" crossorigin src="./assets/index-BUXStK7y.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BuINOJa4.css">
+  <script type="module" crossorigin src="./assets/index-r64fB5TI.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CT4y2iSK.css">
 </head>
 <body>
   <div class="app-shell">
@@ -67,29 +67,134 @@
           <span id="module-tabs" class="module-tabs"></span>
         </nav>
 
-        <section id="tab-logs" class="tab-panel">
+        <section id="tab-logs" class="tab-panel logs-panel">
           <div class="panel-heading">
-            <div><h2>Live logs</h2><p>Output streamed directly from the selected build.</p></div>
-            <div id="log-stats" class="subtle-chip">0 messages</div>
+            <div><h2>Logs <span id="log-device-label" class="module-id"></span></h2><p>Output streamed directly from the selected build.</p></div>
+            <div id="log-stream-state" class="module-live-chip"><i></i>streaming</div>
           </div>
-          <div class="toolbar">
-            <label class="search-field grow">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
-              <input id="log-category" type="search" placeholder="Filter by category">
-            </label>
-            <select id="log-verbosity" aria-label="Log level">
-              <option value="">All levels</option>
-              <option>Fatal</option><option>Error</option><option>Warning</option>
-              <option>Display</option><option>Log</option><option>Verbose</option><option>VeryVerbose</option>
-            </select>
-            <span class="toolbar-spacer"></span>
-            <button id="save-logs" class="button ghost"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 12.5h11"/></svg>Save</button>
-            <button id="clear-logs" class="button ghost" title="Clears the browser view only — the device log is untouched">Clear view</button>
-            <label class="switch"><input id="follow-logs" type="checkbox" checked><span></span>Follow</label>
+          <nav id="log-pages" class="module-pages" aria-label="Log tools">
+            <button type="button" class="active" data-log-page="stream">Stream</button>
+            <button type="button" data-log-page="verbosity">Verbosity<span id="log-override-count" class="log-tab-count hidden">0</span></button>
+          </nav>
+
+          <div id="log-stream-page" class="log-workspace">
+            <div class="log-main">
+              <div class="log-toolbar">
+                <label class="search-field grow">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+                  <input id="log-search" type="search" placeholder="Search messages">
+                </label>
+                <div id="log-level-filter" class="segmented log-level-filter" aria-label="Visible severity">
+                  <button type="button" class="active" data-level="all">All</button>
+                  <button type="button" data-level="warnings">Warnings+</button>
+                  <button type="button" data-level="errors">Errors</button>
+                </div>
+                <span class="log-toolbar-actions">
+                  <span class="log-toolbar-sep"></span>
+                  <button id="save-logs" class="button ghost"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 12.5h11"/></svg>Save</button>
+                  <button id="clear-logs" class="button ghost" title="Clears the browser view only — the device log is untouched">Clear view</button>
+                  <label class="switch"><input id="follow-logs" type="checkbox" checked><span></span>Follow</label>
+                </span>
+              </div>
+              <div id="log-filter-bar" class="log-filter-bar hidden">
+                <span class="log-filter-label">Filter</span>
+                <div id="log-filter-chips" class="log-filter-chips"></div>
+                <span id="log-filter-count" class="log-filter-count"></span>
+                <button id="reset-log-filters" type="button" class="text-button">Reset</button>
+              </div>
+              <div class="log-table">
+                <div class="log-header"><span>Time</span><span>Category</span><span>Level</span><span>Message</span><span></span></div>
+                <div id="logs" class="logs"></div>
+              </div>
+              <div class="log-footer">
+                <span id="log-error-count" class="log-tally error"><i></i>0 errors</span>
+                <span id="log-warning-count" class="log-tally warning"><i></i>0 warnings</span>
+                <span id="log-hidden-count" class="log-tally">0 hidden by filter</span>
+                <span id="log-buffer-count" class="log-buffer">buffer 0</span>
+              </div>
+            </div>
+
+            <aside class="log-inspector">
+              <div class="log-inspector-head">
+                <div class="log-inspector-title"><strong>Categories</strong><span id="log-category-count">0 in buffer</span></div>
+                <label class="search-field">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+                  <input id="log-category-search" type="search" placeholder="Filter categories">
+                </label>
+                <div id="log-category-bulk" class="log-bulk">
+                  <button type="button" data-category-action="all">All</button>
+                  <button type="button" data-category-action="none">None</button>
+                  <button type="button" data-category-action="invert">Invert</button>
+                  <span id="log-selected-count">all</span>
+                </div>
+              </div>
+              <div class="log-category-head">
+                <button id="toggle-all-log-categories" type="button" class="log-check-row" role="checkbox" aria-checked="true" data-state="all"><i aria-hidden="true"></i><span>All categories</span></button>
+                <span>Rows</span><span>Warn</span><span>Err</span>
+              </div>
+              <div id="log-categories" class="log-categories"></div>
+              <div class="log-inspector-foot">
+                <p>Hides rows in this window only. To stop the build from writing them, open <button id="open-log-verbosity" type="button">Verbosity</button>.</p>
+                <div class="log-inspector-buttons">
+                  <button id="load-log-preset" type="button" class="button ghost">Load preset</button>
+                  <button id="save-log-preset" type="button" class="button primary">Save preset</button>
+                </div>
+              </div>
+            </aside>
           </div>
-          <div class="log-frame">
-            <div class="log-header"><span>Time</span><span>Category</span><span>Level</span><span>Message</span></div>
-            <div id="logs" class="logs"></div>
+
+          <div id="log-verbosity-page" class="log-workspace hidden">
+            <div class="log-main">
+              <div class="log-toolbar">
+                <label class="search-field grow">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+                  <input id="verbosity-search" type="search" placeholder="Search registered categories">
+                </label>
+                <div id="verbosity-scope" class="segmented log-scope-filter" aria-label="Visible categories">
+                  <button type="button" data-scope="all">All</button>
+                  <button type="button" class="active" data-scope="active">Active</button>
+                  <button type="button" data-scope="changed">Changed</button>
+                </div>
+                <button id="refresh-verbosity" class="icon-button" title="Re-read levels from the build"><svg width="14" height="14" viewBox="0 0 16 16" class="icon"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4M13.5 2.5V6H10"/></svg></button>
+              </div>
+              <div class="log-table">
+                <div class="verbosity-header"><span>Category</span><span>Source</span><span>Verbosity</span></div>
+                <div id="verbosity-global"></div>
+                <div id="verbosity-rows" class="verbosity-rows"></div>
+              </div>
+              <div class="log-footer">
+                <span id="verbosity-status" class="log-tally">Open this tab to read the levels registered by the build.</span>
+                <button id="show-all-verbosity" type="button" class="text-button">Show all categories</button>
+              </div>
+            </div>
+
+            <aside class="log-inspector">
+              <section class="inspector-section">
+                <h3>Presets</h3>
+                <div id="verbosity-presets" class="verbosity-presets"></div>
+              </section>
+              <section class="inspector-section">
+                <h3>Scope</h3>
+                <label class="inspector-toggle">
+                  <span><strong>Persist to config</strong><small>writes [Core.Log] on the device</small></span>
+                  <input id="persist-log-verbosity" type="checkbox"><i></i>
+                </label>
+                <label class="inspector-toggle">
+                  <span><strong>Auto-revert</strong><small>restore levels on disconnect</small></span>
+                  <input id="auto-revert-log-verbosity" type="checkbox" checked><i></i>
+                </label>
+              </section>
+              <section class="inspector-section inspector-grow">
+                <h3>Pending commands <span>on Apply</span></h3>
+                <div id="verbosity-pending" class="pending-commands"><p>No pending changes.</p></div>
+                <p id="verbosity-validation" class="verbosity-validation hidden"></p>
+              </section>
+              <footer class="inspector-footer">
+                <span id="verbosity-summary">No changes</span>
+                <button id="discard-verbosity" type="button" class="button ghost" disabled>Discard</button>
+                <button id="apply-verbosity" type="button" class="button primary" disabled>Apply</button>
+              </footer>
+            </aside>
           </div>
         </section>
 

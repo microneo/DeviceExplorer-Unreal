@@ -1,4 +1,6 @@
 import "./styles.css";
+import { $, api, svgIcon, textCell, toast } from "./shared.js";
+import { createLogsModule } from "./modules/logs.js";
 
 "use strict";
 
@@ -6,8 +8,6 @@ const state = {
   devices: [],
   selectedId: null,
   tab: "logs",
-  lastSequence: 0,
-  visibleLogs: 0,
   fileRoot: "saved",
   filePath: "",
   fileEntries: [],
@@ -29,7 +29,6 @@ const state = {
   moduleValues: {},
 };
 
-const $ = (selector) => document.querySelector(selector);
 const elements = {
   deviceList: $("#device-list"),
   deviceCount: $("#device-count"),
@@ -44,11 +43,6 @@ const elements = {
   workspace: $("#workspace"),
   tabs: $("#tabs"),
   moduleTabs: $("#module-tabs"),
-  logs: $("#logs"),
-  logStats: $("#log-stats"),
-  category: $("#log-category"),
-  verbosity: $("#log-verbosity"),
-  follow: $("#follow-logs"),
   commandForm: $("#command-form"),
   commandShortcutsWrap: $("#command-shortcuts-wrap"),
   commandShortcuts: $("#command-shortcuts"),
@@ -72,7 +66,6 @@ const elements = {
   moduleActions: $("#module-actions"),
   modulePages: $("#module-pages"),
   moduleContent: $("#module-content"),
-  toasts: $("#toast-region"),
   confirmOverlay: $("#confirm-overlay"),
   confirmTitle: $("#confirm-title"),
   confirmBody: $("#confirm-body"),
@@ -82,21 +75,11 @@ const elements = {
   confirmAccept: $("#confirm-accept"),
 };
 
-async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (options.method === "POST") {
-    headers["Content-Type"] = "application/json";
-    headers["X-DeviceExplorer-Request"] = "1";
-  }
-  const response = await fetch(path, { ...options, headers });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
-  return data;
-}
-
 function selectedDevice() {
   return state.devices.find((device) => device.id === state.selectedId) || null;
 }
+
+const logs = createLogsModule({ getDevice: selectedDevice });
 
 function requireOnline() {
   const device = selectedDevice();
@@ -183,6 +166,7 @@ function renderSelectedDevice() {
   elements.connection.replaceChildren(document.createElement("span"), document.createTextNode(
     device.connected ? " Online" : ` Offline · ${formatRelative(device.last_seen)}`));
   elements.connection.className = `status ${device.connected ? "online" : "offline"}`;
+  logs.setDevice(device.id);
   renderCapabilities(device);
   renderCommandShortcuts(device);
   renderFileRoots(device);
@@ -289,11 +273,9 @@ function renderModuleTabs(device) {
 function selectDevice(id) {
   if (state.selectedId === id) return;
   state.selectedId = id;
-  state.lastSequence = 0;
-  state.visibleLogs = 0;
   state.consoleEntries = [];
   state.consoleSelected = null;
-  elements.logs.replaceChildren();
+  logs.setDevice(id);
   elements.consoleCatalog.innerHTML = '<div class="inline-empty">Refresh to query this build.</div>';
   resetFileNavigation("saved");
   elements.fileList.replaceChildren();
@@ -306,39 +288,6 @@ function selectDevice(id) {
   if (state.tab === "files") refreshFiles();
   if (state.tab === "console") refreshConsoleCatalog();
   if (state.tab.startsWith("module:")) refreshModule();
-}
-
-async function refreshLogs() {
-  if (!state.selectedId || state.tab !== "logs") return;
-  const params = new URLSearchParams({ after: String(state.lastSequence) });
-  if (elements.category.value) params.set("category", elements.category.value);
-  if (elements.verbosity.value) params.set("verbosity", elements.verbosity.value);
-  try {
-    const data = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/logs?${params}`);
-    for (const entry of data.entries || []) {
-      state.lastSequence = Math.max(state.lastSequence, entry.sequence || 0);
-      appendLog(entry);
-    }
-    elements.logStats.textContent =
-      `${state.visibleLogs.toLocaleString()} messages · ${Number(data.dropped || 0).toLocaleString()} dropped`;
-    if (elements.follow.checked && data.entries?.length) elements.logs.scrollTop = elements.logs.scrollHeight;
-  } catch (error) {
-    if (!String(error).toLowerCase().includes("unknown device")) console.error(error);
-  }
-}
-
-function appendLog(entry) {
-  const row = document.createElement("div");
-  row.className = `log-row ${String(entry.verbosity || "").toLowerCase()}`;
-  row.append(
-    textCell("time", formatLogTime(entry.timestamp)),
-    textCell("category", entry.category),
-    textCell("verbosity", entry.verbosity),
-    textCell("message", entry.message),
-  );
-  elements.logs.append(row);
-  state.visibleLogs += 1;
-  while (elements.logs.childElementCount > 10_000) elements.logs.firstElementChild.remove();
 }
 
 async function refreshConsoleCatalog() {
@@ -2110,8 +2059,8 @@ function setTab(tab) {
     const expected = tab.startsWith("module:") ? "tab-module" : `tab-${tab}`;
     panel.classList.toggle("hidden", panel.id !== expected);
   });
+  logs.setActive(tab === "logs");
   if (tab === "files") refreshFiles();
-  if (tab === "logs") refreshLogs();
   if (tab === "console" && !state.consoleEntries.length) refreshConsoleCatalog();
   if (tab.startsWith("module:")) {
     state.moduleSchema = null;
@@ -2143,14 +2092,6 @@ function errorState(title, message, retry) {
   return wrapper;
 }
 
-function toast(message, isError = false) {
-  const item = document.createElement("div");
-  item.className = `toast ${isError ? "error" : ""}`;
-  item.textContent = message;
-  elements.toasts.append(item);
-  setTimeout(() => item.remove(), 4500);
-}
-
 function confirmAction({ title, body, deviceName, commandLabel, acceptLabel }) {
   return new Promise((resolve) => {
     elements.confirmTitle.textContent = title;
@@ -2177,13 +2118,6 @@ function confirmAction({ title, body, deviceName, commandLabel, acceptLabel }) {
   });
 }
 
-function textCell(className, value) {
-  const span = document.createElement("span");
-  span.className = className;
-  span.textContent = value ?? "";
-  return span;
-}
-
 function normalizePath(path) {
   return String(path || "").replaceAll("\\", "/").split("/").filter((part) => part && part !== ".").join("/");
 }
@@ -2194,31 +2128,12 @@ function formatModuleValue(value) {
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
 }
-function downloadText(filename, text) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 const FILE_ICON_PATHS = {
   folder: "M2 4.4h4.1l1.3 1.7H14v7.5H2z",
   bundle: "M8 2.2 13.8 5.4v5.2L8 13.8 2.2 10.6V5.4zM2.2 5.4 8 8.6l5.8-3.2M8 8.6v5.2",
   file: "M4 2h5l3 3v9H4zM9 2v3.2h3",
   trace: "M1.6 8.4h2.9l2-4.2 2.7 7.6 1.9-3.4h3.3",
 };
-function svgIcon(className, path, size = 15) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", String(size));
-  svg.setAttribute("height", String(size));
-  svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("class", `icon ${className}`.trim());
-  const path_ = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path_.setAttribute("d", path);
-  svg.append(path_);
-  return svg;
-}
 function isBundle(name) {
   return [".gputrace", ".app", ".dsym", ".framework"].some((suffix) => String(name).toLowerCase().endsWith(suffix));
 }
@@ -2248,11 +2163,6 @@ function formatDuration(seconds) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
-}
-function formatLogTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--:--:--";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hour12: false });
 }
 function shortEngineVersion(value) {
   const match = String(value || "").match(/\d+\.\d+(?:\.\d+)?/);
@@ -2287,21 +2197,6 @@ $("#console-type").addEventListener("click", (event) => {
   $("#console-type").querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
   renderConsoleCatalog();
 });
-$("#clear-logs").addEventListener("click", () => {
-  elements.logs.replaceChildren();
-  state.visibleLogs = 0;
-  elements.logStats.textContent = "0 messages";
-});
-$("#save-logs").addEventListener("click", () => {
-  const lines = [...elements.logs.children].map((row) => [...row.children].map((cell) => cell.textContent).join("\t"));
-  if (!lines.length) {
-    toast("There are no log messages to save yet.", true);
-    return;
-  }
-  const device = selectedDevice();
-  const stamp = new Date().toISOString().slice(0, 19).replaceAll(":", "-");
-  downloadText(`${String(device?.name || "device").replace(/[^\w.-]+/g, "_")}-${stamp}.log`, `${lines.join("\n")}\n`);
-});
 $("#download-folder").addEventListener("click", () => requestTransfer(state.filePath, true));
 $("#refresh-files").addEventListener("click", refreshFiles);
 elements.fileRoot.addEventListener("change", () => {
@@ -2327,18 +2222,7 @@ elements.fileForward.addEventListener("click", () => {
   state.filePath = state.fileHistory[state.fileHistoryIndex];
   refreshFiles();
 });
-for (const control of [elements.category, elements.verbosity]) {
-  control.addEventListener("input", () => {
-    clearTimeout(control._filterTimer);
-    control._filterTimer = setTimeout(() => {
-      elements.logs.replaceChildren();
-      state.visibleLogs = 0;
-      state.lastSequence = 0;
-      refreshLogs();
-    }, 200);
-  });
-}
-
 refreshDevices();
+logs.setActive(state.tab === "logs");
 setInterval(refreshDevices, 2000);
-setInterval(refreshLogs, 500);
+setInterval(() => logs.poll(), 500);
