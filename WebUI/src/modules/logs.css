@@ -338,7 +338,7 @@
 }
 .verbosity-segments button:first-child { border-left: 0; }
 .verbosity-segments button:hover:not(:disabled) { background: var(--surface-raised); color: var(--text); }
-.verbosity-segments button:disabled { color: #3E3E3E; cursor: not-allowed; }
+.verbosity-segments button:disabled { color: #3E3E3E; cursor: default; }
 .verbosity-segments button.on { background: var(--selected-bg); color: var(--text); font-weight: 500; }
 .verbosity-segments button.on[data-level="fatal"] { background: #3A1A1C; color: #FF8A8A; }
 .verbosity-segments button.on[data-level="error"] { background: var(--danger-bg); color: var(--danger-text); }
