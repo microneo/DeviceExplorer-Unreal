@@ -55,6 +55,11 @@ compiling with the plugin turned off:
 #endif
 ```
 
+The macro follows the `DeviceExplorer` client module, not plugin enablement
+alone: nothing reads the registry without the client, so `Shipping` and any
+other configuration its `TargetConfigurationDenyList` covers gets
+`WITH_DEVICEEXPLORER=0`. Guard on the macro rather than `!UE_BUILD_SHIPPING`.
+
 Pass `true` for a public dependency. A plain
 `PrivateDependencyModuleNames.Add("DeviceExplorerCore")` still works when the
 plugin is never disabled — UnrealBuildTool fails outright on a dependency to a
