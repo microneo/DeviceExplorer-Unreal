@@ -1,0 +1,16 @@
+{
+  "outdir": "/reports/servers",
+  "servers": [
+    {
+      "agent": "DeviceExplorerWire",
+      "url": "ws://host.docker.internal:9002"
+    }
+  ],
+  "cases": ["*"],
+  "exclude-cases": [
+    "9.*",
+    "12.*",
+    "13.*"
+  ],
+  "exclude-agent-cases": {}
+}
