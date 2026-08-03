@@ -289,6 +289,20 @@ or:
 Frontend changes do not require a C++ rebuild. Commit both `WebUI` sources and
 the generated `Resources/Web` output.
 
+## Known issues
+
+- Several hosts on one network compete for the same service. A build attaches to
+  the first `_deviceexplorer._tcp` instance that answers, which may belong to
+  another machine, and the token then rejects the connection. Pin the connection
+  with `-DeviceExplorerServer=<ip>:<port> -DeviceExplorerToken=<token>` when more
+  than one host is running.
+- Platform coverage is partial. The Editor integration is Win64 and Mac only, and
+  discovery is exercised on desktop and iOS devices. The iOS Simulator does not
+  see the mDNS responses, so it needs the manual address flags. Consoles are
+  untested.
+- The host builds only against a source engine. Installed engine builds cannot
+  build the `DeviceExplorerHost` program target.
+
 ## License
 
 DeviceExplorer is available under the Apache License 2.0.
