@@ -22,6 +22,7 @@ enum class HttpUpgradeError : std::uint8_t
 	HeaderTooLarge,
 	InvalidStartLine,
 	InvalidHeader,
+	InvalidHost,
 	InvalidUpgrade,
 	InvalidConnection,
 	MissingWebSocketKey,

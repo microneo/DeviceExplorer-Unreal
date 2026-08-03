@@ -94,6 +94,39 @@ void TestHttpUpgrade()
 	CHECK(DuplicateKeyResult.Status == HttpUpgradeStatus::Error);
 	CHECK(DuplicateKeyResult.Error == HttpUpgradeError::InvalidWebSocketKey);
 
+	std::string DuplicateHost = RequestBytes;
+	const std::size_t DuplicateHostEnd = DuplicateHost.find("\r\n\r\n");
+	CHECK(DuplicateHostEnd != std::string::npos);
+	DuplicateHost.insert(DuplicateHostEnd, "\r\nHost: duplicate.example");
+	const HttpUpgradeParseResult DuplicateHostResult = ParseWebSocketUpgradeRequest(
+		{ reinterpret_cast<const std::uint8_t*>(DuplicateHost.data()), DuplicateHost.size() }, Request);
+	CHECK(DuplicateHostResult.Status == HttpUpgradeStatus::Error);
+	CHECK(DuplicateHostResult.Error == HttpUpgradeError::InvalidHost);
+
+	std::string MissingHost = RequestBytes;
+	const std::size_t HostLine = MissingHost.find("Host: 127.0.0.1:18081\r\n");
+	CHECK(HostLine != std::string::npos);
+	MissingHost.erase(HostLine, std::string("Host: 127.0.0.1:18081\r\n").size());
+	const HttpUpgradeParseResult MissingHostResult = ParseWebSocketUpgradeRequest(
+		{ reinterpret_cast<const std::uint8_t*>(MissingHost.data()), MissingHost.size() }, Request);
+	CHECK(MissingHostResult.Status == HttpUpgradeStatus::Error);
+	CHECK(MissingHostResult.Error == HttpUpgradeError::InvalidHost);
+
+	std::string SplitRequestTokens = RequestBytes;
+	const std::size_t RequestUpgrade = SplitRequestTokens.find("Upgrade: websocket");
+	const std::size_t RequestConnection = SplitRequestTokens.find("Connection: Upgrade");
+	CHECK(RequestUpgrade != std::string::npos);
+	CHECK(RequestConnection != std::string::npos);
+	SplitRequestTokens.replace(RequestUpgrade, std::string("Upgrade: websocket").size(),
+	                           "Upgrade: h2c\r\nUpgrade: WebSocket");
+	const std::size_t UpdatedConnection = SplitRequestTokens.find("Connection: Upgrade");
+	CHECK(UpdatedConnection != std::string::npos);
+	SplitRequestTokens.replace(UpdatedConnection, std::string("Connection: Upgrade").size(),
+	                           "Connection: keep-alive\r\nConnection: Upgrade");
+	const HttpUpgradeParseResult SplitRequestResult = ParseWebSocketUpgradeRequest(
+		{ reinterpret_cast<const std::uint8_t*>(SplitRequestTokens.data()), SplitRequestTokens.size() }, Request);
+	CHECK(SplitRequestResult.Status == HttpUpgradeStatus::Complete);
+
 	std::string DuplicateAccept = ResponseBytes;
 	const std::size_t ResponseEnd = DuplicateAccept.find("\r\n\r\n");
 	CHECK(ResponseEnd != std::string::npos);
@@ -102,6 +135,21 @@ void TestHttpUpgrade()
 		{ reinterpret_cast<const std::uint8_t*>(DuplicateAccept.data()), DuplicateAccept.size() }, Accept, Response);
 	CHECK(DuplicateAcceptResult.Status == HttpUpgradeStatus::Error);
 	CHECK(DuplicateAcceptResult.Error == HttpUpgradeError::InvalidWebSocketAccept);
+
+	std::string SplitResponseTokens = ResponseBytes;
+	const std::size_t ResponseUpgrade = SplitResponseTokens.find("Upgrade: websocket");
+	const std::size_t ResponseConnection = SplitResponseTokens.find("Connection: Upgrade");
+	CHECK(ResponseUpgrade != std::string::npos);
+	CHECK(ResponseConnection != std::string::npos);
+	SplitResponseTokens.replace(ResponseUpgrade, std::string("Upgrade: websocket").size(),
+	                            "Upgrade: h2c\r\nUpgrade: websocket");
+	const std::size_t UpdatedResponseConnection = SplitResponseTokens.find("Connection: Upgrade");
+	CHECK(UpdatedResponseConnection != std::string::npos);
+	SplitResponseTokens.replace(UpdatedResponseConnection, std::string("Connection: Upgrade").size(),
+	                            "Connection: keep-alive\r\nConnection: upgrade");
+	const HttpUpgradeParseResult SplitResponseResult = ParseWebSocketUpgradeResponse(
+		{ reinterpret_cast<const std::uint8_t*>(SplitResponseTokens.data()), SplitResponseTokens.size() }, Accept, Response);
+	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Complete);
 }
 
 void TestWebSocketRoundTrip()

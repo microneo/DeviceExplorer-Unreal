@@ -246,7 +246,7 @@ std::size_t CountHeaders(const std::vector<HttpHeader>& Headers, const std::stri
 		[Name](const HttpHeader& Header) { return EqualsIgnoreCase(Header.first, Name); }));
 }
 
-bool ContainsHeaderToken(const std::string& Value, const std::string_view Expected)
+bool ContainsHeaderToken(const std::string_view Value, const std::string_view Expected)
 {
 	std::size_t Offset = 0;
 	while (Offset <= Value.size())
@@ -259,6 +259,20 @@ bool ContainsHeaderToken(const std::string& Value, const std::string_view Expect
 		}
 		if (Comma == std::string::npos) break;
 		Offset = Comma + 1;
+	}
+	return false;
+}
+
+bool HeadersContainToken(const std::vector<HttpHeader>& Headers,
+	                     const std::string_view Name,
+	                     const std::string_view Expected)
+{
+	for (const HttpHeader& Header : Headers)
+	{
+		if (EqualsIgnoreCase(Header.first, Name) && ContainsHeaderToken(Header.second, Expected))
+		{
+			return true;
+		}
 	}
 	return false;
 }
@@ -391,18 +405,20 @@ HttpUpgradeParseResult ParseWebSocketUpgradeRequest(const ByteView Bytes,
 	{
 		return ErrorResult(HttpUpgradeError::InvalidHeader);
 	}
-	const std::string* Upgrade = FindHeader(Parsed.Headers, "upgrade");
-	const std::string* Connection = FindHeader(Parsed.Headers, "connection");
 	const std::string* Key = FindHeader(Parsed.Headers, "sec-websocket-key");
 	const std::string* Version = FindHeader(Parsed.Headers, "sec-websocket-version");
 	const std::string* Host = FindHeader(Parsed.Headers, "host");
-	if (Upgrade == nullptr || !EqualsIgnoreCase(Trim(*Upgrade), "websocket"))
+	if (!HeadersContainToken(Parsed.Headers, "upgrade", "websocket"))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidUpgrade);
 	}
-	if (Connection == nullptr || !ContainsHeaderToken(*Connection, "upgrade"))
+	if (!HeadersContainToken(Parsed.Headers, "connection", "upgrade"))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidConnection);
+	}
+	if (Host == nullptr || CountHeaders(Parsed.Headers, "host") != 1 || Trim(*Host).empty())
+	{
+		return ErrorResult(HttpUpgradeError::InvalidHost);
 	}
 	if (Key == nullptr)
 	{
@@ -422,7 +438,7 @@ HttpUpgradeParseResult ParseWebSocketUpgradeRequest(const ByteView Bytes,
 		return ErrorResult(HttpUpgradeError::UnsupportedWebSocketVersion);
 	}
 	Parsed.Key = *Key;
-	if (Host != nullptr) Parsed.Host = *Host;
+	Parsed.Host = *Host;
 	OutRequest = std::move(Parsed);
 	return { HttpUpgradeStatus::Complete, HttpUpgradeError::None, HeaderEnd };
 }
@@ -451,14 +467,12 @@ HttpUpgradeParseResult ParseWebSocketUpgradeResponse(const ByteView Bytes,
 	{
 		return ErrorResult(HttpUpgradeError::InvalidHeader);
 	}
-	const std::string* Upgrade = FindHeader(Parsed.Headers, "upgrade");
-	const std::string* Connection = FindHeader(Parsed.Headers, "connection");
 	const std::string* Accept = FindHeader(Parsed.Headers, "sec-websocket-accept");
-	if (Upgrade == nullptr || !EqualsIgnoreCase(Trim(*Upgrade), "websocket"))
+	if (!HeadersContainToken(Parsed.Headers, "upgrade", "websocket"))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidUpgrade);
 	}
-	if (Connection == nullptr || !ContainsHeaderToken(*Connection, "upgrade"))
+	if (!HeadersContainToken(Parsed.Headers, "connection", "upgrade"))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidConnection);
 	}
@@ -527,6 +541,7 @@ const char* HttpUpgradeErrorText(const HttpUpgradeError Error)
 		case HttpUpgradeError::HeaderTooLarge: return "HTTP header exceeds the limit";
 		case HttpUpgradeError::InvalidStartLine: return "invalid HTTP start line";
 		case HttpUpgradeError::InvalidHeader: return "invalid HTTP header";
+		case HttpUpgradeError::InvalidHost: return "missing, empty, or repeated Host header";
 		case HttpUpgradeError::InvalidUpgrade: return "missing or invalid Upgrade header";
 		case HttpUpgradeError::InvalidConnection: return "Connection does not contain Upgrade";
 		case HttpUpgradeError::MissingWebSocketKey: return "missing Sec-WebSocket-Key";
