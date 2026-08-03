@@ -13,6 +13,7 @@ public class DeviceExplorerHost : ModuleRules
             "ApplicationCore",
             "Core",
             "DeviceExplorerCore",
+            "DeviceExplorerWire",
             "HTTP",
             "Json",
             "Networking",

@@ -8,6 +8,11 @@
   "CanContainContent": false,
   "Modules": [
     {
+      "Name": "DeviceExplorerWire",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
       "Name": "DeviceExplorerCore",
       "Type": "Runtime",
       "LoadingPhase": "Default"

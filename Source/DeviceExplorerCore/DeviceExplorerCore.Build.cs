@@ -15,6 +15,7 @@ public class DeviceExplorerCore : ModuleRules
         PublicDependencyModuleNames.AddRange(new[]
         {
             "Core",
+            "DeviceExplorerWire",
             "Json"
         });
 

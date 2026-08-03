@@ -125,7 +125,12 @@ def recv_server_frame(sock: socket.socket) -> tuple[bytes, int, bytes]:
 
 
 def websocket_smoke(
-    host: str, port: int, token: str, timeout: float, device_id: str
+    host: str,
+    port: int,
+    token: str,
+    timeout: float,
+    device_id: str,
+    expect_close_reply: bool,
 ) -> dict[str, Any]:
     expected_accept = base64.b64encode(
         hashlib.sha1((WEBSOCKET_KEY + WEBSOCKET_GUID).encode("ascii")).digest()
@@ -182,7 +187,7 @@ def websocket_smoke(
 
         close_frame = encode_client_frame(0x8, struct.pack("!H", 1000))
         sock.sendall(close_frame)
-        return {
+        capture = {
             "upgrade_request_base64": base64.b64encode(request).decode("ascii"),
             "upgrade_response_base64": base64.b64encode(response).decode("ascii"),
             "client_hello_frame_base64": base64.b64encode(hello_frame).decode("ascii"),
@@ -191,6 +196,14 @@ def websocket_smoke(
             "client_close_frame_base64": base64.b64encode(close_frame).decode("ascii"),
             "expected_accept": expected_accept,
         }
+        if expect_close_reply:
+            server_close, close_opcode, close_payload = recv_server_frame(sock)
+            if close_opcode != 0x8 or close_payload != struct.pack("!H", 1000):
+                raise RuntimeError("host did not echo the WebSocket close payload")
+            capture["server_close_frame_base64"] = base64.b64encode(server_close).decode(
+                "ascii"
+            )
+        return capture
     finally:
         sock.close()
 
@@ -272,11 +285,33 @@ def parse_mdns_records(packet: bytes) -> list[dict[str, Any]]:
         if record_type in (1, 12, 16, 33):
             record["data_offset"] = data_offset
             record["data_length"] = data_length
+        if record_type == 1 and data_length == 4:
+            record["address"] = socket.inet_ntoa(packet[data_offset:offset])
+        elif record_type == 12:
+            record["target"], _ = read_dns_name(packet, data_offset)
+        elif record_type == 16:
+            entries: list[str] = []
+            txt_offset = data_offset
+            while txt_offset < offset:
+                entry_length = packet[txt_offset]
+                txt_offset += 1
+                entry_end = txt_offset + entry_length
+                if entry_end > offset:
+                    raise RuntimeError("short DNS TXT entry")
+                entries.append(packet[txt_offset:entry_end].decode("utf-8"))
+                txt_offset = entry_end
+            record["entries"] = entries
+        elif record_type == 33 and data_length >= 6:
+            priority, weight, port = struct.unpack("!HHH", packet[data_offset : data_offset + 6])
+            target, _ = read_dns_name(packet, data_offset + 6)
+            record.update(
+                {"priority": priority, "weight": weight, "port": port, "target": target}
+            )
         records.append(record)
     return records
 
 
-def mdns_smoke(token: str, timeout: float) -> dict[str, Any]:
+def mdns_smoke(token: str, device_port: int, timeout: float) -> dict[str, Any]:
     query = build_mdns_query()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
@@ -296,6 +331,14 @@ def mdns_smoke(token: str, timeout: float) -> dict[str, Any]:
                 continue
             token_bytes = ("token=" + token).encode("utf-8")
             if token_bytes not in response:
+                continue
+            txt_entries = {
+                entry
+                for record in records
+                for entry in record.get("entries", [])
+            }
+            srv_ports = {record["port"] for record in records if record["type"] == 33}
+            if f"version={PROTOCOL_VERSION}" not in txt_entries or device_port not in srv_ports:
                 continue
             return {
                 "query_base64": base64.b64encode(query).decode("ascii"),
@@ -320,6 +363,11 @@ def main() -> int:
     parser.add_argument("--device-id", default="protocol9-black-box-smoke")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--skip-mdns", action="store_true")
+    parser.add_argument(
+        "--expect-close-reply",
+        action="store_true",
+        help="require the RFC 6455 close reply added by DeviceExplorerWire",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -342,7 +390,12 @@ def main() -> int:
         raise RuntimeError("dashboard reports a different device port")
 
     websocket = websocket_smoke(
-        args.host, args.device_port, args.token, args.timeout, args.device_id
+        args.host,
+        args.device_port,
+        args.token,
+        args.timeout,
+        args.device_id,
+        args.expect_close_reply,
     )
 
     deadline = time.monotonic() + args.timeout
@@ -382,7 +435,7 @@ def main() -> int:
         "websocket": websocket,
     }
     if not args.skip_mdns:
-        capture["mdns"] = mdns_smoke(args.token, args.timeout)
+        capture["mdns"] = mdns_smoke(args.token, args.device_port, args.timeout)
 
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

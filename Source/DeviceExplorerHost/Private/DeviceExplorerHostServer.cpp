@@ -3,7 +3,9 @@
 #include "Async/Async.h"
 #include "Containers/RingBuffer.h"
 #include "DeviceExplorerHostMdns.h"
+#include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerTypes.h"
+#include "DeviceExplorerWebSocket.h"
 #include "Dom/JsonObject.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "HAL/FileManager.h"
@@ -11,11 +13,9 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "IPAddress.h"
-#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
-#include "Misc/SecureHash.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -264,97 +264,79 @@ FString SafeFilename(const FString& Raw)
 	return Result.IsEmpty() ? TEXT("download.bin") : Result;
 }
 
-bool ReadWebSocketFrame(FSocket* Socket, const TAtomic<bool>& bStopping, uint8& OutOpcode, bool& bOutFinal, TArray<uint8>& OutPayload)
+bool ReadWebSocketFrame(FSocket* Socket,
+	                    const TAtomic<bool>& bStopping,
+	                    DeviceExplorer::Wire::WebSocketDecoder& Decoder,
+	                    uint8& OutOpcode,
+	                    bool& bOutFinal,
+	                    TArray<uint8>& OutPayload)
 {
-	uint8 Header[2] = {};
-	if (!ReceiveExact(Socket, Header, 2, bStopping))
+	DeviceExplorer::Wire::WebSocketFrame Frame;
+	if (Decoder.Drain(Frame))
 	{
-		return false;
+		OutOpcode = static_cast<uint8>(Frame.Opcode);
+		bOutFinal = Frame.Final;
+		OutPayload.SetNumUninitialized(static_cast<int32>(Frame.Payload.size()));
+		if (!Frame.Payload.empty())
+		{
+			FMemory::Memcpy(OutPayload.GetData(), Frame.Payload.data(), Frame.Payload.size());
+		}
+		return true;
 	}
 
-	bOutFinal = (Header[0] & 0x80) != 0;
-	OutOpcode = Header[0] & 0x0f;
-	const bool bMasked = (Header[1] & 0x80) != 0;
-	uint64 PayloadSize = Header[1] & 0x7f;
-	if (PayloadSize == 126)
+	double LastProgressSeconds = FPlatformTime::Seconds();
+	while (!bStopping.Load())
 	{
-		uint8 Extended[2] = {};
-		if (!ReceiveExact(Socket, Extended, 2, bStopping))
+		if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(250)))
+		{
+			if (FPlatformTime::Seconds() - LastProgressSeconds > MaximumSocketIdleSeconds)
+			{
+				return false;
+			}
+			continue;
+		}
+
+		uint8 Chunk[IoChunkBytes];
+		int32 Read = 0;
+		if (!Socket->Recv(Chunk, UE_ARRAY_COUNT(Chunk), Read, ESocketReceiveFlags::None) || Read <= 0)
 		{
 			return false;
 		}
-		PayloadSize = (static_cast<uint64>(Extended[0]) << 8) | Extended[1];
-	}
-	else if (PayloadSize == 127)
-	{
-		uint8 Extended[8] = {};
-		if (!ReceiveExact(Socket, Extended, 8, bStopping))
+		LastProgressSeconds = FPlatformTime::Seconds();
+		if (!Decoder.Consume({ Chunk, static_cast<std::size_t>(Read) }))
 		{
+			UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Invalid WebSocket frame: %s"), UTF8_TO_TCHAR(Decoder.GetErrorText()));
 			return false;
 		}
-		PayloadSize = 0;
-		for (uint8 Byte : Extended)
+		if (Decoder.Drain(Frame))
 		{
-			PayloadSize = (PayloadSize << 8) | Byte;
+			OutOpcode = static_cast<uint8>(Frame.Opcode);
+			bOutFinal = Frame.Final;
+			OutPayload.SetNumUninitialized(static_cast<int32>(Frame.Payload.size()));
+			if (!Frame.Payload.empty())
+			{
+				FMemory::Memcpy(OutPayload.GetData(), Frame.Payload.data(), Frame.Payload.size());
+			}
+			return true;
 		}
 	}
-	if (!bMasked || PayloadSize > MaximumWebSocketPayloadBytes)
-	{
-		return false;
-	}
-
-	uint8 Mask[4] = {};
-	if (!ReceiveExact(Socket, Mask, 4, bStopping))
-	{
-		return false;
-	}
-
-	OutPayload.SetNumUninitialized(static_cast<int32>(PayloadSize));
-	if (PayloadSize > 0 && !ReceiveExact(Socket, OutPayload.GetData(), PayloadSize, bStopping))
-	{
-		return false;
-	}
-	for (int32 Index = 0; Index < OutPayload.Num(); ++Index)
-	{
-		OutPayload[Index] ^= Mask[Index % 4];
-	}
-	return true;
+	return false;
 }
 
 bool SendWebSocketFrame(FSocket* Socket, const uint8 Opcode, const TArrayView<const uint8> Payload)
 {
-	TArray<uint8> Header;
-	Header.Add(0x80 | (Opcode & 0x0f));
-	const uint64 Size = Payload.Num();
-	if (Size < 126)
+	DeviceExplorer::Wire::WebSocketFrame Frame;
+	Frame.Opcode = static_cast<DeviceExplorer::Wire::WebSocketOpcode>(Opcode);
+	if (!Payload.IsEmpty())
 	{
-		Header.Add(static_cast<uint8>(Size));
+		Frame.Payload.assign(Payload.GetData(), Payload.GetData() + Payload.Num());
 	}
-	else if (Size <= MAX_uint16)
+	std::vector<std::uint8_t> Encoded;
+	if (!DeviceExplorer::Wire::EncodeWebSocketFrame(Frame, DeviceExplorer::Wire::WebSocketRole::Server, 0, Encoded))
 	{
-		Header.Add(126);
-		Header.Add(static_cast<uint8>((Size >> 8) & 0xff));
-		Header.Add(static_cast<uint8>(Size & 0xff));
+		return false;
 	}
-	else
-	{
-		Header.Add(127);
-		for (int32 Shift = 56; Shift >= 0; Shift -= 8)
-		{
-			Header.Add(static_cast<uint8>((Size >> Shift) & 0xff));
-		}
-	}
-	return SendAllBounded(Socket, Header.GetData(), Header.Num(), MaximumSocketSendSeconds) &&
-	       (Payload.IsEmpty() || SendAllBounded(Socket, Payload.GetData(), Payload.Num(), MaximumSocketSendSeconds));
-}
-
-FString WebSocketAcceptKey(const FString& ClientKey)
-{
-	const FString Combined = ClientKey + TEXT("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-	const FTCHARToUTF8 Utf8(*Combined);
-	uint8 Digest[FSHA1::DigestSize] = {};
-	FSHA1::HashBuffer(Utf8.Get(), Utf8.Length(), Digest);
-	return FBase64::Encode(Digest, UE_ARRAY_COUNT(Digest));
+	return SendAllBounded(Socket, Encoded.data(), static_cast<int64>(Encoded.size()), MaximumSocketSendSeconds);
 }
 
 FString ContentTypeForPath(const FString& Path)
@@ -417,6 +399,7 @@ struct FDeviceExplorerHostServer::FDeviceConnection : public TSharedFromThis<FDe
 	}
 
 	bool SendPong(const TArray<uint8>& Payload) { return SendFrame(0xA, Payload); }
+	bool SendClose(const TArray<uint8>& Payload) { return SendFrame(0x8, Payload); }
 
 	FSocket* Socket = nullptr;
 	FString DeviceId;
@@ -971,16 +954,28 @@ void FDeviceExplorerHostServer::HandleWebSocket(FSocket* Socket, const FHttpRequ
 	}
 
 	const FString ClientKey = Request.Headers.FindRef(TEXT("sec-websocket-key"));
-	if (ClientKey.IsEmpty() || !Request.Headers.FindRef(TEXT("upgrade")).Equals(TEXT("websocket"), ESearchCase::IgnoreCase))
+	const FString ConnectionHeader = Request.Headers.FindRef(TEXT("connection"));
+	TArray<FString> ConnectionTokens;
+	ConnectionHeader.ParseIntoArray(ConnectionTokens, TEXT(","), true);
+	const bool bConnectionUpgrade = ConnectionTokens.ContainsByPredicate(
+		[](FString Token)
+		{
+			Token.TrimStartAndEndInline();
+			return Token.Equals(TEXT("upgrade"), ESearchCase::IgnoreCase);
+		});
+	const bool bVersion13 = Request.Headers.FindRef(TEXT("sec-websocket-version")) == TEXT("13");
+	const FTCHARToUTF8 ClientKeyUtf8(*ClientKey);
+	std::string Accept;
+	if (!bConnectionUpgrade || !bVersion13 ||
+	    !Request.Headers.FindRef(TEXT("upgrade")).Equals(TEXT("websocket"), ESearchCase::IgnoreCase) ||
+	    !DeviceExplorer::Wire::MakeWebSocketAccept(std::string(ClientKeyUtf8.Get(), ClientKeyUtf8.Length()), Accept))
 	{
 		SendJsonError(Socket, 400, TEXT("Invalid WebSocket upgrade"));
 		return;
 	}
 
-	const FString Upgrade = FString::Printf(TEXT("HTTP/1.1 101 Switching Protocols\r\n") TEXT("Upgrade: websocket\r\n") TEXT("Connection: Upgrade\r\n")
-	                                            TEXT("Sec-WebSocket-Accept: %s\r\n\r\n"),
-	                                        *WebSocketAcceptKey(ClientKey));
-	if (!SendUtf8(Socket, Upgrade))
+	const std::string Upgrade = DeviceExplorer::Wire::SerializeWebSocketUpgradeResponse(Accept);
+	if (Upgrade.empty() || !SendAll(Socket, reinterpret_cast<const uint8*>(Upgrade.data()), static_cast<int64>(Upgrade.size())))
 	{
 		return;
 	}
@@ -992,17 +987,39 @@ void FDeviceExplorerHostServer::HandleWebSocket(FSocket* Socket, const FHttpRequ
 
 	uint8 FragmentOpcode = 0;
 	TArray<uint8> Fragment;
+	DeviceExplorer::Wire::WebSocketLimits Limits;
+	Limits.MaximumFramePayloadBytes = MaximumWebSocketPayloadBytes;
+	Limits.MaximumMessagePayloadBytes = MaximumWebSocketPayloadBytes;
+	DeviceExplorer::Wire::WebSocketDecoder Decoder(DeviceExplorer::Wire::WebSocketRole::Server, Limits);
 	while (!bStopping.Load())
 	{
 		uint8 Opcode = 0;
 		bool bFinal = false;
 		TArray<uint8> Payload;
-		if (!ReadWebSocketFrame(Socket, bStopping, Opcode, bFinal, Payload))
+		if (!ReadWebSocketFrame(Socket, bStopping, Decoder, Opcode, bFinal, Payload))
 		{
+			if (Decoder.GetError() != DeviceExplorer::Wire::WebSocketError::None)
+			{
+				uint16 CloseCode = 1002;
+				if (Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::InvalidUtf8)
+				{
+					CloseCode = 1007;
+				}
+				else if (Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::FrameTooLarge ||
+				         Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::MessageTooLarge)
+				{
+					CloseCode = 1009;
+				}
+				TArray<uint8> ClosePayload;
+				ClosePayload.Add(static_cast<uint8>((CloseCode >> 8) & 0xFF));
+				ClosePayload.Add(static_cast<uint8>(CloseCode & 0xFF));
+				Connection->SendClose(ClosePayload);
+			}
 			break;
 		}
 		if (Opcode == 0x8)
 		{
+			Connection->SendClose(Payload);
 			break;
 		}
 		if (Opcode == 0x9)

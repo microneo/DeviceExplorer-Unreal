@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "device_protocol_version": 9,
+  "http_upgrade": {
+    "client_key": "dGhlIHNhbXBsZSBub25jZQ==",
+    "expected_accept": "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+  },
+  "websocket": [
+    {
+      "name": "masked-client-text-hello",
+      "role": "server",
+      "frame_hex": "818537fa213d7f9f4d5158",
+      "opcode": "text",
+      "final": true,
+      "payload_utf8": "Hello"
+    },
+    {
+      "name": "unmasked-server-text-hello",
+      "role": "client",
+      "frame_hex": "810548656c6c6f",
+      "opcode": "text",
+      "final": true,
+      "payload_utf8": "Hello"
+    },
+    {
+      "name": "masked-client-ping",
+      "role": "server",
+      "frame_hex": "898412345678625d381f",
+      "opcode": "ping",
+      "final": true,
+      "payload_utf8": "ping"
+    }
+  ],
+  "invalid_websocket": [
+    {
+      "name": "server-rejects-unmasked-client",
+      "role": "server",
+      "frame_hex": "8100",
+      "error": "invalid_mask"
+    },
+    {
+      "name": "non-minimal-16-bit-length",
+      "role": "server",
+      "frame_hex": "81fe007d",
+      "error": "non_minimal_length"
+    },
+    {
+      "name": "fragmented-control-frame",
+      "role": "server",
+      "frame_hex": "098000000000",
+      "error": "invalid_control_frame"
+    }
+  ]
+}

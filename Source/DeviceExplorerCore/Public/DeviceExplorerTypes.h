@@ -1,13 +1,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "DeviceExplorerProtocol.h"
 
 class FJsonObject;
 
 namespace DeviceExplorer
 {
-inline constexpr int32 ProtocolVersion = 9;
-
 inline const FName LogsCapability(TEXT("logs"));
 inline const FName ConsoleCapability(TEXT("console"));
 inline const FName FilesCapability(TEXT("files"));
