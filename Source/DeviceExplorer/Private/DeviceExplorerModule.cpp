@@ -4,6 +4,7 @@
 #include "Containers/StringConv.h"
 #include "Containers/Ticker.h"
 #include "DeviceExplorerCommandCapture.h"
+#include "DeviceExplorerConnectionCoordinator.h"
 #include "DeviceExplorerConsoleCatalog.h"
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
@@ -42,6 +43,8 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorer, Log, All);
 
+FDeviceExplorerModule::~FDeviceExplorerModule() = default;
+
 #if WITH_WEBSOCKETS
 
 namespace
@@ -49,9 +52,9 @@ namespace
 constexpr int64 ArchiveStreamChunkSize = 1 << 20;    // keeps memory flat regardless of source file size
 const FName RuntimeOwner(TEXT("DeviceExplorerRuntime"));
 
-FString BuildWebSocketURL(const FString& Host, int32 Port, const FString& Token)
+FString BuildWebSocketURL(const FDeviceExplorerResolvedEndpoint& Endpoint, const FString& Token)
 {
-	return FString::Printf(TEXT("ws://%s:%d/device/connect?token=%s"), *Host, Port, *FGenericPlatformHttp::UrlEncode(Token));
+	return FString::Printf(TEXT("ws://%s/device/connect?token=%s"), *Endpoint.Serialized.ToString(), *FGenericPlatformHttp::UrlEncode(Token));
 }
 
 double GetAppUptimeSeconds()
@@ -648,12 +651,67 @@ void FDeviceExplorerModule::StartupModule()
 	LogService->Start();
 	ConsoleCatalog = MakeUnique<FDeviceExplorerConsoleCatalog>();
 
-	Discovery = CreateDeviceExplorerDiscovery();
-	Discovery->Start(
-		[this](FDeviceExplorerDiscoveredServer Server)
+	ConnectionCoordinator = MakeUnique<FDeviceExplorerConnectionCoordinator>();
+	EndpointCallbackGate = MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(true);
+	EndpointSources = CreateDeviceExplorerEndpointSources();
+	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> RegisteredSources = FDeviceExplorerCoreModule::Get().CreateEndpointSources();
+	EndpointSources.Append(MoveTemp(RegisteredSources));
+
+	TSet<FName> ProviderIds;
+	for (int32 Index = 0; Index < EndpointSources.Num();)
+	{
+		const FName ProviderId = EndpointSources[Index] ? EndpointSources[Index]->GetProviderId() : NAME_None;
+		if (ProviderId.IsNone() || ProviderIds.Contains(ProviderId))
 		{
-			OnServerDiscovered(Server.Host, Server.Port, Server.Token);
-		});
+			UE_LOG(LogDeviceExplorer, Warning, TEXT("Ignoring duplicate or invalid endpoint provider: %s"), *ProviderId.ToString());
+			EndpointSources.RemoveAt(Index);
+			continue;
+		}
+		ProviderIds.Add(ProviderId);
+		++Index;
+	}
+
+	ConnectConsoleCommand = IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DeviceExplorer.Connect"),
+		TEXT("Pins DeviceExplorer to an IPv4 endpoint. Usage: DeviceExplorer.Connect <address>:<port> <token>"),
+		FConsoleCommandWithArgsDelegate::CreateRaw(this, &FDeviceExplorerModule::ConnectManually),
+		ECVF_Default);
+	UnpinConsoleCommand = IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DeviceExplorer.Unpin"),
+		TEXT("Removes the manual DeviceExplorer endpoint pin and resumes automatic selection."),
+		FConsoleCommandWithArgsDelegate::CreateRaw(this, &FDeviceExplorerModule::UnpinManualEndpoint),
+		ECVF_Default);
+
+	for (TUniquePtr<IDeviceExplorerEndpointSource>& Source : EndpointSources)
+	{
+		const TWeakPtr<std::atomic<bool>, ESPMode::ThreadSafe> WeakGate = EndpointCallbackGate;
+		Source->Start(
+			[this, WeakGate](const EDeviceExplorerEndpointEvent Event, FDeviceExplorerEndpointCandidate Candidate) mutable
+			{
+				const TSharedPtr<std::atomic<bool>, ESPMode::ThreadSafe> Gate = WeakGate.Pin();
+				if (!Gate || !Gate->load(std::memory_order_acquire))
+				{
+					return;
+				}
+
+				auto Dispatch = [this, WeakGate, Event, Candidate = MoveTemp(Candidate)]() mutable
+				{
+					const TSharedPtr<std::atomic<bool>, ESPMode::ThreadSafe> DispatchGate = WeakGate.Pin();
+					if (DispatchGate && DispatchGate->load(std::memory_order_acquire))
+					{
+						OnEndpointEvent(Event, MoveTemp(Candidate));
+					}
+				};
+				if (IsInGameThread())
+				{
+					Dispatch();
+				}
+				else
+				{
+					AsyncTask(ENamedThreads::GameThread, MoveTemp(Dispatch));
+				}
+			});
+	}
 
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FDeviceExplorerModule::Tick), 0.1f);
 	UE_LOG(LogDeviceExplorer, Display, TEXT("DeviceExplorer client started"));
@@ -668,17 +726,33 @@ void FDeviceExplorerModule::ShutdownModule()
 	}
 
 	bStarted = false;
+	if (EndpointCallbackGate)
+	{
+		EndpointCallbackGate->store(false, std::memory_order_release);
+	}
+	if (ConnectConsoleCommand != nullptr)
+	{
+		IConsoleManager::Get().UnregisterConsoleObject(ConnectConsoleCommand, false);
+		ConnectConsoleCommand = nullptr;
+	}
+	if (UnpinConsoleCommand != nullptr)
+	{
+		IConsoleManager::Get().UnregisterConsoleObject(UnpinConsoleCommand, false);
+		UnpinConsoleCommand = nullptr;
+	}
 	if (FDeviceExplorerCoreModule::IsAvailable())
 	{
 		FDeviceExplorerCoreModule::Get().UnregisterOwner(RuntimeOwner);
 	}
 	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
-	if (Discovery)
+	for (TUniquePtr<IDeviceExplorerEndpointSource>& Source : EndpointSources)
 	{
-		Discovery->Stop();
-		Discovery.Reset();
+		Source->Stop();
 	}
+	EndpointSources.Empty();
+	EndpointCallbackGate.Reset();
 	Disconnect();
+	ConnectionCoordinator.Reset();
 	LogService.Reset();
 	ConsoleCatalog.Reset();
 }
@@ -746,9 +820,13 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 	}
 
 	const double Now = FPlatformTime::Seconds();
-	if (!bConnecting && (!Socket.IsValid() || !Socket->IsConnected()) && !ServerHost.IsEmpty() && Now >= NextReconnectSeconds)
+	if (!bConnecting && (!Socket.IsValid() || !Socket->IsConnected()) && ConnectionCoordinator)
 	{
-		Connect();
+		FDeviceExplorerEndpointCandidate Candidate;
+		if (ConnectionCoordinator->SelectNext(Now, Candidate))
+		{
+			Connect(MoveTemp(Candidate));
+		}
 	}
 
 	if (Socket.IsValid() && Socket->IsConnected())
@@ -763,68 +841,79 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 	return true;
 }
 
-void FDeviceExplorerModule::OnServerDiscovered(const FString& Host, int32 Port, const FString& Token)
+void FDeviceExplorerModule::OnEndpointEvent(const EDeviceExplorerEndpointEvent Event, FDeviceExplorerEndpointCandidate Candidate)
 {
-	// Discovery callbacks are async and can arrive after ShutdownModule() clears bStarted.
-	if (!bStarted || Host.IsEmpty() || Port <= 0 || Token.IsEmpty())
+	// Source callbacks can arrive after ShutdownModule() clears bStarted.
+	if (!bStarted || !ConnectionCoordinator)
 	{
 		return;
 	}
 
-	const bool bChanged = ServerHost != Host || ServerPort != Port || ServerToken != Token;
-	ServerHost = Host;
-	ServerPort = Port;
-	ServerToken = Token;
-	if (bChanged)
+	if (Candidate.bManual && Event != EDeviceExplorerEndpointEvent::Removed)
 	{
-		Disconnect();
-		NextReconnectSeconds = 0.0;
-		ReconnectDelaySeconds = 1.0;
+		if (ConnectionCoordinator->Pin(MoveTemp(Candidate)))
+		{
+			Disconnect();
+			ConnectionCoordinator->AbandonActive();
+		}
+		return;
 	}
+	ConnectionCoordinator->ApplyEvent(Event, MoveTemp(Candidate));
 }
 
-void FDeviceExplorerModule::Connect()
+void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 {
-	if (bConnecting || ServerHost.IsEmpty() || ServerPort <= 0 || ServerToken.IsEmpty())
+	if (bConnecting || !Candidate.IsValid() || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
 	{
 		return;
 	}
 
 	Disconnect();
 	bConnecting = true;
-	const FString URL = BuildWebSocketURL(ServerHost, ServerPort, ServerToken);
+	const uint64 AttemptGeneration = ConnectionGeneration;
+	const FString URL = BuildWebSocketURL(Candidate.Endpoint, Candidate.Token);
 	Socket = FWebSocketsModule::Get().CreateWebSocket(URL);
 
 	Socket->OnConnected().AddLambda(
-		[this]()
+		[this, AttemptGeneration, Candidate]()
 		{
+			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
+			{
+				return;
+			}
 			bConnecting = false;
-			ReconnectDelaySeconds = 1.0;
 			LastHeartbeatSeconds = 0.0;
+			ConnectionCoordinator->MarkConnected(Candidate);
 			SendHello();
-			UE_LOG(LogDeviceExplorer, Display, TEXT("Connected to %s:%d"), *ServerHost, ServerPort);
+			UE_LOG(LogDeviceExplorer, Display, TEXT("Connected to %s via %s"), *Candidate.Endpoint.Serialized.ToString(), *Candidate.ProviderId.ToString());
 		});
 	Socket->OnConnectionError().AddLambda(
-		[this](const FString& Error)
+		[this, AttemptGeneration, Candidate](const FString& Error)
 		{
+			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
+			{
+				return;
+			}
 			bConnecting = false;
-			UE_LOG(LogDeviceExplorer, Warning, TEXT("Connection failed: %s"), *Error);
-			NextReconnectSeconds = FPlatformTime::Seconds() + ReconnectDelaySeconds;
-			ReconnectDelaySeconds = FMath::Min(ReconnectDelaySeconds * 2.0, 30.0);
+			ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
+			UE_LOG(LogDeviceExplorer, Warning, TEXT("Connection to %s failed: %s"), *Candidate.Endpoint.Serialized.ToString(), *Error);
 		});
 	Socket->OnClosed().AddLambda(
-		[this](int32 StatusCode, const FString& Reason, bool bWasClean)
+		[this, AttemptGeneration, Candidate](int32 StatusCode, const FString& Reason, bool bWasClean)
 		{
+			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
+			{
+				return;
+			}
 			(void) StatusCode;
 			(void) bWasClean;
 			bConnecting = false;
-			UE_LOG(LogDeviceExplorer, Display, TEXT("Connection closed: %s"), *Reason);
+			ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
+			UE_LOG(LogDeviceExplorer, Display, TEXT("Connection to %s closed: %s"), *Candidate.Endpoint.Serialized.ToString(), *Reason);
 			if (LogService)
 			{
 				LogService->RevertOverrides();
 			}
-			NextReconnectSeconds = FPlatformTime::Seconds() + ReconnectDelaySeconds;
-			ReconnectDelaySeconds = FMath::Min(ReconnectDelaySeconds * 2.0, 30.0);
 		});
 	Socket->OnMessage().AddRaw(this, &FDeviceExplorerModule::HandleMessage);
 	Socket->Connect();
@@ -832,6 +921,7 @@ void FDeviceExplorerModule::Connect()
 
 void FDeviceExplorerModule::Disconnect()
 {
+	++ConnectionGeneration;
 	bConnecting = false;
 	if (!Socket.IsValid())
 	{
@@ -846,6 +936,59 @@ void FDeviceExplorerModule::Disconnect()
 		Socket->Close();
 	}
 	Socket.Reset();
+}
+
+void FDeviceExplorerModule::ConnectManually(const TArray<FString>& Arguments)
+{
+	if (!bStarted || !ConnectionCoordinator)
+	{
+		return;
+	}
+	if (Arguments.Num() != 2)
+	{
+		UE_LOG(LogDeviceExplorer, Warning, TEXT("Usage: DeviceExplorer.Connect <IPv4-address>:<port> <token>"));
+		return;
+	}
+
+	FDeviceExplorerSerializedEndpoint Endpoint;
+	FString Error;
+	if (!ParseDeviceExplorerEndpoint(Arguments[0], Endpoint, &Error))
+	{
+		UE_LOG(LogDeviceExplorer, Warning, TEXT("Invalid DeviceExplorer endpoint: %s"), *Error);
+		return;
+	}
+	if (Arguments[1].IsEmpty())
+	{
+		UE_LOG(LogDeviceExplorer, Warning, TEXT("DeviceExplorer token cannot be empty"));
+		return;
+	}
+
+	FDeviceExplorerEndpointCandidate Candidate;
+	Candidate.ProviderId = TEXT("Console");
+	Candidate.CandidateId = TEXT("ManualPin");
+	Candidate.Endpoint.Serialized = MoveTemp(Endpoint);
+	Candidate.Token = Arguments[1];
+	Candidate.Instance = TEXT("Manual");
+	Candidate.bManual = true;
+	if (ConnectionCoordinator->Pin(MoveTemp(Candidate)))
+	{
+		Disconnect();
+		ConnectionCoordinator->AbandonActive();
+	}
+}
+
+void FDeviceExplorerModule::UnpinManualEndpoint(const TArray<FString>& Arguments)
+{
+	(void) Arguments;
+	if (!bStarted || !ConnectionCoordinator)
+	{
+		return;
+	}
+	if (ConnectionCoordinator->Unpin())
+	{
+		Disconnect();
+		ConnectionCoordinator->AbandonActive();
+	}
 }
 
 void FDeviceExplorerModule::SendHello()

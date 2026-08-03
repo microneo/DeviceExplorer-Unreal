@@ -112,6 +112,25 @@ bool FDeviceExplorerCoreModule::RegisterDataModule(FDeviceExplorerDataModuleDesc
 	return true;
 }
 
+bool FDeviceExplorerCoreModule::RegisterEndpointSource(const FName Owner, const FName ProviderId, FDeviceExplorerEndpointSourceFactory Factory)
+{
+	if (Owner.IsNone() || ProviderId.IsNone() || !Factory)
+	{
+		return false;
+	}
+
+	FWriteScopeLock Lock(RegistryLock);
+	if (EndpointSources.Contains(ProviderId))
+	{
+		return false;
+	}
+	FEndpointSourceRegistration Registration;
+	Registration.Owner = Owner;
+	Registration.Factory = MoveTemp(Factory);
+	EndpointSources.Add(ProviderId, MoveTemp(Registration));
+	return true;
+}
+
 void FDeviceExplorerCoreModule::UnregisterOwner(const FName Owner)
 {
 	FWriteScopeLock Lock(RegistryLock);
@@ -142,6 +161,44 @@ void FDeviceExplorerCoreModule::UnregisterOwner(const FName Owner)
 			Iterator.RemoveCurrent();
 		}
 	}
+	for (auto Iterator = EndpointSources.CreateIterator(); Iterator; ++Iterator)
+	{
+		if (Iterator.Value().Owner == Owner)
+		{
+			Iterator.RemoveCurrent();
+		}
+	}
+}
+
+TArray<TUniquePtr<IDeviceExplorerEndpointSource>> FDeviceExplorerCoreModule::CreateEndpointSources() const
+{
+	TArray<TPair<FName, FDeviceExplorerEndpointSourceFactory>> Factories;
+	{
+		FReadScopeLock Lock(RegistryLock);
+		Factories.Reserve(EndpointSources.Num());
+		for (const auto& Registration : EndpointSources)
+		{
+			Factories.Emplace(Registration.Key, Registration.Value.Factory);
+		}
+	}
+
+	Factories.Sort(
+		[](const TPair<FName, FDeviceExplorerEndpointSourceFactory>& Left, const TPair<FName, FDeviceExplorerEndpointSourceFactory>& Right)
+		{
+			return Left.Key.LexicalLess(Right.Key);
+		});
+
+	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> Result;
+	Result.Reserve(Factories.Num());
+	for (const auto& Entry : Factories)
+	{
+		TUniquePtr<IDeviceExplorerEndpointSource> Source = Entry.Value();
+		if (Source && Source->GetProviderId() == Entry.Key)
+		{
+			Result.Add(MoveTemp(Source));
+		}
+	}
+	return Result;
 }
 
 FDeviceExplorerRegistrySnapshot FDeviceExplorerCoreModule::Snapshot() const

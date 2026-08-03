@@ -16,6 +16,7 @@ namespace
 // terminal. Back off and keep trying rather than leaving discovery dead for the whole session.
 constexpr NSTimeInterval MinRetryDelay = 2.0;
 constexpr NSTimeInterval MaxRetryDelay = 30.0;
+const FName AppleBonjourProviderId(TEXT("AppleBonjour"));
 
 FString DataToString(NSData* Data)
 {
@@ -37,11 +38,12 @@ FString DataToString(NSData* Data)
 @public
 	NSNetServiceBrowser* Browser;
 	NSMutableSet<NSNetService*>* Services;
-	FDeviceExplorerDiscoveryCallback Callback;
+	NSMutableSet<NSString*>* PublishedServiceNames;
+	FDeviceExplorerEndpointEventCallback Callback;
 	NSTimeInterval RetryDelay;
 	uint64 SearchGeneration;
 }
-- (void)start:(const FDeviceExplorerDiscoveryCallback&)InCallback;
+- (void)start:(const FDeviceExplorerEndpointEventCallback&)InCallback;
 - (void)stop;
 @end
 
@@ -54,6 +56,7 @@ FString DataToString(NSData* Data)
 	{
 		Browser = [[NSNetServiceBrowser alloc] init];
 		Services = [[NSMutableSet alloc] init];
+		PublishedServiceNames = [[NSMutableSet alloc] init];
 		Browser.delegate = self;
 		RetryDelay = MinRetryDelay;
 		SearchGeneration = 0;
@@ -66,6 +69,7 @@ FString DataToString(NSData* Data)
 	[self stop];
 #if !__has_feature(objc_arc)
 	[Services release];
+	[PublishedServiceNames release];
 	[Browser release];
 	[super dealloc];
 #endif
@@ -77,7 +81,7 @@ FString DataToString(NSData* Data)
 	[Browser searchForServicesOfType:@"_deviceexplorer._tcp." inDomain:@"local."];
 }
 
-- (void)start:(const FDeviceExplorerDiscoveryCallback&)InCallback
+- (void)start:(const FDeviceExplorerEndpointEventCallback&)InCallback
 {
 	Callback = InCallback;
 	RetryDelay = MinRetryDelay;
@@ -95,6 +99,7 @@ FString DataToString(NSData* Data)
 		[Service stop];
 	}
 	[Services removeAllObjects];
+	[PublishedServiceNames removeAllObjects];
 	Callback = nullptr;
 }
 
@@ -132,6 +137,22 @@ FString DataToString(NSData* Data)
 	(void) MoreComing;
 	NetService.delegate = nil;
 	[Services removeObject:NetService];
+	if ([PublishedServiceNames containsObject:NetService.name])
+	{
+		[PublishedServiceNames removeObject:NetService.name];
+		FDeviceExplorerEndpointCandidate Candidate;
+		Candidate.ProviderId = AppleBonjourProviderId;
+		Candidate.CandidateId = UTF8_TO_TCHAR(NetService.name.UTF8String);
+		const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
+		AsyncTask(ENamedThreads::GameThread,
+		          [CallbackCopy, Candidate = MoveTemp(Candidate)]() mutable
+		          {
+					  if (CallbackCopy)
+					  {
+						  CallbackCopy(EDeviceExplorerEndpointEvent::Removed, MoveTemp(Candidate));
+					  }
+				  });
+	}
 }
 
 - (void)netService:(NSNetService*)Sender didNotResolve:(NSDictionary*)ErrorDict
@@ -174,29 +195,42 @@ FString DataToString(NSData* Data)
 		Token = DataToString(Values[@"token"]);
 	}
 
+	const bool bWasPublished = [PublishedServiceNames containsObject:Sender.name];
+	[PublishedServiceNames addObject:Sender.name];
 	const FString Instance(UTF8_TO_TCHAR(Sender.name.UTF8String));
 	const int32 Port = static_cast<int32>(Sender.port);
-	const FDeviceExplorerDiscoveryCallback CallbackCopy = Callback;
+	const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
 	AsyncTask(ENamedThreads::GameThread,
-	          [CallbackCopy, Host = MoveTemp(Host), Token = MoveTemp(Token), Instance, Port]()
+	          [CallbackCopy, Event = bWasPublished ? EDeviceExplorerEndpointEvent::Updated : EDeviceExplorerEndpointEvent::Added,
+	           Host = MoveTemp(Host), Token = MoveTemp(Token), Instance, Port]() mutable
 	          {
 				  if (CallbackCopy)
 				  {
-					  CallbackCopy({ Host, Port, Token, Instance });
+					  FDeviceExplorerEndpointCandidate Candidate;
+					  Candidate.ProviderId = AppleBonjourProviderId;
+					  Candidate.CandidateId = Instance;
+					  Candidate.Endpoint.Serialized.Address = MoveTemp(Host);
+					  Candidate.Endpoint.Serialized.Port = Port;
+					  Candidate.Endpoint.Serialized.Family = EDeviceExplorerAddressFamily::IPv4;
+					  Candidate.Token = MoveTemp(Token);
+					  Candidate.Instance = Instance;
+					  CallbackCopy(Event, MoveTemp(Candidate));
 				  }
 			  });
 }
 
 @end
 
-class FAppleDeviceExplorerDiscovery final : public IDeviceExplorerDiscovery
+class FAppleDeviceExplorerEndpointSource final : public IDeviceExplorerEndpointSource
 {
 public:
-	virtual ~FAppleDeviceExplorerDiscovery() override { Stop(); }
+	virtual ~FAppleDeviceExplorerEndpointSource() override { Stop(); }
 
-	virtual void Start(FDeviceExplorerDiscoveryCallback Callback) override
+	virtual FName GetProviderId() const override { return AppleBonjourProviderId; }
+
+	virtual void Start(FDeviceExplorerEndpointEventCallback Callback) override
 	{
-		const FDeviceExplorerDiscoveryCallback CallbackCopy = MoveTemp(Callback);
+		const FDeviceExplorerEndpointEventCallback CallbackCopy = MoveTemp(Callback);
 		dispatch_async(dispatch_get_main_queue(), ^{
 		  if (Delegate == nil)
 		  {
@@ -226,9 +260,9 @@ private:
 	FDeviceExplorerNetServiceDelegate* Delegate = nil;
 };
 
-TUniquePtr<IDeviceExplorerDiscovery> CreateAppleDeviceExplorerDiscovery()
+TUniquePtr<IDeviceExplorerEndpointSource> CreateAppleDeviceExplorerEndpointSource()
 {
-	return MakeUnique<FAppleDeviceExplorerDiscovery>();
+	return MakeUnique<FAppleDeviceExplorerEndpointSource>();
 }
 
 #pragma clang diagnostic pop

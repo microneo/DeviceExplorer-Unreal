@@ -26,6 +26,11 @@ localhost-only.
 - Win64 or macOS for the Editor launcher;
 - Node.js 22 or newer only when modifying the WebUI.
 
+Device transport and discovery are IPv4-only in protocol v1. IPv6 endpoint
+metadata is represented internally so it can be added without changing the
+source-provider API, but IPv6 literals and IPv6-only networks are not supported
+yet.
+
 `Resources/Web` contains the production dashboard, so users of the plugin do
 not need Node.js.
 
@@ -81,6 +86,25 @@ second property. Manual connection remains available:
 ```text
 -DeviceExplorerServer=<ip>:<port> -DeviceExplorerToken=<token>
 ```
+
+The same fallback can be stored in the user-local
+`Saved/Config/<Platform>/GameUserSettings.ini` rather than a project config:
+
+```ini
+[/Script/DeviceExplorer.Settings]
+Endpoint=192.0.2.10:42111
+Token=<token>
+```
+
+At runtime, `DeviceExplorer.Connect <ip>:<port> <token>` pins the client to a
+specific host. `DeviceExplorer.Unpin` resumes automatic selection. A live
+automatic connection remains sticky when other hosts are announced; after a
+disconnect the last working host is tried first and other candidates follow
+with per-endpoint backoff.
+
+The token is sent in plaintext on the local network and identifies a host; it
+is not an authentication secret. Do not commit a real token to
+`DefaultEngine.ini` or another version-controlled file.
 
 ## Components
 

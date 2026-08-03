@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "DeviceExplorerEndpoint.h"
 #include "DeviceExplorerTypes.h"
 #include "Modules/ModuleManager.h"
 
@@ -14,7 +15,9 @@ public:
 	bool RegisterCommand(FDeviceExplorerCommandDescriptor Descriptor);
 	bool RegisterFileRoot(FDeviceExplorerFileRootDescriptor Descriptor);
 	bool RegisterDataModule(FDeviceExplorerDataModuleDescriptor Descriptor);
+	bool RegisterEndpointSource(FName Owner, FName ProviderId, FDeviceExplorerEndpointSourceFactory Factory);
 	void UnregisterOwner(FName Owner);
+	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> CreateEndpointSources() const;
 
 	FDeviceExplorerRegistrySnapshot Snapshot() const;
 	bool FindCommand(FName Name, FDeviceExplorerCommandDescriptor& OutDescriptor) const;
@@ -27,10 +30,16 @@ private:
 		FName Owner;
 		FName Capability;
 	};
+	struct FEndpointSourceRegistration
+	{
+		FName Owner;
+		FDeviceExplorerEndpointSourceFactory Factory;
+	};
 
 	mutable FRWLock RegistryLock;
 	TArray<FCapabilityRegistration> Capabilities;
 	TMap<FName, FDeviceExplorerCommandDescriptor> Commands;
 	TMap<FName, FDeviceExplorerFileRootDescriptor> FileRoots;
 	TMap<FName, FDeviceExplorerDataModuleDescriptor> DataModules;
+	TMap<FName, FEndpointSourceRegistration> EndpointSources;
 };

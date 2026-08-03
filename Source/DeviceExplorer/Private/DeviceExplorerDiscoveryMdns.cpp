@@ -28,6 +28,7 @@ constexpr int32 MaxNameCompressionJumps = 64;
 constexpr uint16 DnsClassMask = 0x7FFF;
 constexpr uint16 DnsClassIN = 1;
 const FString ServiceName(TEXT("_deviceexplorer._tcp.local"));
+const FName MdnsProviderId(TEXT("Mdns"));
 
 void AddU16(TArray<uint8>& Buffer, const uint16 Value)
 {
@@ -228,7 +229,7 @@ FString ParseTxtToken(const uint8* Data, const FParsedRecord& Record)
 	return FString();
 }
 
-bool ParseResponse(const uint8* Data, const int32 PacketLen, const FString& SenderIp, FDeviceExplorerDiscoveredServer& OutServer)
+bool ParseResponse(const uint8* Data, const int32 PacketLen, const FString& SenderIp, FDeviceExplorerEndpointCandidate& OutCandidate)
 {
 	if (PacketLen < 12)
 	{
@@ -348,10 +349,13 @@ bool ParseResponse(const uint8* Data, const int32 PacketLen, const FString& Send
 		return false;
 	}
 
-	OutServer.Host = MoveTemp(HostIp);
-	OutServer.Port = Port;
-	OutServer.Token = MoveTemp(Token);
-	OutServer.Instance = MoveTemp(InstanceName);
+	OutCandidate.ProviderId = MdnsProviderId;
+	OutCandidate.CandidateId = InstanceName;
+	OutCandidate.Endpoint.Serialized.Address = MoveTemp(HostIp);
+	OutCandidate.Endpoint.Serialized.Port = Port;
+	OutCandidate.Endpoint.Serialized.Family = EDeviceExplorerAddressFamily::IPv4;
+	OutCandidate.Token = MoveTemp(Token);
+	OutCandidate.Instance = MoveTemp(InstanceName);
 	return true;
 }
 
@@ -366,10 +370,10 @@ struct FDeviceExplorerMdnsSocketDeleter
 	}
 };
 
-class FDeviceExplorerMdnsDiscovery final : public IDeviceExplorerDiscovery, private FRunnable
+class FDeviceExplorerMdnsEndpointSource final : public IDeviceExplorerEndpointSource, private FRunnable
 {
 public:
-	virtual ~FDeviceExplorerMdnsDiscovery() override
+	virtual ~FDeviceExplorerMdnsEndpointSource() override
 	{
 		bStopRequested.store(true, std::memory_order_relaxed);
 		if (Thread != nullptr)
@@ -380,7 +384,9 @@ public:
 		}
 	}
 
-	virtual void Start(FDeviceExplorerDiscoveryCallback InCallback) override
+	virtual FName GetProviderId() const override { return MdnsProviderId; }
+
+	virtual void Start(FDeviceExplorerEndpointEventCallback InCallback) override
 	{
 		Callback = MoveTemp(InCallback);
 		// FUdpSocketBuilder resolves endpoints through FIPv4Endpoint, which the Networking
@@ -436,18 +442,22 @@ private:
 					break;
 				}
 
-				FDeviceExplorerDiscoveredServer Discovered;
-				if (ParseResponse(Buffer.GetData(), BytesRead, Sender->ToString(false), Discovered))
+				FDeviceExplorerEndpointCandidate Candidate;
+				if (ParseResponse(Buffer.GetData(), BytesRead, Sender->ToString(false), Candidate))
 				{
 					bServerKnown = true;
 					NextQueryTime = FPlatformTime::Seconds() + SlowQueryIntervalSeconds;
-					const FDeviceExplorerDiscoveryCallback CallbackCopy = Callback;
+					const EDeviceExplorerEndpointEvent Event = KnownCandidateIds.Contains(Candidate.CandidateId)
+					                                                  ? EDeviceExplorerEndpointEvent::Updated
+					                                                  : EDeviceExplorerEndpointEvent::Added;
+					KnownCandidateIds.Add(Candidate.CandidateId);
+					const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
 					AsyncTask(ENamedThreads::GameThread,
-					          [CallbackCopy, Discovered]()
+					          [CallbackCopy, Event, Candidate = MoveTemp(Candidate)]() mutable
 					          {
 								  if (CallbackCopy)
 								  {
-									  CallbackCopy(Discovered);
+									  CallbackCopy(Event, MoveTemp(Candidate));
 								  }
 							  });
 				}
@@ -464,14 +474,15 @@ private:
 		return FUdpSocketBuilder(TEXT("DeviceExplorerMdnsDiscovery")).AsNonBlocking().WithMulticastTtl(255).Build();
 	}
 
-	FDeviceExplorerDiscoveryCallback Callback;
+	FDeviceExplorerEndpointEventCallback Callback;
+	TSet<FString> KnownCandidateIds;
 	FRunnableThread* Thread = nullptr;
 	TUniquePtr<FSocket, FDeviceExplorerMdnsSocketDeleter> Socket;
 	std::atomic<bool> bStopRequested{ false };
 };
 }    // namespace
 
-TUniquePtr<IDeviceExplorerDiscovery> CreateMdnsDeviceExplorerDiscovery()
+TUniquePtr<IDeviceExplorerEndpointSource> CreateMdnsDeviceExplorerEndpointSource()
 {
-	return MakeUnique<FDeviceExplorerMdnsDiscovery>();
+	return MakeUnique<FDeviceExplorerMdnsEndpointSource>();
 }

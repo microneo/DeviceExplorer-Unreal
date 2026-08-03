@@ -2,25 +2,32 @@
 
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"
+#include "DeviceExplorerEndpoint.h"
 #include "Modules/ModuleManager.h"
 
+#include <atomic>
+
+class FDeviceExplorerConnectionCoordinator;
 class FDeviceExplorerConsoleCatalog;
 class FDeviceExplorerLogService;
-class IDeviceExplorerDiscovery;
+class IConsoleObject;
 class IWebSocket;
 
 class FDeviceExplorerModule final : public IModuleInterface
 {
 public:
+	virtual ~FDeviceExplorerModule() override;
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
 private:
 	void RegisterDefaultFeatures();
 	bool Tick(float DeltaTime);
-	void OnServerDiscovered(const FString& Host, int32 Port, const FString& Token);
-	void Connect();
+	void OnEndpointEvent(EDeviceExplorerEndpointEvent Event, FDeviceExplorerEndpointCandidate Candidate);
+	void Connect(FDeviceExplorerEndpointCandidate Candidate);
 	void Disconnect();
+	void ConnectManually(const TArray<FString>& Arguments);
+	void UnpinManualEndpoint(const TArray<FString>& Arguments);
 	void SendHello();
 	void SendHeartbeat();
 	void HandleMessage(const FString& Message);
@@ -36,19 +43,19 @@ private:
 	void SendJson(const TSharedRef<class FJsonObject>& Message);
 	FString GetOrCreateDeviceId() const;
 
-	TUniquePtr<IDeviceExplorerDiscovery> Discovery;
+	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> EndpointSources;
+	TSharedPtr<std::atomic<bool>, ESPMode::ThreadSafe> EndpointCallbackGate;
+	TUniquePtr<FDeviceExplorerConnectionCoordinator> ConnectionCoordinator;
 	TUniquePtr<FDeviceExplorerLogService> LogService;
 	TUniquePtr<FDeviceExplorerConsoleCatalog> ConsoleCatalog;
 	TSharedPtr<IWebSocket> Socket;
 	FTSTicker::FDelegateHandle TickerHandle;
+	IConsoleObject* ConnectConsoleCommand = nullptr;
+	IConsoleObject* UnpinConsoleCommand = nullptr;
 
-	FString ServerHost;
-	FString ServerToken;
 	FString DeviceId;
-	int32 ServerPort = 0;
 	double LastHeartbeatSeconds = 0.0;
-	double NextReconnectSeconds = 0.0;
-	double ReconnectDelaySeconds = 1.0;
+	uint64 ConnectionGeneration = 0;
 	bool bConnecting = false;
 	bool bStarted = false;
 };
