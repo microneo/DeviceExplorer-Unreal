@@ -14,6 +14,7 @@ target_include_directories(dexp-wire PUBLIC
 target_compile_features(dexp-wire PUBLIC cxx_std_17)
 
 if(MSVC)
+    target_compile_definitions(dexp-wire PRIVATE _HAS_EXCEPTIONS=0)
     target_compile_options(dexp-wire PRIVATE /W4 /WX /GR- /EHs-c-)
 else()
     target_compile_options(dexp-wire PRIVATE
@@ -28,6 +29,7 @@ if(BUILD_TESTING)
     target_link_libraries(dexp-wire-tests PRIVATE dexp-wire)
     target_compile_features(dexp-wire-tests PRIVATE cxx_std_17)
     if(MSVC)
+        target_compile_definitions(dexp-wire-tests PRIVATE _HAS_EXCEPTIONS=0)
         target_compile_options(dexp-wire-tests PRIVATE /W4 /WX /GR- /EHs-c-)
     else()
         target_compile_options(dexp-wire-tests PRIVATE
