@@ -3,7 +3,7 @@ name: Native wire
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   build:

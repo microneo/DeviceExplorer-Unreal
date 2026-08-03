@@ -1,6 +1,7 @@
 #include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerWebSocket.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -126,6 +128,10 @@ void SetSocketTimeout(const NativeSocket Socket, const int Milliseconds)
 	Timeout.tv_usec = (Milliseconds % 1000) * 1000;
 	setsockopt(Socket, SOL_SOCKET, SO_RCVTIMEO, &Timeout, sizeof(Timeout));
 	setsockopt(Socket, SOL_SOCKET, SO_SNDTIMEO, &Timeout, sizeof(Timeout));
+#if defined(SO_NOSIGPIPE)
+	const int NoSigPipe = 1;
+	setsockopt(Socket, SOL_SOCKET, SO_NOSIGPIPE, &NoSigPipe, sizeof(NoSigPipe));
+#endif
 #endif
 }
 
@@ -138,8 +144,10 @@ bool SendAll(const NativeSocket Socket, const std::uint8_t* Data, const std::siz
 		const int Chunk = static_cast<int>(std::min<std::size_t>(Remaining, static_cast<std::size_t>(std::numeric_limits<int>::max())));
 #if defined(_WIN32)
 		const int Sent = send(Socket, reinterpret_cast<const char*>(Data + Offset), Chunk, 0);
-#else
+#elif defined(MSG_NOSIGNAL)
 		const int Sent = static_cast<int>(send(Socket, Data + Offset, static_cast<std::size_t>(Chunk), MSG_NOSIGNAL));
+#else
+		const int Sent = static_cast<int>(send(Socket, Data + Offset, static_cast<std::size_t>(Chunk), 0));
 #endif
 		if (Sent <= 0) return false;
 		Offset += static_cast<std::size_t>(Sent);
@@ -249,10 +257,10 @@ std::uint16_t ProtocolCloseCode(const WebSocketError Error)
 	switch (Error)
 	{
 		case WebSocketError::InvalidUtf8:
-		case WebSocketError::InvalidClosePayload:
 			return 1007;
 		case WebSocketError::FrameTooLarge:
 		case WebSocketError::MessageTooLarge:
+		case WebSocketError::FrameQueueFull:
 			return 1009;
 		default:
 			return 1002;
@@ -347,8 +355,15 @@ enum class EchoResult
 	Failed
 };
 
+struct EchoMessageState
+{
+	WebSocketOpcode Opcode = WebSocketOpcode::Continuation;
+	std::vector<std::uint8_t> Payload;
+};
+
 EchoResult ProcessEchoBytes(const NativeSocket Socket,
 	                        WebSocketDecoder& Decoder,
+	                        EchoMessageState& Message,
 	                        const WebSocketRole Role,
 	                        const ByteView Bytes)
 {
@@ -369,10 +384,29 @@ EchoResult ProcessEchoBytes(const NativeSocket Socket,
 		{
 			return SendFrame(Socket, Frame, Role) ? EchoResult::Finished : EchoResult::Failed;
 		}
-		else if (Frame.Opcode == WebSocketOpcode::Text || Frame.Opcode == WebSocketOpcode::Binary ||
-		         Frame.Opcode == WebSocketOpcode::Continuation)
+		else if (Frame.Opcode == WebSocketOpcode::Text || Frame.Opcode == WebSocketOpcode::Binary)
 		{
-			if (!SendFrame(Socket, Frame, Role)) return EchoResult::Failed;
+			if (Frame.Final)
+			{
+				if (!SendFrame(Socket, Frame, Role)) return EchoResult::Failed;
+			}
+			else
+			{
+				Message.Opcode = Frame.Opcode;
+				Message.Payload = Frame.Payload;
+			}
+		}
+		else if (Frame.Opcode == WebSocketOpcode::Continuation)
+		{
+			Message.Payload.insert(Message.Payload.end(), Frame.Payload.begin(), Frame.Payload.end());
+			if (Frame.Final)
+			{
+				WebSocketFrame Complete;
+				Complete.Opcode = Message.Opcode;
+				Complete.Payload = std::move(Message.Payload);
+				Message.Opcode = WebSocketOpcode::Continuation;
+				if (!SendFrame(Socket, Complete, Role)) return EchoResult::Failed;
+			}
 		}
 	}
 	return EchoResult::Continue;
@@ -383,9 +417,10 @@ bool RunEchoConnection(const NativeSocket Socket,
 	                   const std::vector<std::uint8_t>& InitialBytes)
 {
 	WebSocketDecoder Decoder(Role);
+	EchoMessageState Message;
 	if (!InitialBytes.empty())
 	{
-		const EchoResult Initial = ProcessEchoBytes(Socket, Decoder, Role, { InitialBytes.data(), InitialBytes.size() });
+		const EchoResult Initial = ProcessEchoBytes(Socket, Decoder, Message, Role, { InitialBytes.data(), InitialBytes.size() });
 		if (Initial != EchoResult::Continue) return Initial == EchoResult::Finished;
 	}
 	std::array<std::uint8_t, ReceiveBufferBytes> Buffer{};
@@ -393,7 +428,7 @@ bool RunEchoConnection(const NativeSocket Socket,
 	{
 		const int Read = ReceiveSome(Socket, Buffer.data(), Buffer.size());
 		if (Read <= 0) return false;
-		const EchoResult Result = ProcessEchoBytes(Socket, Decoder, Role, { Buffer.data(), static_cast<std::size_t>(Read) });
+		const EchoResult Result = ProcessEchoBytes(Socket, Decoder, Message, Role, { Buffer.data(), static_cast<std::size_t>(Read) });
 		if (Result != EchoResult::Continue) return Result == EchoResult::Finished;
 	}
 }

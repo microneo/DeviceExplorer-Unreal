@@ -56,6 +56,7 @@ enum class WebSocketError : std::uint8_t
 	NonMinimalLength,
 	FrameTooLarge,
 	MessageTooLarge,
+	FrameQueueFull,
 	InvalidControlFrame,
 	InvalidFragmentSequence,
 	InvalidUtf8,
@@ -66,6 +67,7 @@ struct WebSocketLimits
 {
 	std::uint64_t MaximumFramePayloadBytes = 8ULL * 1024ULL * 1024ULL;
 	std::uint64_t MaximumMessagePayloadBytes = 8ULL * 1024ULL * 1024ULL;
+	std::size_t MaximumQueuedFrames = 1024;
 };
 
 struct WebSocketFrame

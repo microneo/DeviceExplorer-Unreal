@@ -76,10 +76,14 @@ bool ValidateCompleteFrame(const WebSocketFrame& Frame, WebSocketError* OutError
 		if (Frame.Payload.size() >= 2)
 		{
 			const std::uint16_t Code = (static_cast<std::uint16_t>(Frame.Payload[0]) << 8) | Frame.Payload[1];
-			if (!IsValidWebSocketCloseCode(Code) ||
-			    !IsValidWebSocketUtf8({ Frame.Payload.data() + 2, Frame.Payload.size() - 2 }))
+			if (!IsValidWebSocketCloseCode(Code))
 			{
 				SetError(OutError, WebSocketError::InvalidClosePayload);
+				return false;
+			}
+			if (!IsValidWebSocketUtf8({ Frame.Payload.data() + 2, Frame.Payload.size() - 2 }))
+			{
+				SetError(OutError, WebSocketError::InvalidUtf8);
 				return false;
 			}
 		}
@@ -245,6 +249,10 @@ bool WebSocketDecoder::ParseAvailable()
 		{
 			return false;
 		}
+		if (Frames.size() >= Limits.MaximumQueuedFrames)
+		{
+			return Fail(WebSocketError::FrameQueueFull);
+		}
 		Frames.push_back(std::move(Frame));
 		Offset += HeaderSize + PayloadBytes;
 	}
@@ -334,6 +342,7 @@ const char* WebSocketDecoder::GetErrorText() const
 		case WebSocketError::NonMinimalLength: return "payload length is not minimally encoded";
 		case WebSocketError::FrameTooLarge: return "frame payload exceeds the limit";
 		case WebSocketError::MessageTooLarge: return "message payload exceeds the limit";
+		case WebSocketError::FrameQueueFull: return "decoded frame queue exceeds the limit";
 		case WebSocketError::InvalidControlFrame: return "invalid control frame";
 		case WebSocketError::InvalidFragmentSequence: return "invalid fragmentation sequence";
 		case WebSocketError::InvalidUtf8: return "invalid UTF-8 text";

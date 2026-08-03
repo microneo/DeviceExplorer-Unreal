@@ -38,7 +38,15 @@ bool DecodePresentationName(std::string_view Name, std::vector<std::string>& Out
 {
 	OutLabels.clear();
 	if (Name.empty()) return false;
-	if (Name.back() == '.') Name.remove_suffix(1);
+	if (Name.back() == '.')
+	{
+		std::size_t EscapeCount = 0;
+		for (std::size_t Index = Name.size() - 1; Index > 0 && Name[Index - 1] == '\\'; --Index)
+		{
+			++EscapeCount;
+		}
+		if ((EscapeCount % 2) == 0) Name.remove_suffix(1);
+	}
 	if (Name.empty()) return false;
 
 	std::size_t WireBytes = 1;    // root label

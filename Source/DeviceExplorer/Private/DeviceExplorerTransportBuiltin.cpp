@@ -75,10 +75,10 @@ std::uint16_t DeviceExplorerProtocolCloseCode(const DeviceExplorer::Wire::WebSoc
 	switch (Error)
 	{
 		case WebSocketError::InvalidUtf8:
-		case WebSocketError::InvalidClosePayload:
 			return 1007;
 		case WebSocketError::FrameTooLarge:
 		case WebSocketError::MessageTooLarge:
+		case WebSocketError::FrameQueueFull:
 			return 1009;
 		default:
 			return 1002;
@@ -280,6 +280,8 @@ private:
 			{
 				return false;
 			}
+			if (Socket == nullptr) return false;    // a callback may close the transport
+			if (bCloseAfterFlush) return true;
 		}
 		return true;
 	}
@@ -314,6 +316,7 @@ private:
 		State = EDeviceExplorerBuiltinState::Connected;
 		bEverConnected = true;
 		if (Callbacks.OnConnected) Callbacks.OnConnected();
+		if (Socket == nullptr || State != EDeviceExplorerBuiltinState::Connected) return false;
 		return Tail.IsEmpty() || ConsumeFrames(Tail.GetData(), static_cast<std::size_t>(Tail.Num()));
 	}
 
@@ -379,6 +382,7 @@ private:
 				}
 				bCloseFrameSent = true;
 				bPeerCloseReceived = true;
+				bCloseAfterFlush = true;
 				PendingCloseCode = Code;
 				PendingCloseReason = MoveTemp(Reason);
 				bPendingCloseClean = true;
@@ -390,7 +394,11 @@ private:
 			case WebSocketOpcode::Binary:
 				if (Frame.Final)
 				{
-					if (Frame.Opcode == WebSocketOpcode::Text) DispatchText(Frame.Payload);
+					if (Frame.Opcode == WebSocketOpcode::Text)
+					{
+						DispatchText(Frame.Payload);
+						if (Socket == nullptr) return false;    // a callback may close the transport
+					}
 				}
 				else
 				{
@@ -402,7 +410,11 @@ private:
 				IncomingMessagePayload.insert(IncomingMessagePayload.end(), Frame.Payload.begin(), Frame.Payload.end());
 				if (Frame.Final)
 				{
-					if (IncomingMessageOpcode == WebSocketOpcode::Text) DispatchText(IncomingMessagePayload);
+					if (IncomingMessageOpcode == WebSocketOpcode::Text)
+					{
+						DispatchText(IncomingMessagePayload);
+						if (Socket == nullptr) return false;    // a callback may close the transport
+					}
 					IncomingMessageOpcode = WebSocketOpcode::Continuation;
 					IncomingMessagePayload.clear();
 				}

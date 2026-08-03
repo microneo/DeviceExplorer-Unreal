@@ -96,6 +96,22 @@ Endpoint=192.0.2.10:42111
 Token=<token>
 ```
 
+The client has two WebSocket transports. `Auto` uses Unreal's `WebSockets`
+module when it is available and otherwise falls back to the built-in `FSocket`
+adapter. Select one explicitly before the client module starts with either:
+
+```ini
+[/Script/DeviceExplorer.Settings]
+Transport=Builtin
+```
+
+or `-DeviceExplorerTransport=Builtin`. Accepted values are `Auto`, `Engine`,
+and `Builtin`; `DeviceExplorer.Transport` provides the same override as a
+console variable. The built-in path uses the shared `DeviceExplorerWire`
+handshake and RFC 6455 codecs, including masked client frames, partial I/O,
+fragmentation, ping/pong, bounded buffering, and close replies. The protocol-9
+JSON messages are unchanged.
+
 At runtime, `DeviceExplorer.Connect <ip>:<port> <token>` pins the client to a
 specific host. `DeviceExplorer.Unpin` resumes automatic selection. A live
 automatic connection remains sticky when other hosts are announced; after a
@@ -111,6 +127,7 @@ is not an authentication secret. Do not commit a real token to
 | Module | Purpose |
 | --- | --- |
 | `DeviceExplorerCore` | Runtime-safe registry and C++ Builder API |
+| `DeviceExplorerWire` | Sans-I/O HTTP, WebSocket, mDNS, and JSON/message codecs |
 | `DeviceExplorer` | Non-Shipping client embedded in the build |
 | `DeviceExplorerHost` | Standalone HTTP, WebSocket, mDNS, and file-transfer host |
 | `DeviceExplorerEditor` | Status bar item, menu, settings, and host process control |

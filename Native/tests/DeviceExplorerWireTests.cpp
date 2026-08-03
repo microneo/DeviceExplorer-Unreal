@@ -254,6 +254,12 @@ void TestMdnsCodec()
 	std::vector<std::uint8_t> ReencodedEscaped;
 	CHECK(EncodeMdnsAnnouncement(Escaped.Announcement, ReencodedEscaped, &Error));
 	CHECK(ReencodedEscaped == Packet);
+	std::vector<std::uint8_t> LiteralDotQuery;
+	CHECK(EncodeMdnsQuery("literal\\.", LiteralDotQuery, &Error));
+	const MdnsQueryParseResult LiteralDotResult = ParseMdnsQuery(
+		{ LiteralDotQuery.data(), LiteralDotQuery.size() }, "literal\\.", "other.local", "other.local");
+	CHECK(LiteralDotResult.Status == MdnsStatus::Complete);
+	CHECK(LiteralDotResult.Match.Name == "literal\\.");
 
 	std::vector<std::uint8_t> ZeroPadded = Packet;
 	ZeroPadded.insert(ZeroPadded.end(), { 0, 0, 0, 0 });
@@ -567,6 +573,12 @@ void TestInvalidFrames()
 	CHECK(!EncodeWebSocketFrame(BadClose, WebSocketRole::Server, 0, Encoded, &Error));
 	CHECK(Error == WebSocketError::InvalidClosePayload);
 
+	WebSocketFrame BadCloseReason;
+	BadCloseReason.Opcode = WebSocketOpcode::Close;
+	BadCloseReason.Payload = { 0x03, 0xE8, 0xC0, 0x80 };
+	CHECK(!EncodeWebSocketFrame(BadCloseReason, WebSocketRole::Server, 0, Encoded, &Error));
+	CHECK(Error == WebSocketError::InvalidUtf8);
+
 	WebSocketLimits Limits;
 	Limits.MaximumFramePayloadBytes = 16;
 	Limits.MaximumMessagePayloadBytes = 3;
@@ -577,6 +589,52 @@ void TestInvalidFrames()
 	WebSocketDecoder LimitedDecoder(WebSocketRole::Server, Limits);
 	CHECK(!LimitedDecoder.Consume({ Encoded.data(), Encoded.size() }));
 	CHECK(LimitedDecoder.GetError() == WebSocketError::MessageTooLarge);
+
+	WebSocketLimits QueueLimits;
+	QueueLimits.MaximumQueuedFrames = 8;
+	std::vector<std::uint8_t> EmptyFrames;
+	WebSocketFrame Empty;
+	Empty.Opcode = WebSocketOpcode::Binary;
+	for (std::size_t Index = 0; Index < QueueLimits.MaximumQueuedFrames + 1; ++Index)
+	{
+		std::vector<std::uint8_t> OneFrame;
+		CHECK(EncodeWebSocketFrame(Empty, WebSocketRole::Server, 0, OneFrame));
+		EmptyFrames.insert(EmptyFrames.end(), OneFrame.begin(), OneFrame.end());
+	}
+	WebSocketDecoder QueueLimitedDecoder(WebSocketRole::Client, QueueLimits);
+	CHECK(!QueueLimitedDecoder.Consume({ EmptyFrames.data(), EmptyFrames.size() }));
+	CHECK(QueueLimitedDecoder.GetError() == WebSocketError::FrameQueueFull);
+}
+
+void TestDeterministicMalformedInputs()
+{
+	std::uint32_t State = 0xD1C0DEC5U;
+	const auto NextByte = [&State]()
+	{
+		State = State * 1664525U + 1013904223U;
+		return static_cast<std::uint8_t>(State >> 24);
+	};
+	for (std::size_t Iteration = 0; Iteration < 20000; ++Iteration)
+	{
+		State = State * 1664525U + 1013904223U;
+		std::vector<std::uint8_t> Input((State >> 16) % 513U);
+		for (std::uint8_t& Byte : Input) Byte = NextByte();
+		const ByteView View{ Input.data(), Input.size() };
+
+		JsonValue Json;
+		JsonError JsonFailure = JsonError::None;
+		(void) ParseJson(View, Json, {}, &JsonFailure);
+		(void) ParseMdnsAnnouncement(View);
+		(void) ParseMdnsQuery(View, DeviceExplorerMdnsServiceName, "instance.local", "host.local");
+		WebSocketUpgradeRequest Request;
+		(void) ParseWebSocketUpgradeRequest(View, Request);
+		WebSocketUpgradeResponse Response;
+		(void) ParseWebSocketUpgradeResponse(View, "invalid-random-accept", Response);
+		WebSocketDecoder Client(WebSocketRole::Client);
+		WebSocketDecoder Server(WebSocketRole::Server);
+		(void) Client.Consume(View);
+		(void) Server.Consume(View);
+	}
 }
 
 void TestWebSocketBufferedLimit()
@@ -634,6 +692,7 @@ int main()
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
 	TestInvalidFrames();
+	TestDeterministicMalformedInputs();
 	TestWebSocketBufferedLimit();
 	TestRegisteredCloseCodes();
 	if (Failures != 0)
