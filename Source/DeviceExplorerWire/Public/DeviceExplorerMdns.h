@@ -65,21 +65,21 @@ struct MdnsAnnouncementParseResult
 	MdnsServiceAnnouncement Announcement;
 };
 
-bool EncodeMdnsQuery(std::string_view ServiceName,
+DEVICEEXPLORERWIRE_API bool EncodeMdnsQuery(std::string_view ServiceName,
 	                 std::vector<std::uint8_t>& OutPacket,
 	                 MdnsError* OutError = nullptr);
 
-MdnsQueryParseResult ParseMdnsQuery(ByteView Packet,
+DEVICEEXPLORERWIRE_API MdnsQueryParseResult ParseMdnsQuery(ByteView Packet,
 	                                std::string_view ServiceName,
 	                                std::string_view InstanceName,
 	                                std::string_view HostName);
 
-bool EncodeMdnsAnnouncement(const MdnsServiceAnnouncement& Announcement,
+DEVICEEXPLORERWIRE_API bool EncodeMdnsAnnouncement(const MdnsServiceAnnouncement& Announcement,
 	                        std::vector<std::uint8_t>& OutPacket,
 	                        MdnsError* OutError = nullptr);
 
-MdnsAnnouncementParseResult ParseMdnsAnnouncement(ByteView Packet,
+DEVICEEXPLORERWIRE_API MdnsAnnouncementParseResult ParseMdnsAnnouncement(ByteView Packet,
 	                                               std::string_view ExpectedServiceName = DeviceExplorerMdnsServiceName);
 
-const char* MdnsErrorText(MdnsError Error);
+DEVICEEXPLORERWIRE_API const char* MdnsErrorText(MdnsError Error);
 }    // namespace DeviceExplorer::Wire

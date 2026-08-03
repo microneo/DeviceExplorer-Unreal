@@ -100,32 +100,32 @@ struct DeviceExplorerMessage
 	bool HasRequestId = false;
 };
 
-bool IsValidJsonNumber(std::string_view Value);
+DEVICEEXPLORERWIRE_API bool IsValidJsonNumber(std::string_view Value);
 
-bool ParseJson(ByteView Bytes,
+DEVICEEXPLORERWIRE_API bool ParseJson(ByteView Bytes,
 	           JsonValue& OutValue,
 	           JsonLimits Limits = {},
 	           JsonError* OutError = nullptr);
 
-bool SerializeJson(const JsonValue& Value,
+DEVICEEXPLORERWIRE_API bool SerializeJson(const JsonValue& Value,
 	               std::string& OutText,
 	               JsonLimits Limits = {},
 	               JsonError* OutError = nullptr);
 
-bool ParseDeviceExplorerMessage(ByteView Bytes,
+DEVICEEXPLORERWIRE_API bool ParseDeviceExplorerMessage(ByteView Bytes,
 	                            DeviceExplorerMessage& OutMessage,
 	                            JsonLimits Limits = {},
 	                            JsonError* OutError = nullptr);
 
-bool MakeDeviceExplorerMessage(std::string Type,
+DEVICEEXPLORERWIRE_API bool MakeDeviceExplorerMessage(std::string Type,
 	                           std::string RequestId,
 	                           DeviceExplorerMessage& OutMessage,
 	                           JsonError* OutError = nullptr);
 
-bool SerializeDeviceExplorerMessage(const DeviceExplorerMessage& Message,
+DEVICEEXPLORERWIRE_API bool SerializeDeviceExplorerMessage(const DeviceExplorerMessage& Message,
 	                                std::string& OutText,
 	                                JsonLimits Limits = {},
 	                                JsonError* OutError = nullptr);
 
-const char* JsonErrorText(JsonError Error);
+DEVICEEXPLORERWIRE_API const char* JsonErrorText(JsonError Error);
 }    // namespace DeviceExplorer::Wire

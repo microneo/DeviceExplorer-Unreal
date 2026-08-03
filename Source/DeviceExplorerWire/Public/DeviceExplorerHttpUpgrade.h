@@ -54,24 +54,24 @@ struct HttpUpgradeParseResult
 	std::size_t ConsumedBytes = 0;
 };
 
-HttpUpgradeParseResult ParseWebSocketUpgradeRequest(ByteView Bytes,
+DEVICEEXPLORERWIRE_API HttpUpgradeParseResult ParseWebSocketUpgradeRequest(ByteView Bytes,
 	                                                WebSocketUpgradeRequest& OutRequest,
 	                                                std::size_t MaximumHeaderBytes = 64 * 1024);
 
-HttpUpgradeParseResult ParseWebSocketUpgradeResponse(ByteView Bytes,
+DEVICEEXPLORERWIRE_API HttpUpgradeParseResult ParseWebSocketUpgradeResponse(ByteView Bytes,
 	                                                 const std::string& ExpectedAccept,
 	                                                 WebSocketUpgradeResponse& OutResponse,
 	                                                 std::size_t MaximumHeaderBytes = 64 * 1024);
 
-bool MakeWebSocketAccept(const std::string& ClientKey, std::string& OutAccept);
+DEVICEEXPLORERWIRE_API bool MakeWebSocketAccept(const std::string& ClientKey, std::string& OutAccept);
 
-std::string SerializeWebSocketUpgradeRequest(const std::string& Target,
+DEVICEEXPLORERWIRE_API std::string SerializeWebSocketUpgradeRequest(const std::string& Target,
 	                                         const std::string& Host,
 	                                         const std::string& ClientKey,
 	                                         const std::vector<HttpHeader>& ExtraHeaders = {});
 
-std::string SerializeWebSocketUpgradeResponse(const std::string& Accept,
+DEVICEEXPLORERWIRE_API std::string SerializeWebSocketUpgradeResponse(const std::string& Accept,
 	                                          const std::vector<HttpHeader>& ExtraHeaders = {});
 
-const char* HttpUpgradeErrorText(HttpUpgradeError Error);
+DEVICEEXPLORERWIRE_API const char* HttpUpgradeErrorText(HttpUpgradeError Error);
 }    // namespace DeviceExplorer::Wire

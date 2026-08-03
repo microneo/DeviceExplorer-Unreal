@@ -1,5 +1,22 @@
 #pragma once
 
+// UBT expands DEVICEEXPLORERWIRE_API to DLLEXPORT/DLLIMPORT, which UE declares in
+// HAL/Platform.h. This module includes no UE header and is also built by the
+// standalone CMake target, so supply both spellings when they are absent.
+#ifndef DEVICEEXPLORERWIRE_API
+#define DEVICEEXPLORERWIRE_API
+#else
+#ifndef DLLEXPORT
+#if defined(_MSC_VER)
+#define DLLEXPORT __declspec(dllexport)
+#define DLLIMPORT __declspec(dllimport)
+#else
+#define DLLEXPORT __attribute__((visibility("default")))
+#define DLLIMPORT __attribute__((visibility("default")))
+#endif
+#endif
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -83,12 +100,12 @@ private:
 	std::vector<std::uint8_t> FragmentedText;
 };
 
-bool EncodeWebSocketFrame(const WebSocketFrame& Frame,
+DEVICEEXPLORERWIRE_API bool EncodeWebSocketFrame(const WebSocketFrame& Frame,
 	                      WebSocketRole SenderRole,
 	                      std::uint32_t MaskKey,
 	                      std::vector<std::uint8_t>& OutBytes,
 	                      WebSocketError* OutError = nullptr);
 
-bool IsValidWebSocketUtf8(ByteView Bytes);
-bool IsValidWebSocketCloseCode(std::uint16_t Code);
+DEVICEEXPLORERWIRE_API bool IsValidWebSocketUtf8(ByteView Bytes);
+DEVICEEXPLORERWIRE_API bool IsValidWebSocketCloseCode(std::uint16_t Code);
 }    // namespace DeviceExplorer::Wire
