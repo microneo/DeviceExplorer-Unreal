@@ -1,4 +1,5 @@
 #include "DeviceExplorerHttpUpgrade.h"
+#include "DeviceExplorerJson.h"
 #include "DeviceExplorerMdns.h"
 #include "DeviceExplorerProtocol.h"
 #include "DeviceExplorerWebSocket.h"
@@ -258,6 +259,106 @@ void TestMdnsCodec()
 	CHECK(Error == MdnsError::InvalidAnnouncement);
 }
 
+void TestJsonCodec()
+{
+	const std::string Text =
+		"{\"type\":\"hello\",\"request_id\":\"req-1\",\"number\":-12.5e+2,"
+		"\"values\":[true,false,null],\"rocket\":\"\\uD83D\\uDE80\",\"escaped\":\"line\\nnext\"}";
+	DeviceExplorerMessage Message;
+	JsonError Error = JsonError::InvalidInput;
+	CHECK(ParseDeviceExplorerMessage(
+		{ reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message, {}, &Error));
+	CHECK(Error == JsonError::None);
+	CHECK(Message.Type == "hello");
+	CHECK(Message.HasRequestId);
+	CHECK(Message.RequestId == "req-1");
+	const JsonValue* Number = Message.Root.FindMember("number");
+	CHECK(Number != nullptr);
+	CHECK(Number != nullptr && Number->TryGetNumberText() != nullptr);
+	CHECK(Number != nullptr && Number->TryGetNumberText() != nullptr && *Number->TryGetNumberText() == "-12.5e+2");
+	const JsonValue* Rocket = Message.Root.FindMember("rocket");
+	CHECK(Rocket != nullptr);
+	CHECK(Rocket != nullptr && Rocket->TryGetString() != nullptr);
+	CHECK(Rocket != nullptr && Rocket->TryGetString() != nullptr && *Rocket->TryGetString() == "\xF0\x9F\x9A\x80");
+
+	std::string Serialized;
+	CHECK(SerializeDeviceExplorerMessage(Message, Serialized, {}, &Error));
+	CHECK(Error == JsonError::None);
+	DeviceExplorerMessage RoundTrip;
+	CHECK(ParseDeviceExplorerMessage(
+		{ reinterpret_cast<const std::uint8_t*>(Serialized.data()), Serialized.size() }, RoundTrip, {}, &Error));
+	CHECK(RoundTrip.Type == Message.Type);
+	CHECK(RoundTrip.RequestId == Message.RequestId);
+	CHECK(RoundTrip.Root.FindMember("rocket") != nullptr);
+
+	DeviceExplorerMessage Built;
+	CHECK(MakeDeviceExplorerMessage("ping", "request-2", Built, &Error));
+	JsonValue Sequence;
+	Sequence.SetUnsignedInteger(42);
+	CHECK(Built.Root.SetMember("sequence", std::move(Sequence)));
+	CHECK(SerializeDeviceExplorerMessage(Built, Serialized, {}, &Error));
+	CHECK(Serialized == "{\"type\":\"ping\",\"request_id\":\"request-2\",\"sequence\":42}");
+	Built.Type = "stale";
+	CHECK(!SerializeDeviceExplorerMessage(Built, Serialized, {}, &Error));
+	CHECK(Error == JsonError::InvalidMessageType);
+
+	JsonValue StringWithNull;
+	CHECK(StringWithNull.SetString(std::string("a\0b", 3)));
+	CHECK(SerializeJson(StringWithNull, Serialized, {}, &Error));
+	CHECK(Serialized == "\"a\\u0000b\"");
+
+	for (const char* NumberText : { "0", "-0", "1", "-12.5e+2", "1E9" })
+	{
+		CHECK(IsValidJsonNumber(NumberText));
+	}
+	for (const char* NumberText : { "", "-", "+1", "01", "1.", ".1", "1e", "nan", "inf" })
+	{
+		CHECK(!IsValidJsonNumber(NumberText));
+	}
+
+	const auto CheckMessageError = [&Error](const std::string& Invalid, const JsonError Expected)
+	{
+		DeviceExplorerMessage Ignored;
+		CHECK(!ParseDeviceExplorerMessage(
+			{ reinterpret_cast<const std::uint8_t*>(Invalid.data()), Invalid.size() }, Ignored, {}, &Error));
+		CHECK(Error == Expected);
+	};
+	CheckMessageError("[]", JsonError::RootNotObject);
+	CheckMessageError("{}", JsonError::MissingMessageType);
+	CheckMessageError("{\"type\":1}", JsonError::InvalidMessageType);
+	CheckMessageError("{\"type\":\"hello\",\"request_id\":1}", JsonError::InvalidRequestId);
+	CheckMessageError("{\"type\":\"one\",\"type\":\"two\"}", JsonError::DuplicateKey);
+	CheckMessageError("{\"type\":\"hello\"} trailing", JsonError::TrailingData);
+	CheckMessageError("{\"type\":\"hello\",\"bad\":01}", JsonError::InvalidNumber);
+	CheckMessageError("{\"type\":\"hello\",\"bad\":\"\\uD800\"}", JsonError::InvalidUnicode);
+	CheckMessageError("{\"type\":\"hello\",\"bad\":\"\\x\"}", JsonError::InvalidEscape);
+
+	std::string InvalidUtf8 = "{\"type\":\"";
+	InvalidUtf8.push_back(static_cast<char>(0xC0));
+	InvalidUtf8 += "\"}";
+	CheckMessageError(InvalidUtf8, JsonError::InvalidUnicode);
+
+	JsonLimits Tiny;
+	Tiny.MaximumDocumentBytes = Text.size() - 1;
+	CHECK(!ParseDeviceExplorerMessage(
+		{ reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message, Tiny, &Error));
+	CHECK(Error == JsonError::DocumentTooLarge);
+	Tiny = {};
+	Tiny.MaximumDepth = 1;
+	const std::string Nested = "{\"type\":\"hello\",\"nested\":{}}";
+	CHECK(!ParseDeviceExplorerMessage(
+		{ reinterpret_cast<const std::uint8_t*>(Nested.data()), Nested.size() }, Message, Tiny, &Error));
+	CHECK(Error == JsonError::MaximumDepthExceeded);
+	Tiny = {};
+	Tiny.MaximumNodeCount = 1;
+	CHECK(!ParseDeviceExplorerMessage(
+		{ reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message, Tiny, &Error));
+	CHECK(Error == JsonError::MaximumNodeCountExceeded);
+
+	CHECK(!ParseJson({ nullptr, 1 }, StringWithNull, {}, &Error));
+	CHECK(Error == JsonError::InvalidInput);
+}
+
 void TestWebSocketRoundTrip()
 {
 	WebSocketFrame Source;
@@ -455,6 +556,7 @@ int main()
 {
 	TestHttpUpgrade();
 	TestMdnsCodec();
+	TestJsonCodec();
 	TestWebSocketRoundTrip();
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
