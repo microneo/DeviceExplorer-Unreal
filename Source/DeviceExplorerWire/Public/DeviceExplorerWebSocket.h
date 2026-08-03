@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <string>
 #include <vector>
 
 namespace DeviceExplorer::Wire
@@ -33,6 +32,7 @@ enum class WebSocketOpcode : std::uint8_t
 enum class WebSocketError : std::uint8_t
 {
 	None,
+	InvalidInput,
 	InvalidReservedBits,
 	UnknownOpcode,
 	InvalidMask,

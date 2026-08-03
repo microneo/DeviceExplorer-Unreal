@@ -1,8 +1,10 @@
 # DeviceExplorer native build
 
 This directory is the CMake composition root for code that does not depend on
-Unreal Engine. D1 currently provides `dexp-wire`, a C++17 sans-I/O library for
-HTTP WebSocket upgrades and RFC 6455 frames, plus `dexp-wire-tests`.
+Unreal Engine. D1 currently provides `dexp-wire`, a sans-I/O library for HTTP
+WebSocket upgrades and RFC 6455 frames, plus `dexp-wire-tests`. The standalone
+CMake target supports C++17; UE 5.7+ compiles the same sources as C++20 because
+that is the engine's minimum supported module standard.
 
 ```sh
 cmake -S Native -B build/native -DCMAKE_BUILD_TYPE=Release

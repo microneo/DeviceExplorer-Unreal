@@ -89,18 +89,32 @@ bool WebSocketDecoder::Consume(const ByteView Bytes)
 	{
 		return false;
 	}
-	if (Bytes.Size > 0)
+	if (Bytes.Size > 0 && Bytes.Data == nullptr)
 	{
-		if (Bytes.Data == nullptr)
+		return Fail(WebSocketError::InvalidInput);
+	}
+
+	constexpr std::size_t MaximumHeaderBytes = 14;
+	const std::size_t MaximumBufferedBytes =
+		Limits.MaximumFramePayloadBytes > std::numeric_limits<std::size_t>::max() - MaximumHeaderBytes
+			? std::numeric_limits<std::size_t>::max()
+			: static_cast<std::size_t>(Limits.MaximumFramePayloadBytes) + MaximumHeaderBytes;
+	std::size_t Offset = 0;
+	while (Offset < Bytes.Size)
+	{
+		if (!ParseAvailable())
+		{
+			return false;
+		}
+		if (Input.size() >= MaximumBufferedBytes)
 		{
 			return Fail(WebSocketError::FrameTooLarge);
 		}
-		if (Bytes.Size > Limits.MaximumFramePayloadBytes + 14 ||
-		    Input.size() > Limits.MaximumFramePayloadBytes + 14 - Bytes.Size)
-		{
-			return Fail(WebSocketError::FrameTooLarge);
-		}
-		Input.insert(Input.end(), Bytes.Data, Bytes.Data + Bytes.Size);
+
+		const std::size_t Available = MaximumBufferedBytes - Input.size();
+		const std::size_t ChunkSize = std::min(Available, Bytes.Size - Offset);
+		Input.insert(Input.end(), Bytes.Data + Offset, Bytes.Data + Offset + ChunkSize);
+		Offset += ChunkSize;
 	}
 	return ParseAvailable();
 }
@@ -302,6 +316,7 @@ const char* WebSocketDecoder::GetErrorText() const
 	switch (Error)
 	{
 		case WebSocketError::None: return "none";
+		case WebSocketError::InvalidInput: return "input data is null";
 		case WebSocketError::InvalidReservedBits: return "reserved bits are set";
 		case WebSocketError::UnknownOpcode: return "unknown opcode";
 		case WebSocketError::InvalidMask: return "invalid masking for peer role";
@@ -454,6 +469,7 @@ bool IsValidWebSocketCloseCode(const std::uint16_t Code)
 		case 1009:
 		case 1010:
 		case 1011:
+		// Registered close codes which some older Autobahn cases still treat as reserved.
 		case 1012:
 		case 1013:
 		case 1014:

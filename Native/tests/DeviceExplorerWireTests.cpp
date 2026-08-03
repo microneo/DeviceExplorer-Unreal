@@ -75,6 +75,33 @@ void TestHttpUpgrade()
 		{ reinterpret_cast<const std::uint8_t*>(BadRequest.data()), BadRequest.size() }, Request);
 	CHECK(BadResult.Status == HttpUpgradeStatus::Error);
 	CHECK(BadResult.Error == HttpUpgradeError::UnsupportedWebSocketVersion);
+
+	std::string SpacedName = RequestBytes;
+	const std::size_t HostHeader = SpacedName.find("Host:");
+	CHECK(HostHeader != std::string::npos);
+	SpacedName.insert(HostHeader + 4, " ");
+	const HttpUpgradeParseResult SpacedNameResult = ParseWebSocketUpgradeRequest(
+		{ reinterpret_cast<const std::uint8_t*>(SpacedName.data()), SpacedName.size() }, Request);
+	CHECK(SpacedNameResult.Status == HttpUpgradeStatus::Error);
+	CHECK(SpacedNameResult.Error == HttpUpgradeError::InvalidHeader);
+
+	std::string DuplicateKey = RequestBytes;
+	const std::size_t RequestEnd = DuplicateKey.find("\r\n\r\n");
+	CHECK(RequestEnd != std::string::npos);
+	DuplicateKey.insert(RequestEnd, "\r\nSec-WebSocket-Key: " + Key);
+	const HttpUpgradeParseResult DuplicateKeyResult = ParseWebSocketUpgradeRequest(
+		{ reinterpret_cast<const std::uint8_t*>(DuplicateKey.data()), DuplicateKey.size() }, Request);
+	CHECK(DuplicateKeyResult.Status == HttpUpgradeStatus::Error);
+	CHECK(DuplicateKeyResult.Error == HttpUpgradeError::InvalidWebSocketKey);
+
+	std::string DuplicateAccept = ResponseBytes;
+	const std::size_t ResponseEnd = DuplicateAccept.find("\r\n\r\n");
+	CHECK(ResponseEnd != std::string::npos);
+	DuplicateAccept.insert(ResponseEnd, "\r\nSec-WebSocket-Accept: " + Accept);
+	const HttpUpgradeParseResult DuplicateAcceptResult = ParseWebSocketUpgradeResponse(
+		{ reinterpret_cast<const std::uint8_t*>(DuplicateAccept.data()), DuplicateAccept.size() }, Accept, Response);
+	CHECK(DuplicateAcceptResult.Status == HttpUpgradeStatus::Error);
+	CHECK(DuplicateAcceptResult.Error == HttpUpgradeError::InvalidWebSocketAccept);
 }
 
 void TestWebSocketRoundTrip()
@@ -224,6 +251,50 @@ void TestInvalidFrames()
 	CHECK(!LimitedDecoder.Consume({ Encoded.data(), Encoded.size() }));
 	CHECK(LimitedDecoder.GetError() == WebSocketError::MessageTooLarge);
 }
+
+void TestWebSocketBufferedLimit()
+{
+	WebSocketLimits Limits;
+	Limits.MaximumFramePayloadBytes = 16;
+	Limits.MaximumMessagePayloadBytes = 16;
+
+	WebSocketFrame Source;
+	Source.Opcode = WebSocketOpcode::Binary;
+	Source.Payload.assign(16, 0x42);
+	std::vector<std::uint8_t> Encoded;
+	CHECK(EncodeWebSocketFrame(Source, WebSocketRole::Server, 0, Encoded));
+	std::vector<std::uint8_t> Stream = Encoded;
+	Stream.insert(Stream.end(), Encoded.begin(), Encoded.end());
+	CHECK(Stream.size() > Limits.MaximumFramePayloadBytes + 14);
+
+	WebSocketDecoder Decoder(WebSocketRole::Client, Limits);
+	CHECK(Decoder.Consume({ Stream.data(), Stream.size() }));
+	WebSocketFrame Decoded;
+	CHECK(Decoder.Drain(Decoded));
+	CHECK(Decoded.Payload == Source.Payload);
+	CHECK(Decoder.Drain(Decoded));
+	CHECK(Decoded.Payload == Source.Payload);
+	CHECK(!Decoder.Drain(Decoded));
+
+	WebSocketDecoder NullDecoder(WebSocketRole::Client, Limits);
+	CHECK(!NullDecoder.Consume({ nullptr, 1 }));
+	CHECK(NullDecoder.GetError() == WebSocketError::InvalidInput);
+
+	const std::uint8_t Oversized[] = { 0x82, 17 };
+	WebSocketDecoder OversizedDecoder(WebSocketRole::Client, Limits);
+	CHECK(!OversizedDecoder.Consume({ Oversized, sizeof(Oversized) }));
+	CHECK(OversizedDecoder.GetError() == WebSocketError::FrameTooLarge);
+}
+
+void TestRegisteredCloseCodes()
+{
+	CHECK(IsValidWebSocketCloseCode(1012));
+	CHECK(IsValidWebSocketCloseCode(1013));
+	CHECK(IsValidWebSocketCloseCode(1014));
+	CHECK(!IsValidWebSocketCloseCode(1005));
+	CHECK(!IsValidWebSocketCloseCode(1006));
+	CHECK(!IsValidWebSocketCloseCode(1015));
+}
 }    // namespace
 
 int main()
@@ -233,6 +304,8 @@ int main()
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
 	TestInvalidFrames();
+	TestWebSocketBufferedLimit();
+	TestRegisteredCloseCodes();
 	if (Failures != 0)
 	{
 		std::cerr << Failures << " test(s) failed\n";

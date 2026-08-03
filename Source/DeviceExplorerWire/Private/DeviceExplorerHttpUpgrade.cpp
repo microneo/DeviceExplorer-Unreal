@@ -1,7 +1,7 @@
 #include "DeviceExplorerHttpUpgrade.h"
 
+#include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <string_view>
 
@@ -238,6 +238,14 @@ const std::string* FindHeader(const std::vector<HttpHeader>& Headers, const std:
 	return nullptr;
 }
 
+std::size_t CountHeaders(const std::vector<HttpHeader>& Headers, const std::string_view Name)
+{
+	return static_cast<std::size_t>(std::count_if(
+		Headers.begin(),
+		Headers.end(),
+		[Name](const HttpHeader& Header) { return EqualsIgnoreCase(Header.first, Name); }));
+}
+
 bool ContainsHeaderToken(const std::string& Value, const std::string_view Expected)
 {
 	std::size_t Offset = 0;
@@ -301,7 +309,7 @@ bool ParseHeaders(const std::vector<std::string_view>& Lines, std::vector<HttpHe
 		{
 			return false;
 		}
-		const std::string_view Name = Trim(Lines[Index].substr(0, Colon));
+		const std::string_view Name = Lines[Index].substr(0, Colon);
 		const std::string_view Value = Trim(Lines[Index].substr(Colon + 1));
 		if (!IsValidHeaderName(Name) || !IsValidHeaderValue(Value))
 		{
@@ -400,12 +408,16 @@ HttpUpgradeParseResult ParseWebSocketUpgradeRequest(const ByteView Bytes,
 	{
 		return ErrorResult(HttpUpgradeError::MissingWebSocketKey);
 	}
+	if (CountHeaders(Parsed.Headers, "sec-websocket-key") != 1)
+	{
+		return ErrorResult(HttpUpgradeError::InvalidWebSocketKey);
+	}
 	std::array<std::uint8_t, 16> DecodedKey{};
 	if (!DecodeWebSocketKey(*Key, DecodedKey))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidWebSocketKey);
 	}
-	if (Version == nullptr || Trim(*Version) != "13")
+	if (Version == nullptr || CountHeaders(Parsed.Headers, "sec-websocket-version") != 1 || Trim(*Version) != "13")
 	{
 		return ErrorResult(HttpUpgradeError::UnsupportedWebSocketVersion);
 	}
@@ -450,7 +462,7 @@ HttpUpgradeParseResult ParseWebSocketUpgradeResponse(const ByteView Bytes,
 	{
 		return ErrorResult(HttpUpgradeError::InvalidConnection);
 	}
-	if (Accept == nullptr || *Accept != ExpectedAccept)
+	if (Accept == nullptr || CountHeaders(Parsed.Headers, "sec-websocket-accept") != 1 || *Accept != ExpectedAccept)
 	{
 		return ErrorResult(HttpUpgradeError::InvalidWebSocketAccept);
 	}
