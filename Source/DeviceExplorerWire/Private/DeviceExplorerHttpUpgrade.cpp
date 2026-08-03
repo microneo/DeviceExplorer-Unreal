@@ -468,7 +468,11 @@ HttpUpgradeParseResult ParseWebSocketUpgradeResponse(const ByteView Bytes,
 		return ErrorResult(HttpUpgradeError::InvalidHeader);
 	}
 	const std::string* Accept = FindHeader(Parsed.Headers, "sec-websocket-accept");
-	if (!HeadersContainToken(Parsed.Headers, "upgrade", "websocket"))
+	const std::string* Upgrade = FindHeader(Parsed.Headers, "upgrade");
+	// RFC 6455 section 4.1 requires the server's selected protocol to be exactly
+	// websocket. Unlike a request, a 101 response cannot advertise alternatives.
+	if (Upgrade == nullptr || CountHeaders(Parsed.Headers, "upgrade") != 1 ||
+	    !EqualsIgnoreCase(Trim(*Upgrade), "websocket"))
 	{
 		return ErrorResult(HttpUpgradeError::InvalidUpgrade);
 	}

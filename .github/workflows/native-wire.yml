@@ -11,14 +11,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        unity: [OFF, ON]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Check explicit source list
         run: python Scripts/CheckWireSources.py
       - name: Configure
-        run: cmake -S Native -B build/native -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S Native -B build/native-${{ matrix.unity }} -DCMAKE_BUILD_TYPE=Release -DCMAKE_UNITY_BUILD=${{ matrix.unity }}
       - name: Build
-        run: cmake --build build/native --config Release --parallel
+        run: cmake --build build/native-${{ matrix.unity }} --config Release --parallel
       - name: Test
-        run: ctest --test-dir build/native -C Release --output-on-failure
+        run: ctest --test-dir build/native-${{ matrix.unity }} -C Release --output-on-failure

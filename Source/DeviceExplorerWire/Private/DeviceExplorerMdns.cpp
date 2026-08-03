@@ -34,12 +34,80 @@ char LowerDnsAscii(const char Character)
 	return Character >= 'A' && Character <= 'Z' ? static_cast<char>(Character - 'A' + 'a') : Character;
 }
 
+bool DecodePresentationName(std::string_view Name, std::vector<std::string>& OutLabels)
+{
+	OutLabels.clear();
+	if (Name.empty()) return false;
+	if (Name.back() == '.') Name.remove_suffix(1);
+	if (Name.empty()) return false;
+
+	std::size_t WireBytes = 1;    // root label
+	std::size_t Offset = 0;
+	while (Offset < Name.size())
+	{
+		std::string Label;
+		while (Offset < Name.size() && Name[Offset] != '.')
+		{
+			const char Character = Name[Offset++];
+			if (Character != '\\')
+			{
+				Label.push_back(Character);
+				continue;
+			}
+			if (Offset >= Name.size()) return false;
+			const char Escaped = Name[Offset];
+			if (Escaped >= '0' && Escaped <= '9')
+			{
+				if (Name.size() - Offset < 3 || Name[Offset + 1] < '0' || Name[Offset + 1] > '9' ||
+				    Name[Offset + 2] < '0' || Name[Offset + 2] > '9')
+				{
+					return false;
+				}
+				const unsigned Value = static_cast<unsigned>(Name[Offset] - '0') * 100U +
+				                       static_cast<unsigned>(Name[Offset + 1] - '0') * 10U +
+				                       static_cast<unsigned>(Name[Offset + 2] - '0');
+				if (Value > 255) return false;
+				Label.push_back(static_cast<char>(Value));
+				Offset += 3;
+			}
+			else
+			{
+				Label.push_back(Escaped);
+				++Offset;
+			}
+		}
+		if (Label.empty() || Label.size() > 63 ||
+		    !IsValidWebSocketUtf8({ reinterpret_cast<const std::uint8_t*>(Label.data()), Label.size() }))
+		{
+			return false;
+		}
+		WireBytes += Label.size() + 1;
+		if (WireBytes > 255) return false;
+		OutLabels.push_back(std::move(Label));
+		if (Offset < Name.size()) ++Offset;
+	}
+	return !OutLabels.empty();
+}
+
 bool NamesEqual(const std::string_view A, const std::string_view B)
 {
-	if (A.size() != B.size()) return false;
-	for (std::size_t Index = 0; Index < A.size(); ++Index)
+	std::vector<std::string> LabelsA;
+	std::vector<std::string> LabelsB;
+	if (!DecodePresentationName(A, LabelsA) || !DecodePresentationName(B, LabelsB) ||
+	    LabelsA.size() != LabelsB.size())
 	{
-		if (LowerDnsAscii(A[Index]) != LowerDnsAscii(B[Index])) return false;
+		return false;
+	}
+	for (std::size_t LabelIndex = 0; LabelIndex < LabelsA.size(); ++LabelIndex)
+	{
+		if (LabelsA[LabelIndex].size() != LabelsB[LabelIndex].size()) return false;
+		for (std::size_t ByteIndex = 0; ByteIndex < LabelsA[LabelIndex].size(); ++ByteIndex)
+		{
+			if (LowerDnsAscii(LabelsA[LabelIndex][ByteIndex]) != LowerDnsAscii(LabelsB[LabelIndex][ByteIndex]))
+			{
+				return false;
+			}
+		}
 	}
 	return true;
 }
@@ -77,31 +145,13 @@ bool ReadU32(const ByteView Packet, const std::size_t Offset, std::uint32_t& Out
 
 bool AddName(std::vector<std::uint8_t>& Buffer, std::string_view Name)
 {
-	if (Name.empty() || !IsValidWebSocketUtf8(
-		                      { reinterpret_cast<const std::uint8_t*>(Name.data()), Name.size() }))
-	{
-		return false;
-	}
-	if (Name.back() == '.') Name.remove_suffix(1);
-	if (Name.empty()) return false;
-
+	std::vector<std::string> Labels;
+	if (!DecodePresentationName(Name, Labels)) return false;
 	const std::size_t BeginSize = Buffer.size();
-	std::size_t Offset = 0;
-	while (Offset < Name.size())
+	for (const std::string& Label : Labels)
 	{
-		const std::size_t Dot = Name.find('.', Offset);
-		const std::size_t End = Dot == std::string_view::npos ? Name.size() : Dot;
-		const std::size_t Length = End - Offset;
-		if (Length == 0 || Length > 63)
-		{
-			Buffer.resize(BeginSize);
-			return false;
-		}
-		Buffer.push_back(static_cast<std::uint8_t>(Length));
-		Buffer.insert(Buffer.end(), Name.begin() + static_cast<std::ptrdiff_t>(Offset),
-		              Name.begin() + static_cast<std::ptrdiff_t>(End));
-		if (Dot == std::string_view::npos) break;
-		Offset = Dot + 1;
+		Buffer.push_back(static_cast<std::uint8_t>(Label.size()));
+		Buffer.insert(Buffer.end(), Label.begin(), Label.end());
 	}
 	Buffer.push_back(0);
 	if (Buffer.size() - BeginSize > 255)
@@ -112,13 +162,43 @@ bool AddName(std::vector<std::uint8_t>& Buffer, std::string_view Name)
 	return true;
 }
 
+bool AppendPresentationLabel(const std::string_view Label, std::string& OutName)
+{
+	if (!IsValidWebSocketUtf8(
+		    { reinterpret_cast<const std::uint8_t*>(Label.data()), Label.size() }))
+	{
+		return false;
+	}
+	if (!OutName.empty()) OutName.push_back('.');
+	for (const unsigned char Value : Label)
+	{
+		if (Value == '.' || Value == '\\')
+		{
+			OutName.push_back('\\');
+			OutName.push_back(static_cast<char>(Value));
+		}
+		else if (Value < 0x20 || Value == 0x7F)
+		{
+			OutName.push_back('\\');
+			OutName.push_back(static_cast<char>('0' + Value / 100));
+			OutName.push_back(static_cast<char>('0' + (Value / 10) % 10));
+			OutName.push_back(static_cast<char>('0' + Value % 10));
+		}
+		else
+		{
+			OutName.push_back(static_cast<char>(Value));
+		}
+	}
+	return true;
+}
+
 bool ReadName(const ByteView Packet, std::size_t& InOutOffset, std::string& OutName)
 {
 	OutName.clear();
 	std::size_t Offset = InOutOffset;
 	std::size_t ResumeOffset = std::numeric_limits<std::size_t>::max();
 	std::size_t JumpCount = 0;
-	std::size_t ExpandedBytes = 0;
+	std::size_t ExpandedWireBytes = 1;
 	for (;;)
 	{
 		if (Offset >= Packet.Size) return false;
@@ -142,15 +222,17 @@ bool ReadName(const ByteView Packet, std::size_t& InOutOffset, std::string& OutN
 		const std::size_t LabelLength = LengthByte;
 		const std::size_t LabelStart = Offset + 1;
 		if (LabelStart > Packet.Size || Packet.Size - LabelStart < LabelLength) return false;
-		ExpandedBytes += LabelLength + (OutName.empty() ? 0 : 1);
-		if (ExpandedBytes > 253) return false;
-		if (!OutName.empty()) OutName.push_back('.');
-		OutName.append(reinterpret_cast<const char*>(Packet.Data + LabelStart), LabelLength);
+		ExpandedWireBytes += LabelLength + 1;
+		if (ExpandedWireBytes > 255 ||
+		    !AppendPresentationLabel(
+			    std::string_view(reinterpret_cast<const char*>(Packet.Data + LabelStart), LabelLength), OutName))
+		{
+			return false;
+		}
 		Offset = LabelStart + LabelLength;
 	}
 	InOutOffset = ResumeOffset == std::numeric_limits<std::size_t>::max() ? Offset : ResumeOffset;
-	return IsValidWebSocketUtf8(
-		{ reinterpret_cast<const std::uint8_t*>(OutName.data()), OutName.size() });
+	return !OutName.empty();
 }
 
 bool AddRecord(std::vector<std::uint8_t>& Packet,
@@ -446,6 +528,9 @@ MdnsAnnouncementParseResult ParseMdnsAnnouncement(const ByteView Packet,
 		}
 		Records.push_back(std::move(Record));
 	}
+	// A few DNS-SD responders pad their UDP payload with zero bytes. Accept only
+	// that unambiguous padding; non-zero trailing data still indicates bad counts.
+	while (Offset < Packet.Size && Packet.Data[Offset] == 0) ++Offset;
 	if (Offset != Packet.Size) return AnnouncementError(MdnsError::MalformedPacket);
 
 	MdnsServiceAnnouncement Announcement;

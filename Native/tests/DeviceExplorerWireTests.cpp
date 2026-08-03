@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -151,7 +152,17 @@ void TestHttpUpgrade()
 	                            "Connection: keep-alive\r\nConnection: upgrade");
 	const HttpUpgradeParseResult SplitResponseResult = ParseWebSocketUpgradeResponse(
 		{ reinterpret_cast<const std::uint8_t*>(SplitResponseTokens.data()), SplitResponseTokens.size() }, Accept, Response);
-	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Complete);
+	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Error);
+	CHECK(SplitResponseResult.Error == HttpUpgradeError::InvalidUpgrade);
+
+	std::string DuplicateResponseUpgrade = ResponseBytes;
+	const std::size_t DuplicateUpgradeEnd = DuplicateResponseUpgrade.find("\r\n\r\n");
+	CHECK(DuplicateUpgradeEnd != std::string::npos);
+	DuplicateResponseUpgrade.insert(DuplicateUpgradeEnd, "\r\nUpgrade: websocket");
+	const HttpUpgradeParseResult DuplicateUpgradeResult = ParseWebSocketUpgradeResponse(
+		{ reinterpret_cast<const std::uint8_t*>(DuplicateResponseUpgrade.data()), DuplicateResponseUpgrade.size() }, Accept, Response);
+	CHECK(DuplicateUpgradeResult.Status == HttpUpgradeStatus::Error);
+	CHECK(DuplicateUpgradeResult.Error == HttpUpgradeError::InvalidUpgrade);
 }
 
 void TestMdnsCodec()
@@ -226,6 +237,23 @@ void TestMdnsCodec()
 	CHECK(Parsed.Announcement.ProtocolVersion == Source.ProtocolVersion);
 	CHECK(Parsed.Announcement.TimeToLive == Source.TimeToLive);
 	CHECK(Parsed.Announcement.IPv4Addresses == Source.IPv4Addresses);
+
+	MdnsServiceAnnouncement EscapedSource = Source;
+	EscapedSource.InstanceName = "DeviceExplorer\\.Lab\\\\One._deviceexplorer._tcp.local";
+	CHECK(EncodeMdnsAnnouncement(EscapedSource, Packet, &Error));
+	const MdnsAnnouncementParseResult Escaped = ParseMdnsAnnouncement({ Packet.data(), Packet.size() });
+	CHECK(Escaped.Status == MdnsStatus::Complete);
+	CHECK(Escaped.Announcement.InstanceName == EscapedSource.InstanceName);
+	std::vector<std::uint8_t> ReencodedEscaped;
+	CHECK(EncodeMdnsAnnouncement(Escaped.Announcement, ReencodedEscaped, &Error));
+	CHECK(ReencodedEscaped == Packet);
+
+	std::vector<std::uint8_t> ZeroPadded = Packet;
+	ZeroPadded.insert(ZeroPadded.end(), { 0, 0, 0, 0 });
+	CHECK(ParseMdnsAnnouncement({ ZeroPadded.data(), ZeroPadded.size() }).Status == MdnsStatus::Complete);
+	std::vector<std::uint8_t> NonZeroPadded = Packet;
+	NonZeroPadded.push_back(1);
+	CHECK(ParseMdnsAnnouncement({ NonZeroPadded.data(), NonZeroPadded.size() }).Error == MdnsError::MalformedPacket);
 
 	Source.TimeToLive = 0;
 	CHECK(EncodeMdnsAnnouncement(Source, Packet, &Error));
@@ -357,6 +385,23 @@ void TestJsonCodec()
 
 	CHECK(!ParseJson({ nullptr, 1 }, StringWithNull, {}, &Error));
 	CHECK(Error == JsonError::InvalidInput);
+
+	// Keep this near the default node limit: duplicate detection and lookup must
+	// remain indexed instead of turning a bounded 1 MiB document into O(n^2).
+	std::string WideObject = "{";
+	constexpr std::size_t WideMemberCount = 99000;
+	for (std::size_t Index = 0; Index < WideMemberCount; ++Index)
+	{
+		if (Index > 0) WideObject.push_back(',');
+		WideObject += "\"k" + std::to_string(Index) + "\":0";
+	}
+	WideObject.push_back('}');
+	JsonValue WideValue;
+	CHECK(ParseJson(
+		{ reinterpret_cast<const std::uint8_t*>(WideObject.data()), WideObject.size() }, WideValue, {}, &Error));
+	const std::vector<std::string>* WideKeys = WideValue.TryGetObjectKeys();
+	CHECK(WideKeys != nullptr && WideKeys->size() == WideMemberCount);
+	CHECK(WideValue.FindMember("k98999") != nullptr);
 }
 
 void TestWebSocketRoundTrip()
