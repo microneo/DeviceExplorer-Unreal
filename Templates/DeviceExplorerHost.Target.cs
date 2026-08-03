@@ -15,5 +15,10 @@ public class DeviceExplorerHostTarget : TargetRules
         bUsesSlate = false;
         bHasExports = false;
         bIsBuildingConsoleApplication = true;
+
+        if (bIsEngineInstalled)
+        {
+            BuildEnvironment = TargetBuildEnvironment.Shared;
+        }
     }
 }
