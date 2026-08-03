@@ -29,7 +29,7 @@ void SetError(MdnsError* OutError, const MdnsError Error)
 	}
 }
 
-char LowerAscii(const char Character)
+char LowerDnsAscii(const char Character)
 {
 	return Character >= 'A' && Character <= 'Z' ? static_cast<char>(Character - 'A' + 'a') : Character;
 }
@@ -39,7 +39,7 @@ bool NamesEqual(const std::string_view A, const std::string_view B)
 	if (A.size() != B.size()) return false;
 	for (std::size_t Index = 0; Index < A.size(); ++Index)
 	{
-		if (LowerAscii(A[Index]) != LowerAscii(B[Index])) return false;
+		if (LowerDnsAscii(A[Index]) != LowerDnsAscii(B[Index])) return false;
 	}
 	return true;
 }
