@@ -1,6 +1,8 @@
 #include "DeviceExplorerHostMdns.h"
 
-#include "DeviceExplorerTypes.h"
+#include "Containers/StringConv.h"
+#include "DeviceExplorerMdns.h"
+#include "DeviceExplorerProtocol.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "IPAddress.h"
@@ -14,151 +16,16 @@ namespace
 constexpr int32 MdnsPort = 5353;
 constexpr int32 MaxMdnsDatagramSize = 9000;
 
-void AddU16(TArray<uint8>& Buffer, const uint16 Value)
+std::string ToUtf8(const FString& Value)
 {
-	Buffer.Add(static_cast<uint8>((Value >> 8) & 0xff));
-	Buffer.Add(static_cast<uint8>(Value & 0xff));
+	const FTCHARToUTF8 Utf8(*Value);
+	return std::string(Utf8.Get(), static_cast<std::size_t>(Utf8.Length()));
 }
 
-void AddU32(TArray<uint8>& Buffer, const uint32 Value)
+FString FromUtf8(const std::string& Value)
 {
-	Buffer.Add(static_cast<uint8>((Value >> 24) & 0xff));
-	Buffer.Add(static_cast<uint8>((Value >> 16) & 0xff));
-	Buffer.Add(static_cast<uint8>((Value >> 8) & 0xff));
-	Buffer.Add(static_cast<uint8>(Value & 0xff));
-}
-
-void AddName(TArray<uint8>& Buffer, const FString& Name)
-{
-	TArray<FString> Labels;
-	Name.ParseIntoArray(Labels, TEXT("."), true);
-	for (const FString& Label : Labels)
-	{
-		const FTCHARToUTF8 Utf8(*Label);
-		const int32 Length = FMath::Min(Utf8.Length(), 63);
-		Buffer.Add(static_cast<uint8>(Length));
-		Buffer.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Length);
-	}
-	Buffer.Add(0);
-}
-
-void AddRecord(TArray<uint8>& Packet, const FString& Name, const uint16 Type, const uint16 Class, const uint32 Ttl, const TArray<uint8>& Data)
-{
-	AddName(Packet, Name);
-	AddU16(Packet, Type);
-	AddU16(Packet, Class);
-	AddU32(Packet, Ttl);
-	AddU16(Packet, static_cast<uint16>(Data.Num()));
-	Packet.Append(Data);
-}
-
-void AddTxtString(TArray<uint8>& Data, const FString& Text)
-{
-	const FTCHARToUTF8 Utf8(*Text);
-	const int32 Length = FMath::Min(Utf8.Length(), 255);
-	Data.Add(static_cast<uint8>(Length));
-	Data.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Length);
-}
-
-bool ReadDnsName(const TArrayView<const uint8> Packet, int32& InOutOffset, FString& OutName)
-{
-	OutName.Reset();
-	int32 Offset = InOutOffset;
-	bool bJumped = false;
-	int32 JumpCount = 0;
-	for (;;)
-	{
-		if (Offset < 0 || Offset >= Packet.Num())
-		{
-			return false;
-		}
-		const uint8 LengthByte = Packet[Offset];
-		if ((LengthByte & 0xC0) == 0xC0)
-		{
-			if (Offset + 1 >= Packet.Num())
-			{
-				return false;
-			}
-			const int32 PointerTarget = ((LengthByte & 0x3f) << 8) | Packet[Offset + 1];
-			if (!bJumped)
-			{
-				InOutOffset = Offset + 2;
-			}
-			if (PointerTarget >= Offset || ++JumpCount > 32)
-			{
-				return false;
-			}
-			Offset = PointerTarget;
-			bJumped = true;
-			continue;
-		}
-		if ((LengthByte & 0xC0) != 0)
-		{
-			return false;
-		}
-		if (LengthByte == 0)
-		{
-			if (!bJumped)
-			{
-				InOutOffset = Offset + 1;
-			}
-			return true;
-		}
-
-		const int32 LabelStart = Offset + 1;
-		const int32 LabelEnd = LabelStart + LengthByte;
-		if (LabelEnd > Packet.Num())
-		{
-			return false;
-		}
-		if (!OutName.IsEmpty())
-		{
-			OutName.AppendChar(TEXT('.'));
-		}
-		for (int32 Index = LabelStart; Index < LabelEnd; ++Index)
-		{
-			OutName.AppendChar(static_cast<TCHAR>(Packet[Index]));
-		}
-		Offset = LabelEnd;
-	}
-}
-
-bool PacketRequestsOurRecords(const TArrayView<const uint8> Packet, const FString& ServiceName, const FString& InstanceName, const FString& HostName, FString& OutMatchedName, uint16& OutMatchedType)
-{
-	if (Packet.Num() < 12)
-	{
-		return false;
-	}
-	const uint16 Flags = (static_cast<uint16>(Packet[2]) << 8) | Packet[3];
-	if ((Flags & 0x8000) != 0)
-	{
-		return false;
-	}
-	const uint16 QuestionCount = (static_cast<uint16>(Packet[4]) << 8) | Packet[5];
-
-	int32 Offset = 12;
-	for (uint16 Index = 0; Index < QuestionCount; ++Index)
-	{
-		FString QName;
-		if (!ReadDnsName(Packet, Offset, QName))
-		{
-			return false;
-		}
-		if (Offset + 4 > Packet.Num())
-		{
-			return false;
-		}
-		const uint16 QType = (static_cast<uint16>(Packet[Offset]) << 8) | Packet[Offset + 1];
-		Offset += 4;    // QTYPE + QCLASS
-
-		if (QName.Equals(ServiceName, ESearchCase::IgnoreCase) || QName.Equals(InstanceName, ESearchCase::IgnoreCase) || QName.Equals(HostName, ESearchCase::IgnoreCase))
-		{
-			OutMatchedName = QName;
-			OutMatchedType = QType;
-			return true;
-		}
-	}
-	return false;
+	const FUTF8ToTCHAR Converted(Value.data(), static_cast<int32>(Value.size()));
+	return FString(Converted.Length(), Converted.Get());
 }
 
 FString SafeDnsLabel(FString Value)
@@ -187,7 +54,7 @@ FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const
 	: DevicePort(InDevicePort)
 	, DashboardPort(InDashboardPort)
 	, Token(MoveTemp(InToken))
-	, ServiceName(TEXT("_deviceexplorer._tcp.local"))
+	, ServiceName(UTF8_TO_TCHAR(DeviceExplorer::Wire::DeviceExplorerMdnsServiceName))
 {
 	const FString Machine = SafeDnsLabel(FPlatformProcess::ComputerName());
 	HostName = FString::Printf(TEXT("%s-deviceexplorer.local"), *Machine);
@@ -333,45 +200,50 @@ void FDeviceExplorerHostMdns::Announce(const uint32 Ttl)
 void FDeviceExplorerHostMdns::SendAnnouncement(const FInternetAddr& Destination, const uint32 Ttl)
 {
 	const TArray<uint8> Packet = BuildAnnouncement(Ttl);
+	if (Packet.IsEmpty())
+	{
+		return;
+	}
 	int32 Sent = 0;
 	Socket->SendTo(Packet.GetData(), Packet.Num(), Sent, Destination);
 }
 
 TArray<uint8> FDeviceExplorerHostMdns::BuildAnnouncement(const uint32 Ttl) const
 {
-	TArray<uint8> Records;
-
-	TArray<uint8> PtrData;
-	AddName(PtrData, InstanceName);
-	AddRecord(Records, ServiceName, 12, 1, Ttl, PtrData);
-
-	TArray<uint8> SrvData;
-	AddU16(SrvData, 0);
-	AddU16(SrvData, 0);
-	AddU16(SrvData, static_cast<uint16>(DevicePort));
-	AddName(SrvData, HostName);
-	AddRecord(Records, InstanceName, 33, 0x8001, Ttl, SrvData);
-
-	TArray<uint8> TxtData;
-	AddTxtString(TxtData, FString::Printf(TEXT("version=%d"), DeviceExplorer::ProtocolVersion));
-	AddTxtString(TxtData, TEXT("token=") + Token);
-	AddTxtString(TxtData, FString::Printf(TEXT("ui_port=%d"), DashboardPort));
-	AddRecord(Records, InstanceName, 16, 0x8001, Ttl, TxtData);
-
-	const TArray<TArray<uint8>>& Addresses = HostAddresses.IsEmpty() ? TArray<TArray<uint8>>{ TArray<uint8>{ 127, 0, 0, 1 } } : HostAddresses;
-	for (const TArray<uint8>& Address : Addresses)
+	if (DevicePort <= 0 || DevicePort > MAX_uint16 || DashboardPort < 0 || DashboardPort > MAX_uint16)
 	{
-		AddRecord(Records, HostName, 1, 0x8001, Ttl, Address);
+		UE_LOG(LogDeviceExplorerMdns, Error, TEXT("Cannot encode mDNS announcement with invalid ports %d/%d"), DevicePort, DashboardPort);
+		return {};
+	}
+
+	DeviceExplorer::Wire::MdnsServiceAnnouncement Announcement;
+	Announcement.ServiceName = ToUtf8(ServiceName);
+	Announcement.InstanceName = ToUtf8(InstanceName);
+	Announcement.HostName = ToUtf8(HostName);
+	Announcement.Token = ToUtf8(Token);
+	Announcement.DevicePort = static_cast<std::uint16_t>(DevicePort);
+	Announcement.DashboardPort = static_cast<std::uint16_t>(DashboardPort);
+	Announcement.ProtocolVersion = DeviceExplorer::ProtocolVersion;
+	Announcement.TimeToLive = Ttl;
+	for (const TArray<uint8>& Address : HostAddresses)
+	{
+		if (Address.Num() == 4)
+		{
+			Announcement.IPv4Addresses.push_back({ Address[0], Address[1], Address[2], Address[3] });
+		}
+	}
+
+	std::vector<std::uint8_t> Encoded;
+	DeviceExplorer::Wire::MdnsError Error = DeviceExplorer::Wire::MdnsError::None;
+	if (!DeviceExplorer::Wire::EncodeMdnsAnnouncement(Announcement, Encoded, &Error))
+	{
+		UE_LOG(LogDeviceExplorerMdns, Error, TEXT("Failed to encode mDNS announcement: %s"),
+		       UTF8_TO_TCHAR(DeviceExplorer::Wire::MdnsErrorText(Error)));
+		return {};
 	}
 
 	TArray<uint8> Packet;
-	AddU16(Packet, 0);
-	AddU16(Packet, 0x8400);
-	AddU16(Packet, 0);
-	AddU16(Packet, static_cast<uint16>(3 + Addresses.Num()));
-	AddU16(Packet, 0);
-	AddU16(Packet, 0);
-	Packet.Append(Records);
+	Packet.Append(Encoded.data(), static_cast<int32>(Encoded.size()));
 	return Packet;
 }
 
@@ -396,15 +268,19 @@ void FDeviceExplorerHostMdns::DrainQueries()
 			break;
 		}
 
-		FString MatchedName;
-		uint16 MatchedType = 0;
-		if (!PacketRequestsOurRecords(TArrayView<const uint8>(Buffer.GetData(), Read), ServiceName, InstanceName, HostName, MatchedName, MatchedType))
+		const DeviceExplorer::Wire::MdnsQueryParseResult Result = DeviceExplorer::Wire::ParseMdnsQuery(
+			{ Buffer.GetData(), static_cast<std::size_t>(Read) },
+			ToUtf8(ServiceName),
+			ToUtf8(InstanceName),
+			ToUtf8(HostName));
+		if (Result.Status != DeviceExplorer::Wire::MdnsStatus::Complete)
 		{
 			UE_LOG(LogDeviceExplorerMdns, Log, TEXT("Ignoring mDNS query from %s (not for our records)"), *Sender->ToString(true));
 			continue;
 		}
 
-		UE_LOG(LogDeviceExplorerMdns, Display, TEXT("Answering mDNS query from %s for %s (qtype=%d)"), *Sender->ToString(true), *MatchedName, MatchedType);
+		UE_LOG(LogDeviceExplorerMdns, Display, TEXT("Answering mDNS query from %s for %s (qtype=%d)"),
+		       *Sender->ToString(true), *FromUtf8(Result.Match.Name), Result.Match.Type);
 
 		// RFC 6762 6.7: a query from port 5353 (iOS's NSNetServiceBrowser goes through the
 		// OS resolver, which always queries from 5353) expects a multicast reply so every

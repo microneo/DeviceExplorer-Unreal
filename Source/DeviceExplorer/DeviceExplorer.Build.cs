@@ -16,6 +16,7 @@ public class DeviceExplorer : ModuleRules
         PrivateDependencyModuleNames.AddRange(new[]
         {
             "CoreUObject",
+            "DeviceExplorerWire",
             "Engine",
             "EngineSettings",
             "HTTP",

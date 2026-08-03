@@ -1,4 +1,5 @@
 #include "DeviceExplorerHttpUpgrade.h"
+#include "DeviceExplorerMdns.h"
 #include "DeviceExplorerProtocol.h"
 #include "DeviceExplorerWebSocket.h"
 
@@ -150,6 +151,111 @@ void TestHttpUpgrade()
 	const HttpUpgradeParseResult SplitResponseResult = ParseWebSocketUpgradeResponse(
 		{ reinterpret_cast<const std::uint8_t*>(SplitResponseTokens.data()), SplitResponseTokens.size() }, Accept, Response);
 	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Complete);
+}
+
+void TestMdnsCodec()
+{
+	std::vector<std::uint8_t> Query;
+	MdnsError Error = MdnsError::InvalidInput;
+	CHECK(EncodeMdnsQuery(DeviceExplorerMdnsServiceName, Query, &Error));
+	CHECK(Error == MdnsError::None);
+	CHECK(Query.size() > 12);
+	const MdnsQueryParseResult QueryResult = ParseMdnsQuery(
+		{ Query.data(), Query.size() },
+		DeviceExplorerMdnsServiceName,
+		"DeviceExplorer-test._deviceexplorer._tcp.local",
+		"test-deviceexplorer.local");
+	CHECK(QueryResult.Status == MdnsStatus::Complete);
+	CHECK(QueryResult.Match.Name == DeviceExplorerMdnsServiceName);
+	CHECK(QueryResult.Match.Type == 12);
+
+	std::vector<std::uint8_t> CompressedQuery = Query;
+	CHECK(CompressedQuery.size() >= 4);
+	CompressedQuery[5] = 2;    // QDCOUNT
+	CompressedQuery[CompressedQuery.size() - 4] = 0;
+	CompressedQuery[CompressedQuery.size() - 3] = 28;    // first question is AAAA and does not match
+	CompressedQuery.insert(CompressedQuery.end(), { 0xC0, 0x0C, 0, 12, 0, 1 });
+	const MdnsQueryParseResult CompressedQueryResult = ParseMdnsQuery(
+		{ CompressedQuery.data(), CompressedQuery.size() },
+		DeviceExplorerMdnsServiceName,
+		"DeviceExplorer-test._deviceexplorer._tcp.local",
+		"test-deviceexplorer.local");
+	CHECK(CompressedQueryResult.Status == MdnsStatus::Complete);
+	CHECK(CompressedQueryResult.Match.Name == DeviceExplorerMdnsServiceName);
+
+	std::vector<std::uint8_t> PointerLoop(12, 0);
+	PointerLoop[5] = 1;
+	PointerLoop.insert(PointerLoop.end(), { 0xC0, 0x0C, 0, 12, 0, 1 });
+	const MdnsQueryParseResult PointerLoopResult = ParseMdnsQuery(
+		{ PointerLoop.data(), PointerLoop.size() },
+		DeviceExplorerMdnsServiceName,
+		"DeviceExplorer-test._deviceexplorer._tcp.local",
+		"test-deviceexplorer.local");
+	CHECK(PointerLoopResult.Status == MdnsStatus::Error);
+	CHECK(PointerLoopResult.Error == MdnsError::MalformedPacket);
+
+	const MdnsQueryParseResult NoMatchQuery = ParseMdnsQuery(
+		{ Query.data(), Query.size() },
+		"_different._tcp.local",
+		"different._different._tcp.local",
+		"different.local");
+	CHECK(NoMatchQuery.Status == MdnsStatus::NoMatch);
+
+	MdnsServiceAnnouncement Source;
+	Source.InstanceName = "DeviceExplorer-test._deviceexplorer._tcp.local";
+	Source.HostName = "test-deviceexplorer.local";
+	Source.Token = "golden-token";
+	Source.DevicePort = 18081;
+	Source.DashboardPort = 18080;
+	Source.ProtocolVersion = DeviceExplorer::DeviceProtocolVersion;
+	Source.TimeToLive = 120;
+	Source.IPv4Addresses = { { 192, 168, 31, 134 }, { 10, 20, 30, 40 } };
+
+	std::vector<std::uint8_t> Packet;
+	CHECK(EncodeMdnsAnnouncement(Source, Packet, &Error));
+	CHECK(Error == MdnsError::None);
+	const MdnsAnnouncementParseResult Parsed = ParseMdnsAnnouncement({ Packet.data(), Packet.size() });
+	CHECK(Parsed.Status == MdnsStatus::Complete);
+	CHECK(Parsed.Announcement.ServiceName == Source.ServiceName);
+	CHECK(Parsed.Announcement.InstanceName == Source.InstanceName);
+	CHECK(Parsed.Announcement.HostName == Source.HostName);
+	CHECK(Parsed.Announcement.Token == Source.Token);
+	CHECK(Parsed.Announcement.DevicePort == Source.DevicePort);
+	CHECK(Parsed.Announcement.DashboardPort == Source.DashboardPort);
+	CHECK(Parsed.Announcement.ProtocolVersion == Source.ProtocolVersion);
+	CHECK(Parsed.Announcement.TimeToLive == Source.TimeToLive);
+	CHECK(Parsed.Announcement.IPv4Addresses == Source.IPv4Addresses);
+
+	Source.TimeToLive = 0;
+	CHECK(EncodeMdnsAnnouncement(Source, Packet, &Error));
+	const MdnsAnnouncementParseResult Goodbye = ParseMdnsAnnouncement({ Packet.data(), Packet.size() });
+	CHECK(Goodbye.Status == MdnsStatus::Complete);
+	CHECK(Goodbye.Announcement.TimeToLive == 0);
+
+	std::vector<std::uint8_t> MissingToken = Packet;
+	const std::vector<std::uint8_t> TokenKey = Bytes("token=");
+	const auto TokenPosition = std::search(MissingToken.begin(), MissingToken.end(), TokenKey.begin(), TokenKey.end());
+	CHECK(TokenPosition != MissingToken.end());
+	if (TokenPosition != MissingToken.end())
+	{
+		*(TokenPosition + 1) = static_cast<std::uint8_t>('a');
+	}
+	const MdnsAnnouncementParseResult MissingTokenResult =
+		ParseMdnsAnnouncement({ MissingToken.data(), MissingToken.size() });
+	CHECK(MissingTokenResult.Status == MdnsStatus::Error);
+	CHECK(MissingTokenResult.Error == MdnsError::MissingToken);
+
+	const MdnsAnnouncementParseResult OtherService =
+		ParseMdnsAnnouncement({ Packet.data(), Packet.size() }, "_different._tcp.local");
+	CHECK(OtherService.Status == MdnsStatus::NoMatch);
+	CHECK(OtherService.Error == MdnsError::MissingService);
+
+	CHECK(ParseMdnsAnnouncement({ nullptr, 1 }).Error == MdnsError::InvalidInput);
+	CHECK(!EncodeMdnsQuery("bad..name", Query, &Error));
+	CHECK(Error == MdnsError::InvalidName);
+	Source.DevicePort = 0;
+	CHECK(!EncodeMdnsAnnouncement(Source, Packet, &Error));
+	CHECK(Error == MdnsError::InvalidAnnouncement);
 }
 
 void TestWebSocketRoundTrip()
@@ -348,6 +454,7 @@ void TestRegisteredCloseCodes()
 int main()
 {
 	TestHttpUpgrade();
+	TestMdnsCodec();
 	TestWebSocketRoundTrip();
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
