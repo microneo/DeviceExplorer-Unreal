@@ -100,6 +100,19 @@ private:
 	std::vector<std::uint8_t> FragmentedText;
 };
 
+// Opaque free-function facade for consumers across a modular UE DLL boundary.
+// The concrete class remains available to monolithic and standalone builds but
+// is intentionally not exported because its STL fields trigger C4251 under UBT.
+struct WebSocketDecoderHandle;
+
+DEVICEEXPLORERWIRE_API WebSocketDecoderHandle* CreateWebSocketDecoder(
+	WebSocketRole LocalRole, WebSocketLimits Limits = {});
+DEVICEEXPLORERWIRE_API void DestroyWebSocketDecoder(WebSocketDecoderHandle* Decoder);
+DEVICEEXPLORERWIRE_API bool ConsumeWebSocketBytes(WebSocketDecoderHandle* Decoder, ByteView Bytes);
+DEVICEEXPLORERWIRE_API bool DrainWebSocketFrame(WebSocketDecoderHandle* Decoder, WebSocketFrame& OutFrame);
+DEVICEEXPLORERWIRE_API WebSocketError GetWebSocketDecoderError(const WebSocketDecoderHandle* Decoder);
+DEVICEEXPLORERWIRE_API const char* GetWebSocketDecoderErrorText(const WebSocketDecoderHandle* Decoder);
+
 DEVICEEXPLORERWIRE_API bool EncodeWebSocketFrame(const WebSocketFrame& Frame,
 	                      WebSocketRole SenderRole,
 	                      std::uint32_t MaskKey,

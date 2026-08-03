@@ -65,6 +65,9 @@ DEVICEEXPLORERWIRE_API HttpUpgradeParseResult ParseWebSocketUpgradeResponse(Byte
 
 DEVICEEXPLORERWIRE_API bool MakeWebSocketAccept(const std::string& ClientKey, std::string& OutAccept);
 
+/** Encodes exactly 16 caller-supplied random bytes as a canonical client key. */
+DEVICEEXPLORERWIRE_API bool MakeWebSocketClientKey(ByteView Nonce, std::string& OutKey);
+
 DEVICEEXPLORERWIRE_API std::string SerializeWebSocketUpgradeRequest(const std::string& Target,
 	                                         const std::string& Host,
 	                                         const std::string& ClientKey,

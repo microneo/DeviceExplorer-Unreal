@@ -3,9 +3,20 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <new>
 
 namespace DeviceExplorer::Wire
 {
+struct WebSocketDecoderHandle
+{
+	explicit WebSocketDecoderHandle(const WebSocketRole LocalRole, const WebSocketLimits Limits)
+		: Decoder(LocalRole, Limits)
+	{
+	}
+
+	WebSocketDecoder Decoder;
+};
+
 namespace
 {
 bool IsKnownOpcode(const std::uint8_t Value)
@@ -329,6 +340,36 @@ const char* WebSocketDecoder::GetErrorText() const
 		case WebSocketError::InvalidClosePayload: return "invalid close payload";
 	}
 	return "unknown WebSocket error";
+}
+
+WebSocketDecoderHandle* CreateWebSocketDecoder(const WebSocketRole LocalRole, const WebSocketLimits Limits)
+{
+	return new (std::nothrow) WebSocketDecoderHandle(LocalRole, Limits);
+}
+
+void DestroyWebSocketDecoder(WebSocketDecoderHandle* Decoder)
+{
+	delete Decoder;
+}
+
+bool ConsumeWebSocketBytes(WebSocketDecoderHandle* Decoder, const ByteView Bytes)
+{
+	return Decoder != nullptr && Decoder->Decoder.Consume(Bytes);
+}
+
+bool DrainWebSocketFrame(WebSocketDecoderHandle* Decoder, WebSocketFrame& OutFrame)
+{
+	return Decoder != nullptr && Decoder->Decoder.Drain(OutFrame);
+}
+
+WebSocketError GetWebSocketDecoderError(const WebSocketDecoderHandle* Decoder)
+{
+	return Decoder != nullptr ? Decoder->Decoder.GetError() : WebSocketError::InvalidInput;
+}
+
+const char* GetWebSocketDecoderErrorText(const WebSocketDecoderHandle* Decoder)
+{
+	return Decoder != nullptr ? Decoder->Decoder.GetErrorText() : "WebSocket decoder is null";
 }
 
 bool EncodeWebSocketFrame(const WebSocketFrame& Frame,

@@ -502,6 +502,17 @@ bool MakeWebSocketAccept(const std::string& ClientKey, std::string& OutAccept)
 	return true;
 }
 
+bool MakeWebSocketClientKey(const ByteView Nonce, std::string& OutKey)
+{
+	if (Nonce.Data == nullptr || Nonce.Size != 16)
+	{
+		OutKey.clear();
+		return false;
+	}
+	OutKey = Base64Encode(Nonce);
+	return true;
+}
+
 std::string SerializeWebSocketUpgradeRequest(const std::string& Target,
 	                                         const std::string& Host,
 	                                         const std::string& ClientKey,

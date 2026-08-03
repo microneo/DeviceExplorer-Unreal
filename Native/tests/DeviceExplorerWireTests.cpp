@@ -41,6 +41,13 @@ void TestHttpUpgrade()
 	CHECK(MakeWebSocketAccept(Key, Accept));
 	CHECK(Accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 	CHECK(!MakeWebSocketAccept("not-base64", Accept));
+	const std::uint8_t Nonce[16] = {
+		't', 'h', 'e', ' ', 's', 'a', 'm', 'p', 'l', 'e', ' ', 'n', 'o', 'n', 'c', 'e'
+	};
+	std::string GeneratedKey;
+	CHECK(MakeWebSocketClientKey({ Nonce, sizeof(Nonce) }, GeneratedKey));
+	CHECK(GeneratedKey == Key);
+	CHECK(!MakeWebSocketClientKey({ Nonce, sizeof(Nonce) - 1 }, GeneratedKey));
 
 	const std::string RequestBytes = SerializeWebSocketUpgradeRequest(
 		"/device/connect?token=golden", "127.0.0.1:18081", Key, { { "X-Test", "one" } });
@@ -437,6 +444,26 @@ void TestWebSocketRoundTrip()
 	CHECK(Decoded.Payload == Pong.Payload);
 }
 
+void TestOpaqueWebSocketDecoder()
+{
+	WebSocketFrame Source;
+	Source.Opcode = WebSocketOpcode::Text;
+	Source.Payload = Bytes("opaque");
+	std::vector<std::uint8_t> Encoded;
+	CHECK(EncodeWebSocketFrame(Source, WebSocketRole::Server, 0, Encoded));
+
+	WebSocketDecoderHandle* Decoder = CreateWebSocketDecoder(WebSocketRole::Client);
+	CHECK(Decoder != nullptr);
+	CHECK(ConsumeWebSocketBytes(Decoder, { Encoded.data(), Encoded.size() }));
+	CHECK(GetWebSocketDecoderError(Decoder) == WebSocketError::None);
+	WebSocketFrame Decoded;
+	CHECK(DrainWebSocketFrame(Decoder, Decoded));
+	CHECK(Decoded.Payload == Source.Payload);
+	DestroyWebSocketDecoder(Decoder);
+	CHECK(!ConsumeWebSocketBytes(nullptr, { Encoded.data(), Encoded.size() }));
+	CHECK(GetWebSocketDecoderError(nullptr) == WebSocketError::InvalidInput);
+}
+
 void TestWebSocketLengthBoundaries()
 {
 	for (const std::size_t PayloadSize : { 0U, 1U, 125U, 126U, 65535U, 65536U })
@@ -603,6 +630,7 @@ int main()
 	TestMdnsCodec();
 	TestJsonCodec();
 	TestWebSocketRoundTrip();
+	TestOpaqueWebSocketDecoder();
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
 	TestInvalidFrames();

@@ -10,12 +10,12 @@
 #include "DeviceExplorerDiscovery.h"
 #include "DeviceExplorerLogService.h"
 #include "DeviceExplorerTrace.h"
+#include "DeviceExplorerTransport.h"
 #include "DeviceExplorerTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineGlobals.h"
-#include "GenericPlatform/GenericPlatformHttp.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -24,7 +24,6 @@
 #include "HAL/PlatformProperties.h"
 #include "HAL/PlatformTime.h"
 #include "HttpModule.h"
-#include "IWebSocket.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/App.h"
@@ -39,23 +38,15 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
-#include "WebSocketsModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorer, Log, All);
 
 FDeviceExplorerModule::~FDeviceExplorerModule() = default;
 
-#if WITH_WEBSOCKETS
-
 namespace
 {
 constexpr int64 ArchiveStreamChunkSize = 1 << 20;    // keeps memory flat regardless of source file size
 const FName RuntimeOwner(TEXT("DeviceExplorerRuntime"));
-
-FString BuildWebSocketURL(const FDeviceExplorerResolvedEndpoint& Endpoint, const FString& Token)
-{
-	return FString::Printf(TEXT("ws://%s/device/connect?token=%s"), *Endpoint.Serialized.ToString(), *FGenericPlatformHttp::UrlEncode(Token));
-}
 
 double GetAppUptimeSeconds()
 {
@@ -645,13 +636,13 @@ void FDeviceExplorerModule::StartupModule()
 #else
 	RegisterDefaultFeatures();
 	bStarted = true;
-	FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
 	DeviceId = GetOrCreateDeviceId();
 	LogService = MakeUnique<FDeviceExplorerLogService>([this](const TSharedRef<FJsonObject>& Message) { SendJson(Message); });
 	LogService->Start();
 	ConsoleCatalog = MakeUnique<FDeviceExplorerConsoleCatalog>();
 
 	ConnectionCoordinator = MakeUnique<FDeviceExplorerConnectionCoordinator>();
+	Transport = CreateDeviceExplorerTransport();
 	EndpointCallbackGate = MakeShared<std::atomic<bool>, ESPMode::ThreadSafe>(true);
 	EndpointSources = CreateDeviceExplorerEndpointSources();
 	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> RegisteredSources = FDeviceExplorerCoreModule::Get().CreateEndpointSources();
@@ -714,7 +705,8 @@ void FDeviceExplorerModule::StartupModule()
 	}
 
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FDeviceExplorerModule::Tick), 0.1f);
-	UE_LOG(LogDeviceExplorer, Display, TEXT("DeviceExplorer client started"));
+	UE_LOG(LogDeviceExplorer, Display, TEXT("DeviceExplorer client started with %s transport"),
+	       Transport ? Transport->GetName() : TEXT("no"));
 #endif
 }
 
@@ -752,6 +744,7 @@ void FDeviceExplorerModule::ShutdownModule()
 	EndpointSources.Empty();
 	EndpointCallbackGate.Reset();
 	Disconnect();
+	Transport.Reset();
 	ConnectionCoordinator.Reset();
 	LogService.Reset();
 	ConsoleCatalog.Reset();
@@ -820,7 +813,11 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 	}
 
 	const double Now = FPlatformTime::Seconds();
-	if (!bConnecting && (!Socket.IsValid() || !Socket->IsConnected()) && ConnectionCoordinator)
+	if (Transport)
+	{
+		Transport->Tick(Now);
+	}
+	if (!bConnecting && (!Transport || !Transport->IsConnected()) && ConnectionCoordinator)
 	{
 		FDeviceExplorerEndpointCandidate Candidate;
 		if (ConnectionCoordinator->SelectNext(Now, Candidate))
@@ -829,7 +826,7 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 		}
 	}
 
-	if (Socket.IsValid() && Socket->IsConnected())
+	if (Transport && Transport->IsConnected())
 	{
 		LogService->Flush();
 		if (Now - LastHeartbeatSeconds >= 5.0)
@@ -871,11 +868,15 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 	Disconnect();
 	bConnecting = true;
 	const uint64 AttemptGeneration = ConnectionGeneration;
-	const FString URL = BuildWebSocketURL(Candidate.Endpoint, Candidate.Token);
-	Socket = FWebSocketsModule::Get().CreateWebSocket(URL);
+	if (!Transport)
+	{
+		bConnecting = false;
+		ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
+		return;
+	}
 
-	Socket->OnConnected().AddLambda(
-		[this, AttemptGeneration, Candidate]()
+	FDeviceExplorerTransportCallbacks Callbacks;
+	Callbacks.OnConnected = [this, AttemptGeneration, Candidate]()
 		{
 			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
 			{
@@ -886,9 +887,8 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 			ConnectionCoordinator->MarkConnected(Candidate);
 			SendHello();
 			UE_LOG(LogDeviceExplorer, Display, TEXT("Connected to %s via %s"), *Candidate.Endpoint.Serialized.ToString(), *Candidate.ProviderId.ToString());
-		});
-	Socket->OnConnectionError().AddLambda(
-		[this, AttemptGeneration, Candidate](const FString& Error)
+		};
+	Callbacks.OnConnectionError = [this, AttemptGeneration, Candidate](const FString& Error)
 		{
 			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
 			{
@@ -897,9 +897,8 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 			bConnecting = false;
 			ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
 			UE_LOG(LogDeviceExplorer, Warning, TEXT("Connection to %s failed: %s"), *Candidate.Endpoint.Serialized.ToString(), *Error);
-		});
-	Socket->OnClosed().AddLambda(
-		[this, AttemptGeneration, Candidate](int32 StatusCode, const FString& Reason, bool bWasClean)
+		};
+	Callbacks.OnClosed = [this, AttemptGeneration, Candidate](int32 StatusCode, const FString& Reason, bool bWasClean)
 		{
 			if (!bStarted || AttemptGeneration != ConnectionGeneration || !ConnectionCoordinator || !ConnectionCoordinator->IsActive(Candidate))
 			{
@@ -914,28 +913,26 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 			{
 				LogService->RevertOverrides();
 			}
-		});
-	Socket->OnMessage().AddRaw(this, &FDeviceExplorerModule::HandleMessage);
-	Socket->Connect();
+		};
+	Callbacks.OnMessage = [this, AttemptGeneration](const FString& Message)
+		{
+			if (bStarted && AttemptGeneration == ConnectionGeneration)
+			{
+				HandleMessage(Message);
+			}
+		};
+	Transport->Connect(Candidate.Endpoint, Candidate.Token, MoveTemp(Callbacks));
 }
 
 void FDeviceExplorerModule::Disconnect()
 {
 	++ConnectionGeneration;
 	bConnecting = false;
-	if (!Socket.IsValid())
+	if (!Transport)
 	{
 		return;
 	}
-	Socket->OnConnected().Clear();
-	Socket->OnConnectionError().Clear();
-	Socket->OnClosed().Clear();
-	Socket->OnMessage().Clear();
-	if (Socket->IsConnected())
-	{
-		Socket->Close();
-	}
-	Socket.Reset();
+	Transport->Close();
 }
 
 void FDeviceExplorerModule::ConnectManually(const TArray<FString>& Arguments)
@@ -1614,7 +1611,7 @@ void FDeviceExplorerModule::SendTransferFailure(const FString& TransferId, const
 
 void FDeviceExplorerModule::SendJson(const TSharedRef<FJsonObject>& Message)
 {
-	if (!Socket.IsValid() || !Socket->IsConnected())
+	if (!Transport || !Transport->IsConnected())
 	{
 		return;
 	}
@@ -1623,7 +1620,7 @@ void FDeviceExplorerModule::SendJson(const TSharedRef<FJsonObject>& Message)
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
 	if (FJsonSerializer::Serialize(Message, Writer))
 	{
-		Socket->Send(Serialized);
+		Transport->SendText(Serialized);
 	}
 }
 
@@ -1649,16 +1646,5 @@ FString FDeviceExplorerModule::GetOrCreateDeviceId() const
 	}
 	return Result;
 }
-
-#else
-
-void FDeviceExplorerModule::StartupModule()
-{
-	UE_LOG(LogDeviceExplorer, Display, TEXT("DeviceExplorer client is disabled because this target has no WebSocket backend"));
-}
-
-void FDeviceExplorerModule::ShutdownModule() {}
-
-#endif
 
 IMPLEMENT_MODULE(FDeviceExplorerModule, DeviceExplorer)
