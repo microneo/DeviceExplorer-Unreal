@@ -77,68 +77,6 @@ bool SendAllBounded(FSocket* Socket, const uint8* Data, int64 Size, double Deadl
 	return true;
 }
 
-void AppendUtf8CodePoint(const uint32 CodePoint, TArray<uint8>& OutBytes)
-{
-	if (CodePoint <= 0x7FU)
-	{
-		OutBytes.Add(static_cast<uint8>(CodePoint));
-	}
-	else if (CodePoint <= 0x7FFU)
-	{
-		OutBytes.Add(static_cast<uint8>(0xC0U | (CodePoint >> 6)));
-		OutBytes.Add(static_cast<uint8>(0x80U | (CodePoint & 0x3FU)));
-	}
-	else if (CodePoint <= 0xFFFFU)
-	{
-		OutBytes.Add(static_cast<uint8>(0xE0U | (CodePoint >> 12)));
-		OutBytes.Add(static_cast<uint8>(0x80U | ((CodePoint >> 6) & 0x3FU)));
-		OutBytes.Add(static_cast<uint8>(0x80U | (CodePoint & 0x3FU)));
-	}
-	else
-	{
-		OutBytes.Add(static_cast<uint8>(0xF0U | (CodePoint >> 18)));
-		OutBytes.Add(static_cast<uint8>(0x80U | ((CodePoint >> 12) & 0x3FU)));
-		OutBytes.Add(static_cast<uint8>(0x80U | ((CodePoint >> 6) & 0x3FU)));
-		OutBytes.Add(static_cast<uint8>(0x80U | (CodePoint & 0x3FU)));
-	}
-}
-
-void ConvertToValidUtf8(const FString& Text, TArray<uint8>& OutBytes)
-{
-	static_assert(sizeof(TCHAR) == 2 || sizeof(TCHAR) == 4, "Unsupported TCHAR width");
-	OutBytes.Reset();
-	OutBytes.Reserve(Text.Len());
-	for (int32 Index = 0; Index < Text.Len(); ++Index)
-	{
-		uint32 CodePoint = static_cast<uint32>(Text[Index]) & (sizeof(TCHAR) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
-		if constexpr (sizeof(TCHAR) == 2)
-		{
-			if (CodePoint >= 0xD800U && CodePoint <= 0xDBFFU && Index + 1 < Text.Len())
-			{
-				const uint32 Low = static_cast<uint32>(Text[Index + 1]) & 0xFFFFU;
-				if (Low >= 0xDC00U && Low <= 0xDFFFU)
-				{
-					CodePoint = 0x10000U + ((CodePoint - 0xD800U) << 10) + (Low - 0xDC00U);
-					++Index;
-				}
-				else
-				{
-					CodePoint = 0xFFFDU;
-				}
-			}
-			else if (CodePoint >= 0xD800U && CodePoint <= 0xDFFFU)
-			{
-				CodePoint = 0xFFFDU;
-			}
-		}
-		else if (CodePoint > 0x10FFFFU || (CodePoint >= 0xD800U && CodePoint <= 0xDFFFU))
-		{
-			CodePoint = 0xFFFDU;
-		}
-		AppendUtf8CodePoint(CodePoint, OutBytes);
-	}
-}
-
 bool SendUtf8(FSocket* Socket, const FString& Text)
 {
 	const FTCHARToUTF8 Utf8(*Text);
@@ -456,9 +394,8 @@ struct FDeviceExplorerHostServer::FDeviceConnection : public TSharedFromThis<FDe
 
 	bool SendText(const FString& Text)
 	{
-		TArray<uint8> Utf8;
-		ConvertToValidUtf8(Text, Utf8);
-		return SendFrame(0x1, Utf8);
+		const FTCHARToUTF8 Utf8(*Text);
+		return SendFrame(0x1, MakeArrayView(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length()));
 	}
 
 	bool SendPong(const TArray<uint8>& Payload) { return SendFrame(0xA, Payload); }
