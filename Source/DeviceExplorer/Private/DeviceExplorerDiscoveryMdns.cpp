@@ -23,6 +23,7 @@ namespace
 constexpr uint16 MdnsPort = 5353;
 constexpr double FastQueryIntervalSeconds = 5.0;
 constexpr double SlowQueryIntervalSeconds = 30.0;
+constexpr int32 MaxMdnsDatagramSize = 9000;
 constexpr int32 MaxNameCompressionJumps = 64;
 constexpr uint16 DnsClassMask = 0x7FFF;
 constexpr uint16 DnsClassIN = 1;
@@ -421,11 +422,13 @@ private:
 				continue;
 			}
 
-			uint32 PendingSize = 0;
-			while (Socket->HasPendingData(PendingSize))
+			// Not every socket subsystem can report the size of a pending datagram.
+			// Drain a non-blocking socket into a buffer large enough for the mDNS
+			// packets accepted by this protocol until the backend reports EWOULDBLOCK.
+			for (;;)
 			{
 				TArray<uint8> Buffer;
-				Buffer.SetNumUninitialized(static_cast<int32>(FMath::Clamp<uint32>(PendingSize, 512u, 9000u)));
+				Buffer.SetNumUninitialized(MaxMdnsDatagramSize);
 				int32 BytesRead = 0;
 				const TSharedRef<FInternetAddr> Sender = SocketSubsystem->CreateInternetAddr();
 				if (!Socket->RecvFrom(Buffer.GetData(), Buffer.Num(), BytesRead, *Sender) || BytesRead <= 0)

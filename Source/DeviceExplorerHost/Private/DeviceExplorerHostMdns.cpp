@@ -12,6 +12,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerMdns, Log, All);
 namespace
 {
 constexpr int32 MdnsPort = 5353;
+constexpr int32 MaxMdnsDatagramSize = 9000;
 
 void AddU16(TArray<uint8>& Buffer, const uint16 Value)
 {
@@ -376,11 +377,18 @@ TArray<uint8> FDeviceExplorerHostMdns::BuildAnnouncement(const uint32 Ttl) const
 
 void FDeviceExplorerHostMdns::DrainQueries()
 {
-	uint32 PendingBytes = 0;
-	while (Socket->HasPendingData(PendingBytes))
+	if (!Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::Zero()))
+	{
+		return;
+	}
+
+	// Not every socket subsystem can report the size of a pending datagram.
+	// The socket is non-blocking, so RecvFrom terminates the drain loop with
+	// EWOULDBLOCK after the last packet.
+	for (;;)
 	{
 		TArray<uint8> Buffer;
-		Buffer.SetNumUninitialized(FMath::Min<uint32>(PendingBytes, 9000));
+		Buffer.SetNumUninitialized(MaxMdnsDatagramSize);
 		int32 Read = 0;
 		TSharedRef<FInternetAddr> Sender = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
 		if (!Socket->RecvFrom(Buffer.GetData(), Buffer.Num(), Read, *Sender, ESocketReceiveFlags::None) || Read <= 0)

@@ -42,6 +42,8 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorer, Log, All);
 
+#if WITH_WEBSOCKETS
+
 namespace
 {
 constexpr int64 ArchiveStreamChunkSize = 1 << 20;    // keeps memory flat regardless of source file size
@@ -1504,5 +1506,16 @@ FString FDeviceExplorerModule::GetOrCreateDeviceId() const
 	}
 	return Result;
 }
+
+#else
+
+void FDeviceExplorerModule::StartupModule()
+{
+	UE_LOG(LogDeviceExplorer, Display, TEXT("DeviceExplorer client is disabled because this target has no WebSocket backend"));
+}
+
+void FDeviceExplorerModule::ShutdownModule() {}
+
+#endif
 
 IMPLEMENT_MODULE(FDeviceExplorerModule, DeviceExplorer)

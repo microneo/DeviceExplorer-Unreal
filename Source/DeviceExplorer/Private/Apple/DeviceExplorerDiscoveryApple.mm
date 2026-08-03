@@ -8,7 +8,7 @@
 #include <netdb.h>
 #include <sys/socket.h>
 
-DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerDiscoveryIOS, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerDiscoveryApple, Log, All);
 
 namespace
 {
@@ -73,7 +73,7 @@ FString DataToString(NSData* Data)
 
 - (void)beginSearch
 {
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Display, TEXT("Starting Bonjour browse for _deviceexplorer._tcp.local."));
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Display, TEXT("Starting Bonjour browse for _deviceexplorer._tcp.local."));
 	[Browser searchForServicesOfType:@"_deviceexplorer._tcp." inDomain:@"local."];
 }
 
@@ -101,7 +101,7 @@ FString DataToString(NSData* Data)
 - (void)netServiceBrowser:(NSNetServiceBrowser*)NetServiceBrowser didNotSearch:(NSDictionary*)ErrorDict
 {
 	(void) NetServiceBrowser;
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Warning, TEXT("Bonjour browse failed to start, retrying in %.0fs: %s"), RetryDelay,
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Bonjour browse failed to start, retrying in %.0fs: %s"), RetryDelay,
 	       *FString(UTF8_TO_TCHAR(ErrorDict.description.UTF8String)));
 
 	const uint64 Generation = SearchGeneration;
@@ -119,7 +119,7 @@ FString DataToString(NSData* Data)
 {
 	(void) NetServiceBrowser;
 	(void) MoreComing;
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Display, TEXT("Bonjour browse found service: %s"), *FString(UTF8_TO_TCHAR(NetService.name.UTF8String)));
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Display, TEXT("Bonjour browse found service: %s"), *FString(UTF8_TO_TCHAR(NetService.name.UTF8String)));
 	RetryDelay = MinRetryDelay;
 	NetService.delegate = self;
 	[Services addObject:NetService];
@@ -136,13 +136,13 @@ FString DataToString(NSData* Data)
 
 - (void)netService:(NSNetService*)Sender didNotResolve:(NSDictionary*)ErrorDict
 {
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Warning, TEXT("Bonjour resolve failed for %s: %s"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)),
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Bonjour resolve failed for %s: %s"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)),
 	       *FString(UTF8_TO_TCHAR(ErrorDict.description.UTF8String)));
 }
 
 - (void)netServiceDidResolveAddress:(NSNetService*)Sender
 {
-	UE_LOG(LogDeviceExplorerDiscoveryIOS, Display, TEXT("Bonjour resolve succeeded for %s (%d address(es))"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)),
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Display, TEXT("Bonjour resolve succeeded for %s (%d address(es))"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)),
 	       static_cast<int32>(Sender.addresses.count));
 	FString Host;
 	for (NSData* AddressData in Sender.addresses)
@@ -162,7 +162,7 @@ FString DataToString(NSData* Data)
 	}
 	if (Host.IsEmpty() || Sender.port <= 0)
 	{
-		UE_LOG(LogDeviceExplorerDiscoveryIOS, Warning, TEXT("Resolved %s but found no usable IPv4 address/port"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)));
+		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable IPv4 address/port"), *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)));
 		return;
 	}
 
@@ -189,10 +189,10 @@ FString DataToString(NSData* Data)
 
 @end
 
-class FIOSDeviceExplorerDiscovery final : public IDeviceExplorerDiscovery
+class FAppleDeviceExplorerDiscovery final : public IDeviceExplorerDiscovery
 {
 public:
-	virtual ~FIOSDeviceExplorerDiscovery() override { Stop(); }
+	virtual ~FAppleDeviceExplorerDiscovery() override { Stop(); }
 
 	virtual void Start(FDeviceExplorerDiscoveryCallback Callback) override
 	{
@@ -226,9 +226,9 @@ private:
 	FDeviceExplorerNetServiceDelegate* Delegate = nil;
 };
 
-TUniquePtr<IDeviceExplorerDiscovery> CreateIOSDeviceExplorerDiscovery()
+TUniquePtr<IDeviceExplorerDiscovery> CreateAppleDeviceExplorerDiscovery()
 {
-	return MakeUnique<FIOSDeviceExplorerDiscovery>();
+	return MakeUnique<FAppleDeviceExplorerDiscovery>();
 }
 
 #pragma clang diagnostic pop

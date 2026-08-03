@@ -5,7 +5,7 @@
 #include "Misc/Parse.h"
 
 #if PLATFORM_IOS
-TUniquePtr<IDeviceExplorerDiscovery> CreateIOSDeviceExplorerDiscovery();
+TUniquePtr<IDeviceExplorerDiscovery> CreateAppleDeviceExplorerDiscovery();
 #else
 TUniquePtr<IDeviceExplorerDiscovery> CreateMdnsDeviceExplorerDiscovery();
 #endif
@@ -57,7 +57,7 @@ TUniquePtr<IDeviceExplorerDiscovery> CreateDeviceExplorerDiscovery()
 	}
 
 #if PLATFORM_IOS
-	return CreateIOSDeviceExplorerDiscovery();
+	return CreateAppleDeviceExplorerDiscovery();
 #else
 	return CreateMdnsDeviceExplorerDiscovery();
 #endif

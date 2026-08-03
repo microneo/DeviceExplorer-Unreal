@@ -26,7 +26,7 @@ public class DeviceExplorer : ModuleRules
             "WebSockets"
         });
 
-        if (Target.Platform == UnrealTargetPlatform.IOS)
+        if (Target.IsInPlatformGroup(UnrealPlatformGroup.Apple))
         {
             PublicFrameworks.AddRange(new[]
             {
