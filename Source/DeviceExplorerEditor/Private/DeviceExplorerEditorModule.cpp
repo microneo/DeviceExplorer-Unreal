@@ -31,6 +31,19 @@ void FDeviceExplorerEditorModule::StartupModule()
 {
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FDeviceExplorerEditorModule::RegisterMenus));
 
+	// Generated up front so a build packaged from this project carries a token even if the
+	// host is never started from the Editor, and so a client in this process can reach a
+	// host that is already running with it.
+	const FString ProjectToken = EnsureProjectSessionToken();
+	if (DeviceExplorer::Auth::IsWeakToken(ProjectToken))
+	{
+		Notify(LOCTEXT("WeakToken",
+		               "The DeviceExplorer session token is short enough to be guessed offline.\n"
+		               "Clear it in Project Settings to have a strong one generated."),
+		       true);
+	}
+	DeviceExplorer::Auth::SetProvisionedToken(ProjectToken);
+
 	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
 	bStopWithEditor = Settings->bStopWithEditor;
 	if (Settings->bAutoStart && FPaths::FileExists(FindHostExecutable()))
@@ -400,13 +413,6 @@ FString FDeviceExplorerEditorModule::EnsureProjectSessionToken() const
 		Token = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 		Settings->SessionToken = Token;
 		Settings->TryUpdateDefaultConfigFile();
-	}
-	else if (DeviceExplorer::Auth::IsWeakToken(Token))
-	{
-		Notify(LOCTEXT("WeakToken",
-		               "The DeviceExplorer session token is short enough to be guessed offline.\n"
-		               "Clear it in Project Settings to have a strong one generated."),
-		       true);
 	}
 	return Token;
 }
