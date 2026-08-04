@@ -2,6 +2,7 @@
 
 #include "Async/Async.h"
 #include "Containers/RingBuffer.h"
+#include "DeviceExplorerAuth.h"
 #include "DeviceExplorerHostMdns.h"
 #include "DeviceExplorerTypes.h"
 #include "Dom/JsonObject.h"
@@ -424,6 +425,12 @@ struct FDeviceExplorerHostServer::FDeviceConnection : public TSharedFromThis<FDe
 	FCriticalSection SendMutex;
 	TAtomic<bool> bClosed{ false };
 
+	// Touched only by this connection's read loop, before AttachDevice makes it reachable
+	// from dashboard threads.
+	FString ClientNonce;
+	FString HostNonce;
+	bool bAuthenticated = false;
+
 private:
 	bool SendFrame(const uint8 Opcode, const TArrayView<const uint8> Payload)
 	{
@@ -493,6 +500,8 @@ struct FDeviceExplorerHostServer::FTransfer
 	FString State;
 	FString Error;
 	FString LocalPath;
+	// Keeps the session token out of the upload URL.
+	FString UploadSecret;
 	int64 Bytes = 0;
 	FDateTime CreatedAt;
 	FDateTime UpdatedAt;
@@ -847,8 +856,47 @@ void FDeviceExplorerHostServer::HandleDeviceConnection(FSocket* Socket)
 	RouteDeviceRequest(Socket, Request);
 }
 
+bool FDeviceExplorerHostServer::IsTrustedDashboardRequest(const FHttpRequest& Request) const
+{
+	// The listener is loopback-only, but a page in any browser on this machine reaches it.
+	// Pinning Host defeats DNS rebinding, and a cross-origin fetch cannot set the custom
+	// header without a preflight this server never answers.
+	const FString Authority = FString::Printf(TEXT(":%d"), Config.DashboardPort);
+	const FString Host = Request.Headers.FindRef(TEXT("host"));
+	if (Host != TEXT("127.0.0.1") + Authority && Host != TEXT("localhost") + Authority)
+	{
+		return false;
+	}
+
+	const FString Origin = Request.Headers.FindRef(TEXT("origin"));
+	if (!Origin.IsEmpty() && Origin != TEXT("http://127.0.0.1") + Authority &&
+	    Origin != TEXT("http://localhost") + Authority)
+	{
+		return false;
+	}
+
+	if (Request.Method != TEXT("GET"))
+	{
+		if (Request.Headers.FindRef(TEXT("x-deviceexplorer-request")) != TEXT("1"))
+		{
+			return false;
+		}
+		if (!Request.Headers.FindRef(TEXT("content-type")).StartsWith(TEXT("application/json")))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 void FDeviceExplorerHostServer::RouteDashboardRequest(FSocket* Socket, FHttpRequest& Request)
 {
+	if (!IsTrustedDashboardRequest(Request))
+	{
+		SendJsonError(Socket, 403, TEXT("Request rejected"));
+		return;
+	}
+
 	if (Request.Method == TEXT("GET") && Request.Path == TEXT("/health"))
 	{
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -964,12 +1012,6 @@ void FDeviceExplorerHostServer::ServeStaticFile(FSocket* Socket, const FString& 
 
 void FDeviceExplorerHostServer::HandleWebSocket(FSocket* Socket, const FHttpRequest& Request)
 {
-	if (Request.Query.FindRef(TEXT("token")) != Config.Token)
-	{
-		SendJsonError(Socket, 401, TEXT("Invalid token"));
-		return;
-	}
-
 	const FString ClientKey = Request.Headers.FindRef(TEXT("sec-websocket-key"));
 	if (ClientKey.IsEmpty() || !Request.Headers.FindRef(TEXT("upgrade")).Equals(TEXT("websocket"), ESearchCase::IgnoreCase))
 	{
@@ -1040,6 +1082,89 @@ void FDeviceExplorerHostServer::HandleWebSocket(FSocket* Socket, const FHttpRequ
 	DetachDevice(Connection);
 }
 
+void FDeviceExplorerHostServer::HandleDeviceAuth(const TSharedRef<FDeviceConnection>& Connection,
+	                                             const FString& Type,
+	                                             const TSharedPtr<FJsonObject>& Message)
+{
+	const auto Reject = [&Connection](const FString& Reason)
+	{
+		TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
+		Error->SetStringField(TEXT("type"), TEXT("auth_error"));
+		Error->SetStringField(TEXT("error"), Reason);
+		FString Serialized;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+		if (FJsonSerializer::Serialize(Error, Writer))
+		{
+			Connection->SendText(Serialized);
+		}
+		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Device authentication refused: %s"), *Reason);
+		Connection->bClosed.Store(true);
+		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
+	};
+
+	if (Type == TEXT("auth_request"))
+	{
+		int32 ClientProtocolVersion = 0;
+		FString ClientNonce;
+		Message->TryGetNumberField(TEXT("protocol_version"), ClientProtocolVersion);
+		Message->TryGetStringField(TEXT("client_nonce"), ClientNonce);
+		if (ClientProtocolVersion != DeviceExplorer::ProtocolVersion)
+		{
+			Reject(FString::Printf(TEXT("protocol version %d does not match host version %d"),
+			                       ClientProtocolVersion, DeviceExplorer::ProtocolVersion));
+			return;
+		}
+		if (!DeviceExplorer::Auth::IsValidNonce(ClientNonce))
+		{
+			Reject(TEXT("malformed client nonce"));
+			return;
+		}
+
+		Connection->ClientNonce = ClientNonce;
+		Connection->HostNonce = DeviceExplorer::Auth::MakeNonce();
+
+		TSharedRef<FJsonObject> Challenge = MakeShared<FJsonObject>();
+		Challenge->SetStringField(TEXT("type"), TEXT("auth_challenge"));
+		Challenge->SetStringField(TEXT("host_nonce"), Connection->HostNonce);
+		Challenge->SetStringField(TEXT("host_proof"),
+		                          DeviceExplorer::Auth::ComputeProof(Config.Token, DeviceExplorer::Auth::HostProofLabel,
+		                                                             Connection->ClientNonce, Connection->HostNonce));
+		FString Serialized;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+		if (FJsonSerializer::Serialize(Challenge, Writer))
+		{
+			Connection->SendText(Serialized);
+		}
+		return;
+	}
+
+	if (Type == TEXT("auth_response"))
+	{
+		FString ClientProof;
+		Message->TryGetStringField(TEXT("client_proof"), ClientProof);
+		const FString Expected = DeviceExplorer::Auth::ComputeProof(
+			Config.Token, DeviceExplorer::Auth::DeviceProofLabel, Connection->ClientNonce, Connection->HostNonce);
+		if (Connection->HostNonce.IsEmpty() || !DeviceExplorer::Auth::ConstantTimeEquals(ClientProof, Expected))
+		{
+			Reject(TEXT("invalid session token proof"));
+			return;
+		}
+
+		Connection->bAuthenticated = true;
+		TSharedRef<FJsonObject> Accepted = MakeShared<FJsonObject>();
+		Accepted->SetStringField(TEXT("type"), TEXT("auth_ok"));
+		FString Serialized;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+		if (FJsonSerializer::Serialize(Accepted, Writer))
+		{
+			Connection->SendText(Serialized);
+		}
+		return;
+	}
+
+	Reject(TEXT("expected authentication before any other message"));
+}
+
 void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConnection>& Connection, const FString& Message)
 {
 	TSharedPtr<FJsonObject> Json;
@@ -1052,6 +1177,11 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 	FString Type;
 	if (!Json->TryGetStringField(TEXT("type"), Type))
 	{
+		return;
+	}
+	if (!Connection->bAuthenticated)
+	{
+		HandleDeviceAuth(Connection, Type, Json);
 		return;
 	}
 	if (Type == TEXT("hello"))
@@ -1611,6 +1741,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		Transfer->CreatedAt = Now;
 		Transfer->UpdatedAt = Now;
 		Transfer->LocalPath = FPaths::Combine(Config.TransferDirectory, TransferId + TEXT(".bin"));
+		Transfer->UploadSecret = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
 		{
 			FScopeLock Lock(&StateMutex);
 			Transfers.Add(TransferId, Transfer);
@@ -1625,7 +1756,8 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		Message->SetStringField(TEXT("path"), RelativePath);
 		Message->SetBoolField(TEXT("archive"), bArchive);
 		Message->SetStringField(TEXT("upload_url"),
-		                        FString::Printf(TEXT("http://%s:%d/device/transfers/%s?token=%s"), *UploadHost, Config.DevicePort, *TransferId, *Config.Token));
+		                        FString::Printf(TEXT("http://%s:%d/device/transfers/%s?upload=%s"),
+		                                        *UploadHost, Config.DevicePort, *TransferId, *Transfer->UploadSecret));
 		if (!Connection->SendText(JsonString(Message)))
 		{
 			FScopeLock Lock(&StateMutex);
@@ -1762,11 +1894,6 @@ void FDeviceExplorerHostServer::HandleTransferApi(FSocket* Socket, FHttpRequest&
 
 void FDeviceExplorerHostServer::HandleTransferUpload(FSocket* Socket, FHttpRequest& Request, const FString& TransferId)
 {
-	if (Request.Query.FindRef(TEXT("token")) != Config.Token)
-	{
-		SendJsonError(Socket, 401, TEXT("Invalid token"));
-		return;
-	}
 	if (Request.ContentLength <= 0)
 	{
 		SendJsonError(Socket, 411, TEXT("Content-Length is required"));
@@ -1789,6 +1916,12 @@ void FDeviceExplorerHostServer::HandleTransferUpload(FSocket* Socket, FHttpReque
 		if (!Transfer)
 		{
 			SendJsonError(Socket, 404, TEXT("Unknown transfer"));
+			return;
+		}
+		if (Transfer->UploadSecret.IsEmpty() ||
+		    !DeviceExplorer::Auth::ConstantTimeEquals(Request.Query.FindRef(TEXT("upload")), Transfer->UploadSecret))
+		{
+			SendJsonError(Socket, 401, TEXT("Invalid upload credential"));
 			return;
 		}
 		if (Transfer->State != TEXT("requested") && Transfer->State != TEXT("failed"))

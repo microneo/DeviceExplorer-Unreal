@@ -55,6 +55,8 @@ private:
 	void ServeStaticFile(FSocket* Socket, const FString& RelativePath);
 
 	void HandleWebSocket(FSocket* Socket, const FHttpRequest& Request);
+	bool IsTrustedDashboardRequest(const FHttpRequest& Request) const;
+	void HandleDeviceAuth(const TSharedRef<FDeviceConnection>& Connection, const FString& Type, const TSharedPtr<FJsonObject>& Message);
 	void HandleDeviceMessage(const TSharedRef<FDeviceConnection>& Connection, const FString& Message);
 	void AttachDevice(const TSharedRef<FDeviceConnection>& Connection, const TSharedPtr<FJsonObject>& Hello);
 	void DetachDevice(const TSharedRef<FDeviceConnection>& Connection);

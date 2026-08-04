@@ -1,5 +1,6 @@
 #include "DeviceExplorerHostMdns.h"
 
+#include "DeviceExplorerAuth.h"
 #include "DeviceExplorerTypes.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
@@ -182,10 +183,10 @@ FString SafeDnsLabel(FString Value)
 }
 }    // namespace
 
-FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const int32 InDashboardPort, FString InToken)
+FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const int32 InDashboardPort, const FString& InToken)
 	: DevicePort(InDevicePort)
 	, DashboardPort(InDashboardPort)
-	, Token(MoveTemp(InToken))
+	, TokenFingerprint(DeviceExplorer::Auth::ComputeTokenFingerprint(InToken))
 	, ServiceName(TEXT("_deviceexplorer._tcp.local"))
 {
 	const FString Machine = SafeDnsLabel(FPlatformProcess::ComputerName());
@@ -353,7 +354,7 @@ TArray<uint8> FDeviceExplorerHostMdns::BuildAnnouncement(const uint32 Ttl) const
 
 	TArray<uint8> TxtData;
 	AddTxtString(TxtData, FString::Printf(TEXT("version=%d"), DeviceExplorer::ProtocolVersion));
-	AddTxtString(TxtData, TEXT("token=") + Token);
+	AddTxtString(TxtData, TEXT("fp=") + TokenFingerprint);
 	AddTxtString(TxtData, FString::Printf(TEXT("ui_port=%d"), DashboardPort));
 	AddRecord(Records, InstanceName, 16, 0x8001, Ttl, TxtData);
 

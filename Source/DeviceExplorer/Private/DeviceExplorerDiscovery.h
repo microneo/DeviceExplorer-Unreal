@@ -6,7 +6,7 @@ struct FDeviceExplorerDiscoveredServer
 {
 	FString Host;
 	int32 Port = 0;
-	FString Token;
+	FString Fingerprint;
 	FString Instance;
 };
 

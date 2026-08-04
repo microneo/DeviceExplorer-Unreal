@@ -202,7 +202,7 @@ bool IsInClass(const FParsedRecord& Record)
 	return (Record.Class & DnsClassMask) == DnsClassIN;
 }
 
-FString ParseTxtToken(const uint8* Data, const FParsedRecord& Record)
+FString ParseTxtFingerprint(const uint8* Data, const FParsedRecord& Record)
 {
 	int32 Offset = Record.RDataOffset;
 	const int32 End = Record.RDataOffset + Record.RDataLength;
@@ -218,7 +218,7 @@ FString ParseTxtToken(const uint8* Data, const FParsedRecord& Record)
 		const FString Entry = DecodeChars(Data, StringStart, StringLength);
 		FString Key;
 		FString Value;
-		if (Entry.Split(TEXT("="), &Key, &Value) && Key.Equals(TEXT("token"), ESearchCase::IgnoreCase))
+		if (Entry.Split(TEXT("="), &Key, &Value) && Key.Equals(TEXT("fp"), ESearchCase::IgnoreCase))
 		{
 			return Value;
 		}
@@ -308,16 +308,16 @@ bool ParseResponse(const uint8* Data, const int32 PacketLen, const FString& Send
 		return false;
 	}
 
-	FString Token;
+	FString Fingerprint;
 	for (const FParsedRecord& Record : Records)
 	{
 		if (Record.Type == 16 && IsInClass(Record) && NamesMatch(Record.Name, InstanceName))
 		{
-			Token = ParseTxtToken(Data, Record);
+			Fingerprint = ParseTxtFingerprint(Data, Record);
 			break;
 		}
 	}
-	if (Token.IsEmpty())
+	if (Fingerprint.IsEmpty())
 	{
 		return false;
 	}
@@ -349,7 +349,7 @@ bool ParseResponse(const uint8* Data, const int32 PacketLen, const FString& Send
 
 	OutServer.Host = MoveTemp(HostIp);
 	OutServer.Port = Port;
-	OutServer.Token = MoveTemp(Token);
+	OutServer.Fingerprint = MoveTemp(Fingerprint);
 	OutServer.Instance = MoveTemp(InstanceName);
 	return true;
 }

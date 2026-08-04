@@ -1,7 +1,9 @@
 #include "DeviceExplorerEditorModule.h"
 
 #include "DesktopPlatformModule.h"
+#include "DeviceExplorerAuth.h"
 #include "DeviceExplorerEditorSettings.h"
+#include "DeviceExplorerSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -99,8 +101,9 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 
 	const FString WebRoot = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Resources"), TEXT("Web"));
 	const FString TransferDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("DeviceExplorer"), TEXT("Transfers"));
-	// Generated here so it can be shown below for the manual -DeviceExplorerServer/-DeviceExplorerToken fallback.
-	CurrentHostToken = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+	// Taken from the project settings so builds packaged from this project authenticate
+	// against this host without being passed anything.
+	CurrentHostToken = EnsureProjectSessionToken();
 	// -Project must not be passed: project loading aborts in the host's program target.
 	const FString Arguments = FString::Printf(TEXT("-ParentPID=%u -DashboardPort=%d -DevicePort=%d -WebRoot=\"%s\" -TransferDir=\"%s\" -Token=%s"),
 	                                          FPlatformProcess::GetCurrentProcessId(),
@@ -118,6 +121,10 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 		Notify(LOCTEXT("StartFailed", "Failed to start DeviceExplorerHost."), true);
 		return;
 	}
+
+	// The client in this process has no launch argument to read, so Play In Editor needs
+	// the token handed over directly.
+	DeviceExplorer::Auth::SetProvisionedToken(CurrentHostToken);
 
 	Notify(FText::Format(LOCTEXT("Started", "DeviceExplorerHost started.\nManual connect token: {0}"), FText::FromString(CurrentHostToken)));
 	if (bOpenDashboard)
@@ -382,6 +389,26 @@ FString FDeviceExplorerEditorModule::FindHostExecutable() const
 #endif
 
 	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory(), ExecutableName));
+}
+
+FString FDeviceExplorerEditorModule::EnsureProjectSessionToken() const
+{
+	UDeviceExplorerSettings* Settings = GetMutableDefault<UDeviceExplorerSettings>();
+	FString Token = Settings->SessionToken.TrimStartAndEnd();
+	if (Token.IsEmpty())
+	{
+		Token = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+		Settings->SessionToken = Token;
+		Settings->TryUpdateDefaultConfigFile();
+	}
+	else if (DeviceExplorer::Auth::IsWeakToken(Token))
+	{
+		Notify(LOCTEXT("WeakToken",
+		               "The DeviceExplorer session token is short enough to be guessed offline.\n"
+		               "Clear it in Project Settings to have a strong one generated."),
+		       true);
+	}
+	return Token;
 }
 
 FString FDeviceExplorerEditorModule::GetDashboardURL() const

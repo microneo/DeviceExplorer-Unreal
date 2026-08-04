@@ -18,9 +18,11 @@ public:
 private:
 	void RegisterDefaultFeatures();
 	bool Tick(float DeltaTime);
-	void OnServerDiscovered(const FString& Host, int32 Port, const FString& Token);
+	void OnServerDiscovered(const FString& Host, int32 Port, const FString& Fingerprint);
 	void Connect();
 	void Disconnect();
+	void SendAuthRequest();
+	bool HandleAuthMessage(const FString& Type, const TSharedPtr<class FJsonObject>& Message);
 	void SendHello();
 	void SendHeartbeat();
 	void HandleMessage(const FString& Message);
@@ -34,6 +36,7 @@ private:
 	void StartUpload(const FString& TransferId, const FString& UploadURL, const FString& UploadPath, const FString& ArchivePath);
 	void SendTransferFailure(const FString& TransferId, const FString& Error);
 	void SendJson(const TSharedRef<class FJsonObject>& Message);
+	void SendUnauthenticatedJson(const TSharedRef<class FJsonObject>& Message);
 	FString GetOrCreateDeviceId() const;
 
 	TUniquePtr<IDeviceExplorerDiscovery> Discovery;
@@ -45,10 +48,13 @@ private:
 	FString ServerHost;
 	FString ServerToken;
 	FString DeviceId;
+	FString ClientNonce;
 	int32 ServerPort = 0;
 	double LastHeartbeatSeconds = 0.0;
 	double NextReconnectSeconds = 0.0;
 	double ReconnectDelaySeconds = 1.0;
 	bool bConnecting = false;
+	bool bAuthenticated = false;
+	bool bLoggedFingerprintMismatch = false;
 	bool bStarted = false;
 };

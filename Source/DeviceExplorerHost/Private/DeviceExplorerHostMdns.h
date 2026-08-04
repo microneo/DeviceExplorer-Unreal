@@ -8,7 +8,7 @@ class FSocket;
 class FDeviceExplorerHostMdns
 {
 public:
-	FDeviceExplorerHostMdns(int32 InDevicePort, int32 InDashboardPort, FString InToken);
+	FDeviceExplorerHostMdns(int32 InDevicePort, int32 InDashboardPort, const FString& InToken);
 	~FDeviceExplorerHostMdns();
 
 	bool Start();
@@ -23,7 +23,7 @@ private:
 
 	int32 DevicePort = 0;
 	int32 DashboardPort = 0;
-	FString Token;
+	FString TokenFingerprint;
 	FString ServiceName;
 	FString InstanceName;
 	FString HostName;

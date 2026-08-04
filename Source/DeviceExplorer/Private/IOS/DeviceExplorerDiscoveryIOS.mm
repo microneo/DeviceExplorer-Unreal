@@ -166,23 +166,23 @@ FString DataToString(NSData* Data)
 		return;
 	}
 
-	FString Token;
+	FString Fingerprint;
 	NSData* TXTRecord = Sender.TXTRecordData;
 	if (TXTRecord != nil)
 	{
 		NSDictionary<NSString*, NSData*>* Values = [NSNetService dictionaryFromTXTRecordData:TXTRecord];
-		Token = DataToString(Values[@"token"]);
+		Fingerprint = DataToString(Values[@"fp"]);
 	}
 
 	const FString Instance(UTF8_TO_TCHAR(Sender.name.UTF8String));
 	const int32 Port = static_cast<int32>(Sender.port);
 	const FDeviceExplorerDiscoveryCallback CallbackCopy = Callback;
 	AsyncTask(ENamedThreads::GameThread,
-	          [CallbackCopy, Host = MoveTemp(Host), Token = MoveTemp(Token), Instance, Port]()
+	          [CallbackCopy, Host = MoveTemp(Host), Fingerprint = MoveTemp(Fingerprint), Instance, Port]()
 	          {
 				  if (CallbackCopy)
 				  {
-					  CallbackCopy({ Host, Port, Token, Instance });
+					  CallbackCopy({ Host, Port, Fingerprint, Instance });
 				  }
 			  });
 }

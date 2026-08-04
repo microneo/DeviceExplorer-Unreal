@@ -26,6 +26,7 @@ private:
 	bool BuildHost();
 	bool InstallHostTarget(FText& OutError) const;
 	FString FindHostExecutable() const;
+	FString EnsureProjectSessionToken() const;
 	FString GetDashboardURL() const;
 	void Notify(const FText& Text, bool bFailure = false) const;
 

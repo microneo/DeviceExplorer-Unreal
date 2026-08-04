@@ -1,6 +1,7 @@
 #include "DeviceExplorerDiscovery.h"
 
 #include "Async/Async.h"
+#include "DeviceExplorerAuth.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
@@ -18,12 +19,10 @@ public:
 	virtual void Start(FDeviceExplorerDiscoveryCallback InCallback) override
 	{
 		FString Endpoint;
-		FString Token;
 		if (!FParse::Value(FCommandLine::Get(), TEXT("DeviceExplorerServer="), Endpoint))
 		{
 			return;
 		}
-		FParse::Value(FCommandLine::Get(), TEXT("DeviceExplorerToken="), Token);
 
 		FString Host;
 		FString PortText;
@@ -37,10 +36,12 @@ public:
 			return;
 		}
 
+		const FString Fingerprint = DeviceExplorer::Auth::ComputeTokenFingerprint(
+			DeviceExplorer::Auth::GetProvisionedToken());
 		AsyncTask(ENamedThreads::GameThread,
-		          [Callback = MoveTemp(InCallback), Host = MoveTemp(Host), Token = MoveTemp(Token), Port]() mutable
+		          [Callback = MoveTemp(InCallback), Host = MoveTemp(Host), Fingerprint, Port]() mutable
 		          {
-					  Callback({ MoveTemp(Host), Port, MoveTemp(Token), TEXT("Manual") });
+					  Callback({ MoveTemp(Host), Port, Fingerprint, TEXT("Manual") });
 				  });
 	}
 
