@@ -68,20 +68,6 @@ struct MdnsAdvertiser::Implementation
 
 	bool Start()
 	{
-		asio::error_code Error;
-		Socket.open(Udp::v4(), Error);
-		if (!Error) Socket.set_option(asio::socket_base::reuse_address(true), Error);
-		if (!Error) Socket.set_option(asio::ip::multicast::enable_loopback(true), Error);
-		if (!Error) Socket.set_option(asio::ip::multicast::hops(255), Error);
-		if (!Error) Socket.bind(Udp::endpoint(Udp::v4(), MdnsPort), Error);
-		if (!Error) Socket.set_option(asio::ip::multicast::join_group(Multicast.address().to_v4()), Error);
-		if (Error)
-		{
-			Log(LogLevel::Warning, "mDNS advertisement did not start: " + Error.message());
-			Socket.close();
-			return false;
-		}
-
 		std::set<std::uint32_t> Unique;
 		TcpResolve(Unique);
 		for (const std::uint32_t AddressValue : Unique)
@@ -89,9 +75,36 @@ struct MdnsAdvertiser::Implementation
 			const asio::ip::address_v4 Address(AddressValue);
 			const std::array<unsigned char, 4> Bytes = Address.to_bytes();
 			if (Address.is_loopback() || Address.is_unspecified() || (Bytes[0] == 169 && Bytes[1] == 254)) continue;
-			Announcement.IPv4Addresses.push_back(Address.to_bytes());
+			Interfaces.push_back(Address);
+			Announcement.IPv4Addresses.push_back(Bytes);
 		}
+		if (Interfaces.empty()) Interfaces.push_back(asio::ip::address_v4::loopback());
 		if (Announcement.IPv4Addresses.empty()) Announcement.IPv4Addresses.push_back({ 127, 0, 0, 1 });
+
+		asio::error_code Error;
+		Socket.open(Udp::v4(), Error);
+		if (!Error) Socket.set_option(asio::socket_base::reuse_address(true), Error);
+		if (!Error) Socket.set_option(asio::ip::multicast::enable_loopback(true), Error);
+		if (!Error) Socket.set_option(asio::ip::multicast::hops(255), Error);
+		if (!Error) Socket.bind(Udp::endpoint(Udp::v4(), MdnsPort), Error);
+		if (Error)
+		{
+			Log(LogLevel::Warning, "mDNS advertisement did not start: " + Error.message());
+			Socket.close();
+			return false;
+		}
+		for (const asio::ip::address_v4& Interface : Interfaces)
+		{
+			asio::error_code JoinError;
+			Socket.set_option(asio::ip::multicast::join_group(Multicast.address().to_v4(), Interface), JoinError);
+			if (!JoinError) JoinedInterfaces.push_back(Interface);
+		}
+		if (JoinedInterfaces.empty())
+		{
+			Log(LogLevel::Warning, "mDNS advertisement did not start: no multicast-capable IPv4 interface");
+			Socket.close();
+			return false;
+		}
 		Running = true;
 		Receive();
 		Announce(120);
@@ -171,7 +184,10 @@ struct MdnsAdvertiser::Implementation
 		asio::error_code Ignored;
 		Timer.cancel();
 		Socket.cancel(Ignored);
-		Socket.set_option(asio::ip::multicast::leave_group(Multicast.address().to_v4()), Ignored);
+		for (const asio::ip::address_v4& Interface : JoinedInterfaces)
+		{
+			Socket.set_option(asio::ip::multicast::leave_group(Multicast.address().to_v4(), Interface), Ignored);
+		}
 		Socket.close(Ignored);
 	}
 
@@ -184,6 +200,8 @@ struct MdnsAdvertiser::Implementation
 	Udp::endpoint Sender;
 	std::array<std::uint8_t, MaximumDatagramBytes> Buffer{};
 	Wire::MdnsServiceAnnouncement Announcement;
+	std::vector<asio::ip::address_v4> Interfaces;
+	std::vector<asio::ip::address_v4> JoinedInterfaces;
 	bool Running = false;
 };
 
