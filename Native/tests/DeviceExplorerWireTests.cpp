@@ -429,6 +429,8 @@ void TestJsonCodec()
 	const std::vector<std::string>* WideKeys = WideValue.TryGetObjectKeys();
 	CHECK(WideKeys != nullptr && WideKeys->size() == WideMemberCount);
 	CHECK(WideValue.FindMember("k98999") != nullptr);
+	const std::string EmbeddedLookup = "prefix-k98999-suffix";
+	CHECK(WideValue.FindMember(std::string_view(EmbeddedLookup).substr(7, 6)) != nullptr);
 }
 
 void TestWebSocketRoundTrip()

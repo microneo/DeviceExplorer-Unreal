@@ -1,7 +1,7 @@
 #include "DeviceExplorerJson.h"
 
 #include <algorithm>
-#include <unordered_map>
+#include <map>
 #include <utility>
 
 namespace DeviceExplorer::Wire
@@ -10,7 +10,10 @@ struct JsonObjectStorage
 {
 	std::vector<std::string> Keys;
 	std::vector<JsonValue> Values;
-	std::unordered_map<std::string, std::size_t> Index;
+	// A transparent ordered index keeps lookup allocation-free in C++17 and
+	// gives an O(log n) worst-case bound for untrusted object keys. The linear
+	// path below remains cheaper for the small envelopes used by the protocol.
+	std::map<std::string, std::size_t, std::less<>> Index;
 };
 
 namespace
@@ -27,15 +30,14 @@ std::size_t FindObjectMemberIndex(const JsonObjectStorage& Object, const std::st
 		}
 		return Object.Keys.size();
 	}
-	const auto Existing = Object.Index.find(std::string(Key));
+	const auto Existing = Object.Index.find(Key);
 	return Existing == Object.Index.end() ? Object.Keys.size() : Existing->second;
 }
 
-void IndexObjectMembers(JsonObjectStorage& Object)
+void UpdateObjectMemberIndex(JsonObjectStorage& Object)
 {
 	if (Object.Keys.size() == JsonLinearObjectLookupLimit + 1)
 	{
-		Object.Index.reserve(Object.Keys.size());
 		for (std::size_t Index = 0; Index < Object.Keys.size(); ++Index)
 		{
 			Object.Index.emplace(Object.Keys[Index], Index);
@@ -697,7 +699,7 @@ bool JsonValue::InsertMember(std::string Key, JsonValue Value)
 	}
 	ObjectValue->Keys.push_back(std::move(Key));
 	ObjectValue->Values.push_back(std::move(Value));
-	IndexObjectMembers(*ObjectValue);
+	UpdateObjectMemberIndex(*ObjectValue);
 	return true;
 }
 
@@ -712,7 +714,7 @@ bool JsonValue::SetMember(std::string Key, JsonValue Value)
 	}
 	ObjectValue->Keys.push_back(std::move(Key));
 	ObjectValue->Values.push_back(std::move(Value));
-	IndexObjectMembers(*ObjectValue);
+	UpdateObjectMemberIndex(*ObjectValue);
 	return true;
 }
 
