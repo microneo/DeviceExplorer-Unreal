@@ -73,13 +73,25 @@ function Wait-FuzzingServer {
     throw "Timed out waiting for the Autobahn fuzzing server on ${HostName}:${Port}"
 }
 
+function Test-ContainerExists {
+    param(
+        [Parameter(Mandatory = $true)] [string] $Name
+    )
+
+    # Acting on an absent container writes to stderr, which the Stop preference turns
+    # into a terminating error, so both call sites ask before they act.
+    return [bool] (docker ps --all --quiet --filter "name=^$Name$")
+}
+
 if (-not (Test-Path $Agent -PathType Leaf)) {
     throw "Autobahn agent not found: $Agent"
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $Reports "clients"), (Join-Path $Reports "servers") | Out-Null
 
 if ($Mode -eq "client") {
-    docker rm -f $Container 2>$null | Out-Null
+    if (Test-ContainerExists -Name $Container) {
+        docker rm --force $Container | Out-Null
+    }
     docker run --rm -d `
         --name $Container `
         -p 9001:9001 `
@@ -92,7 +104,9 @@ if ($Mode -eq "client") {
         if ($LASTEXITCODE -ne 0) { throw "Autobahn client agent failed" }
     }
     finally {
-        docker stop $Container | Out-Null
+        if (Test-ContainerExists -Name $Container) {
+            docker stop $Container | Out-Null
+        }
     }
 }
 else {
