@@ -27,6 +27,8 @@ private:
 	bool InstallHostTarget(FText& OutError) const;
 	bool IsHostCompatible(const FString& Executable, FText& OutError) const;
 	FString FindHostExecutable() const;
+	FString FindLegacyHostExecutable() const;
+	FString GetNativeHostInstallRoot() const;
 	FString EnsureProjectSessionToken() const;
 	FString GetDashboardURL() const;
 	void Notify(const FText& Text, bool bFailure = false) const;

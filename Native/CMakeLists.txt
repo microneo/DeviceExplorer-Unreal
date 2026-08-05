@@ -24,6 +24,7 @@ endif()
 
 option(DEVICEEXPLORER_BUILD_HOST "Build the standalone native host" ON)
 set(DEVICEEXPLORER_ASIO_ROOT "" CACHE PATH "Existing standalone Asio source root (the directory containing include/asio.hpp)")
+set(DEVICEEXPLORER_BUILD_ID_OVERRIDE "" CACHE STRING "Stable build id for source archives without Git metadata")
 if(DEVICEEXPLORER_BUILD_HOST)
     find_package(Threads REQUIRED)
     if(DEVICEEXPLORER_ASIO_ROOT)
@@ -65,22 +66,24 @@ if(DEVICEEXPLORER_BUILD_HOST)
     target_link_libraries(dexp-host-core PUBLIC dexp-wire PRIVATE dexp-asio)
     target_compile_features(dexp-host-core PUBLIC cxx_std_17)
 
-    execute_process(
-        COMMAND git rev-parse --short=12 HEAD
-        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/.."
-        OUTPUT_VARIABLE DEVICEEXPLORER_BUILD_ID
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE DEVICEEXPLORER_GIT_RESULT
+    set(DEVICEEXPLORER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(DEVICEEXPLORER_BUILD_ID_HEADER "${DEVICEEXPLORER_GENERATED_DIR}/DeviceExplorerBuildId.h")
+    add_custom_target(dexp-build-id
+        COMMAND "${CMAKE_COMMAND}"
+            "-DDEVICEEXPLORER_SOURCE_ROOT=${CMAKE_CURRENT_LIST_DIR}/.."
+            "-DDEVICEEXPLORER_BUILD_ID_HEADER=${DEVICEEXPLORER_BUILD_ID_HEADER}"
+            "-DDEVICEEXPLORER_BUILD_ID_HEADER_DIR=${DEVICEEXPLORER_GENERATED_DIR}"
+            "-DDEVICEEXPLORER_BUILD_ID_OVERRIDE=${DEVICEEXPLORER_BUILD_ID_OVERRIDE}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/cmake/GenerateBuildId.cmake"
+        BYPRODUCTS "${DEVICEEXPLORER_BUILD_ID_HEADER}"
+        VERBATIM
     )
-    if(NOT DEVICEEXPLORER_GIT_RESULT EQUAL 0 OR NOT DEVICEEXPLORER_BUILD_ID)
-        set(DEVICEEXPLORER_BUILD_ID "unknown")
-    endif()
 
     add_executable(dexp-host "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMain.cpp")
+    add_dependencies(dexp-host dexp-build-id)
+    target_include_directories(dexp-host PRIVATE "${DEVICEEXPLORER_GENERATED_DIR}")
     target_link_libraries(dexp-host PRIVATE dexp-host-core)
     target_compile_features(dexp-host PRIVATE cxx_std_17)
-    target_compile_definitions(dexp-host PRIVATE DEVICEEXPLORER_BUILD_ID="${DEVICEEXPLORER_BUILD_ID}")
 
     foreach(DEVICEEXPLORER_HOST_TARGET dexp-host-core dexp-host)
         if(MSVC)
@@ -106,6 +109,16 @@ if(DEVICEEXPLORER_BUILD_HOST)
         set_tests_properties(dexp-host-version-json PROPERTIES
             PASS_REGULAR_EXPRESSION "\"manifest_version\":1"
         )
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME dexp-host-production-smoke
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_LIST_DIR}/../Scripts/RunNativeHostSmoke.py"
+                    "$<TARGET_FILE:dexp-host>"
+                    --source-root "${CMAKE_CURRENT_LIST_DIR}/.."
+            )
+            set_tests_properties(dexp-host-production-smoke PROPERTIES TIMEOUT 45)
+        endif()
     endif()
 endif()
 

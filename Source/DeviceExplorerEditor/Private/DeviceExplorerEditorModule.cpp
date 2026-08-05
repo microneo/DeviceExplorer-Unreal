@@ -18,6 +18,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Guid.h"
+#include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -33,6 +34,8 @@
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "DeviceExplorerEditor"
+
+DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerEditor, Log, All);
 
 void FDeviceExplorerEditorModule::StartupModule()
 {
@@ -218,7 +221,7 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 		return;
 	}
 
-	const FString Executable = FindHostExecutable();
+	FString Executable = FindHostExecutable();
 	if (!FPaths::FileExists(Executable) && !BuildHost())
 	{
 		return;
@@ -226,10 +229,27 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	FText CompatibilityError;
 	if (!IsHostCompatible(Executable, CompatibilityError))
 	{
-		if (!bOpenDashboard || !BuildHost() || !IsHostCompatible(Executable, CompatibilityError))
+		UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("DeviceExplorer host candidate '%s' was rejected: %s"), *Executable, *CompatibilityError.ToString());
+		const FString LegacyExecutable = FindLegacyHostExecutable();
+		if (Executable != LegacyExecutable && FPaths::FileExists(LegacyExecutable) && IsHostCompatible(LegacyExecutable, CompatibilityError))
+		{
+			Executable = LegacyExecutable;
+			UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("Falling back to the compatible legacy host '%s'."), *Executable);
+		}
+		else if (!bOpenDashboard || !BuildHost())
 		{
 			Notify(CompatibilityError, true);
 			return;
+		}
+		else
+		{
+			Executable = FindLegacyHostExecutable();
+			if (!IsHostCompatible(Executable, CompatibilityError))
+			{
+				UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("Rebuilt DeviceExplorer host '%s' was rejected: %s"), *Executable, *CompatibilityError.ToString());
+				Notify(CompatibilityError, true);
+				return;
+			}
 		}
 	}
 
@@ -351,7 +371,7 @@ bool FDeviceExplorerEditorModule::BuildHost()
 		return false;
 	}
 
-	// Only Development produces the unsuffixed executable name FindHostExecutable() expects.
+	// Only Development produces the unsuffixed legacy executable name expected below.
 	const FString Arguments = FString::Printf(
 		TEXT("DeviceExplorerHost Development %s -Project=\"%s\" -Progress -WaitMutex -NoHotReloadFromIDE"),
 		FPlatformMisc::GetUBTPlatform(),
@@ -363,7 +383,7 @@ bool FDeviceExplorerEditorModule::BuildHost()
 		Arguments,
 		GWarn);
 
-	if (!bBuilt || !FPaths::FileExists(FindHostExecutable()))
+	if (!bBuilt || !FPaths::FileExists(FindLegacyHostExecutable()))
 	{
 		Notify(LOCTEXT("BuildFailed", "DeviceExplorerHost build failed.\nSee the Output Log for details."), true);
 		return false;
@@ -527,13 +547,50 @@ TSharedRef<SWidget> FDeviceExplorerEditorModule::BuildStatusBarMenu()
 
 FString FDeviceExplorerEditorModule::FindHostExecutable() const
 {
+	const FString InstallRoot = GetNativeHostInstallRoot();
+	FString RelativeExecutable;
+	if (FFileHelper::LoadFileToString(RelativeExecutable, *FPaths::Combine(InstallRoot, TEXT("current.txt"))))
+	{
+		RelativeExecutable.TrimStartAndEndInline();
+		FPaths::NormalizeFilename(RelativeExecutable);
+		if (FPaths::IsRelative(RelativeExecutable) && !RelativeExecutable.Contains(TEXT("..")))
+		{
+			const FString InstalledExecutable = FPaths::ConvertRelativePathToFull(FPaths::Combine(InstallRoot, RelativeExecutable));
+			if (FPaths::FileExists(InstalledExecutable))
+			{
+				return InstalledExecutable;
+			}
+		}
+		UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("Ignoring invalid native host pointer '%s/current.txt'."), *InstallRoot);
+	}
+	return FindLegacyHostExecutable();
+}
+
+FString FDeviceExplorerEditorModule::FindLegacyHostExecutable() const
+{
 #if PLATFORM_WINDOWS
 	const TCHAR* ExecutableName = TEXT("DeviceExplorerHost.exe");
 #else
 	const TCHAR* ExecutableName = TEXT("DeviceExplorerHost");
 #endif
-
 	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory(), ExecutableName));
+}
+
+FString FDeviceExplorerEditorModule::GetNativeHostInstallRoot() const
+{
+#if PLATFORM_WINDOWS
+	FString Base = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+#elif PLATFORM_MAC
+	FString Base = FPaths::Combine(FPlatformMisc::GetEnvironmentVariable(TEXT("HOME")), TEXT("Library"), TEXT("Application Support"));
+#else
+	FString Base = FPlatformMisc::GetEnvironmentVariable(TEXT("XDG_STATE_HOME"));
+	if (Base.IsEmpty())
+	{
+		Base = FPaths::Combine(FPlatformMisc::GetEnvironmentVariable(TEXT("HOME")), TEXT(".local"), TEXT("state"));
+	}
+#endif
+	if (Base.IsEmpty()) Base = FPlatformProcess::UserSettingsDir();
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(Base, TEXT("DeviceExplorer"), TEXT("Host")));
 }
 
 FString FDeviceExplorerEditorModule::EnsureProjectSessionToken() const
