@@ -38,3 +38,7 @@ Reports are written under `build/autobahn-reports/clients` and
 the conformance gate because they are long-running performance cases. Cases
 `12.*` and `13.*` require permessage-deflate, which DeviceExplorer does not
 negotiate. No RFC 6455 correctness group is excluded.
+
+The runners wait for the selected listener instead of assuming Docker or the
+native agent starts within a fixed delay. The Linux runner also supplies the
+`host.docker.internal` mapping explicitly for engines without Docker Desktop.
