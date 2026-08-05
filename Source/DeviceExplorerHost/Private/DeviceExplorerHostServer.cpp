@@ -1360,10 +1360,13 @@ void FDeviceExplorerHostServer::AttachDevice(const TSharedRef<FDeviceConnection>
 		return;
 	}
 
+	const TSharedRef<FInternetAddr> RemoteAddress = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+	const bool bHasRemoteAddress = Connection->Socket->GetPeerAddress(*RemoteAddress);
+
 	FScopeLock Lock(&StateMutex);
 	if (!Devices.Contains(DeviceId) && Devices.Num() >= Config.MaximumDevices)
 	{
-		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Device registry is full; refusing %s"), *Connection->RemoteAddress);
+		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Device registry is full; refusing %s"), *RemoteAddress->ToString(true));
 		Connection->bClosed.Store(true);
 		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
 		return;
@@ -1434,8 +1437,7 @@ void FDeviceExplorerHostServer::AttachDevice(const TSharedRef<FDeviceConnection>
 		Device->DataModules = *DataModules;
 	}
 
-	TSharedRef<FInternetAddr> RemoteAddress = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
-	if (Connection->Socket->GetPeerAddress(*RemoteAddress))
+	if (bHasRemoteAddress)
 	{
 		Device->RemoteAddress = RemoteAddress->ToString(true);
 	}
