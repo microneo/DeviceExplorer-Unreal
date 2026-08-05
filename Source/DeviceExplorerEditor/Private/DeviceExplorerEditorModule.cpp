@@ -3,13 +3,16 @@
 #include "DesktopPlatformModule.h"
 #include "DeviceExplorerAuth.h"
 #include "DeviceExplorerEditorSettings.h"
+#include "DeviceExplorerProtocol.h"
 #include "DeviceExplorerSettings.h"
+#include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "IDesktopPlatform.h"
 #include "ISettingsModule.h"
 #include "Interfaces/IPluginManager.h"
@@ -18,6 +21,8 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
 #include "ToolMenus.h"
@@ -97,6 +102,111 @@ void FDeviceExplorerEditorModule::StartHost()
 	LaunchHost(true);
 }
 
+bool FDeviceExplorerEditorModule::IsHostCompatible(const FString& Executable, FText& OutError) const
+{
+	void* ReadPipe = nullptr;
+	void* WritePipe = nullptr;
+	if (!FPlatformProcess::CreatePipe(ReadPipe, WritePipe))
+	{
+		OutError = LOCTEXT("ManifestPipeFailed", "Cannot create a pipe to inspect DeviceExplorerHost.");
+		return false;
+	}
+
+	FProcHandle Process = FPlatformProcess::CreateProc(
+		*Executable,
+		TEXT("-VersionJson"),
+		false,
+		true,
+		true,
+		nullptr,
+		0,
+		*FPaths::ProjectDir(),
+		WritePipe);
+	if (!Process.IsValid())
+	{
+		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+		OutError = LOCTEXT("ManifestStartFailed", "Cannot inspect the DeviceExplorerHost compatibility manifest.");
+		return false;
+	}
+
+	FString Output;
+	const double Deadline = FPlatformTime::Seconds() + 15.0;
+	while (FPlatformProcess::IsProcRunning(Process) && FPlatformTime::Seconds() < Deadline)
+	{
+		Output += FPlatformProcess::ReadPipe(ReadPipe);
+		FPlatformProcess::Sleep(0.01f);
+	}
+	Output += FPlatformProcess::ReadPipe(ReadPipe);
+	const bool bTimedOut = FPlatformProcess::IsProcRunning(Process);
+	if (bTimedOut)
+	{
+		FPlatformProcess::TerminateProc(Process, true);
+	}
+	int32 ReturnCode = 1;
+	const bool bHasReturnCode = FPlatformProcess::GetProcReturnCode(Process, &ReturnCode);
+	FPlatformProcess::CloseProc(Process);
+	FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+	if (bTimedOut || !bHasReturnCode || ReturnCode != 0)
+	{
+		OutError = LOCTEXT("ManifestProcessFailed", "DeviceExplorerHost did not return its compatibility manifest.");
+		return false;
+	}
+
+	const int32 JsonStart = Output.Find(TEXT("{"), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+	int32 JsonEnd = INDEX_NONE;
+	Output.FindLastChar(TEXT('}'), JsonEnd);
+	if (JsonStart == INDEX_NONE || JsonEnd < JsonStart)
+	{
+		OutError = LOCTEXT("ManifestMissing", "DeviceExplorerHost returned no compatibility manifest.");
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Manifest;
+	const FString Json = Output.Mid(JsonStart, JsonEnd - JsonStart + 1);
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+	if (!FJsonSerializer::Deserialize(Reader, Manifest) || !Manifest.IsValid())
+	{
+		OutError = LOCTEXT("ManifestInvalid", "DeviceExplorerHost returned an invalid compatibility manifest.");
+		return false;
+	}
+
+	double ManifestVersion = 0.0;
+	double DeviceMinimum = 0.0;
+	double DeviceMaximum = 0.0;
+	double WebMinimum = 0.0;
+	double WebMaximum = 0.0;
+	FString HostVersion;
+	FString BuildId;
+	if (!Manifest->TryGetNumberField(TEXT("manifest_version"), ManifestVersion) ||
+	    !Manifest->TryGetStringField(TEXT("host_version"), HostVersion) || HostVersion.IsEmpty() ||
+	    !Manifest->TryGetStringField(TEXT("build_id"), BuildId) || BuildId.IsEmpty() ||
+	    !Manifest->TryGetNumberField(TEXT("device_protocol_min"), DeviceMinimum) ||
+	    !Manifest->TryGetNumberField(TEXT("device_protocol_max"), DeviceMaximum) ||
+	    !Manifest->TryGetNumberField(TEXT("web_api_min"), WebMinimum) ||
+	    !Manifest->TryGetNumberField(TEXT("web_api_max"), WebMaximum))
+	{
+		OutError = LOCTEXT("ManifestIncomplete", "DeviceExplorerHost returned an incomplete compatibility manifest.");
+		return false;
+	}
+
+	if (ManifestVersion != DeviceExplorer::HostManifestVersion ||
+	    DeviceMinimum > DeviceExplorer::DeviceProtocolVersion ||
+	    DeviceMaximum < DeviceExplorer::DeviceProtocolVersion ||
+	    WebMinimum > DeviceExplorer::WebApiVersion ||
+	    WebMaximum < DeviceExplorer::WebApiVersion)
+	{
+		OutError = FText::Format(
+			LOCTEXT("ManifestIncompatible",
+			        "DeviceExplorerHost {0} ({1}) is incompatible with device protocol {2} and Web API {3}."),
+			FText::FromString(HostVersion),
+			FText::FromString(BuildId),
+			FText::AsNumber(DeviceExplorer::DeviceProtocolVersion),
+			FText::AsNumber(DeviceExplorer::WebApiVersion));
+		return false;
+	}
+	return true;
+}
+
 void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 {
 	if (IsHostRunning())
@@ -112,6 +222,15 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	if (!FPaths::FileExists(Executable) && !BuildHost())
 	{
 		return;
+	}
+	FText CompatibilityError;
+	if (!IsHostCompatible(Executable, CompatibilityError))
+	{
+		if (!bOpenDashboard || !BuildHost() || !IsHostCompatible(Executable, CompatibilityError))
+		{
+			Notify(CompatibilityError, true);
+			return;
+		}
 	}
 
 	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
@@ -218,7 +337,7 @@ bool FDeviceExplorerEditorModule::BuildHost()
 
 	const EAppReturnType::Type Answer = FMessageDialog::Open(
 		EAppMsgType::YesNo,
-		LOCTEXT("BuildHostPrompt", "DeviceExplorerHost is not built yet.\n\nBuild it now? The editor is blocked until the build finishes, which takes a few minutes the first time."),
+		LOCTEXT("BuildHostPrompt", "DeviceExplorerHost is missing or incompatible.\n\nBuild it now? The editor is blocked until the build finishes, which takes a few minutes the first time."),
 		LOCTEXT("BuildHostTitle", "DeviceExplorer"));
 	if (Answer != EAppReturnType::Yes)
 	{

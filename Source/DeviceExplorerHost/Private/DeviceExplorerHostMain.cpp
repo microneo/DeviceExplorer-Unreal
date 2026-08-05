@@ -1,10 +1,17 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Ticker.h"
 #include "DeviceExplorerHostApplication.h"
+#include "DeviceExplorerHostManifest.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Parse.h"
 #include "RequiredProgramMainCPPInclude.h"
+
+#include <cstdio>
+#include <string>
 
 IMPLEMENT_APPLICATION(DeviceExplorerHost, "DeviceExplorerHost");
 
@@ -21,6 +28,26 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 		}
 	}
 	GEngineLoop.PreInit(FilteredArgV.Num(), FilteredArgV.GetData());
+	if (FParse::Param(FCommandLine::Get(), TEXT("VersionJson")))
+	{
+		DeviceExplorer::Wire::HostManifest Manifest;
+		const FString BuildVersion = FApp::GetBuildVersion();
+		if (!BuildVersion.IsEmpty())
+		{
+			const FTCHARToUTF8 BuildId(*BuildVersion);
+			Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
+		}
+		std::string Json;
+		const bool bSerialized = DeviceExplorer::Wire::SerializeHostManifest(Manifest, Json);
+		if (bSerialized)
+		{
+			std::fwrite(Json.data(), 1, Json.size(), stdout);
+			std::fputc('\n', stdout);
+			std::fflush(stdout);
+		}
+		FEngineLoop::AppExit();
+		return bSerialized ? 0 : 1;
+	}
 	// Program targets do not install the Launch graceful-termination handler for
 	// us. Without it, Ctrl+C on Windows terminates the process before mDNS Stop()
 	// can publish the TTL=0 goodbye packet.

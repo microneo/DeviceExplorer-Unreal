@@ -3,6 +3,7 @@
 #include "Async/Async.h"
 #include "Containers/RingBuffer.h"
 #include "DeviceExplorerAuth.h"
+#include "DeviceExplorerHostManifest.h"
 #include "DeviceExplorerHostMdns.h"
 #include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerTypes.h"
@@ -15,6 +16,7 @@
 #include "HAL/PlatformTime.h"
 #include "IPAddress.h"
 #include "Misc/FileHelper.h"
+#include "Misc/App.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
@@ -221,6 +223,29 @@ void SendJsonError(FSocket* Socket, const int32 Status, const FString& Error)
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("error"), Error);
 	SendJsonResponse(Socket, Status, Object);
+}
+
+void SendHostManifest(FSocket* Socket)
+{
+	DeviceExplorer::Wire::HostManifest Manifest;
+	const FString BuildVersion = FApp::GetBuildVersion();
+	if (!BuildVersion.IsEmpty())
+	{
+		const FTCHARToUTF8 BuildId(*BuildVersion);
+		Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
+	}
+	std::string Json;
+	if (!DeviceExplorer::Wire::SerializeHostManifest(Manifest, Json))
+	{
+		SendJsonError(Socket, 500, TEXT("Cannot serialize host manifest"));
+		return;
+	}
+	const FUTF8ToTCHAR Converted(Json.data(), static_cast<int32>(Json.size()));
+	SendHttpText(Socket,
+	             200,
+	             TEXT("application/json; charset=utf-8"),
+	             FString(Converted.Length(), Converted.Get()),
+	             { { TEXT("Cache-Control"), TEXT("no-store") } });
 }
 
 FString NewRequestId()
@@ -887,6 +912,11 @@ void FDeviceExplorerHostServer::RouteDashboardRequest(FSocket* Socket, FHttpRequ
 		SendJsonResponse(Socket, 200, Result);
 		return;
 	}
+	if (Request.Method == TEXT("GET") && Request.Path == TEXT("/host-manifest"))
+	{
+		SendHostManifest(Socket);
+		return;
+	}
 	if (Request.Method == TEXT("GET") && Request.Path == TEXT("/api/config"))
 	{
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -937,6 +967,11 @@ void FDeviceExplorerHostServer::RouteDeviceRequest(FSocket* Socket, FHttpRequest
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("status"), TEXT("ok"));
 		SendJsonResponse(Socket, 200, Result);
+		return;
+	}
+	if (Request.Method == TEXT("GET") && Request.Path == TEXT("/host-manifest"))
+	{
+		SendHostManifest(Socket);
 		return;
 	}
 	if (Request.Method == TEXT("GET") && Request.Path == TEXT("/device/connect"))

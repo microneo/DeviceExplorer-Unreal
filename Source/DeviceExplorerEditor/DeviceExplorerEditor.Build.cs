@@ -15,6 +15,7 @@ public class DeviceExplorerEditor : ModuleRules
             "DeveloperSettings",
             "DeviceExplorer",
             "DeviceExplorerCore",
+            "DeviceExplorerWire",
             "Engine",
             "Projects",
             "Settings",

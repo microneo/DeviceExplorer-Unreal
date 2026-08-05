@@ -1,4 +1,5 @@
 #include "DeviceExplorerHttpUpgrade.h"
+#include "DeviceExplorerHostManifest.h"
 #include "DeviceExplorerJson.h"
 #include "DeviceExplorerMdns.h"
 #include "DeviceExplorerProtocol.h"
@@ -170,6 +171,43 @@ void TestHttpUpgrade()
 		{ reinterpret_cast<const std::uint8_t*>(DuplicateResponseUpgrade.data()), DuplicateResponseUpgrade.size() }, Accept, Response);
 	CHECK(DuplicateUpgradeResult.Status == HttpUpgradeStatus::Error);
 	CHECK(DuplicateUpgradeResult.Error == HttpUpgradeError::InvalidUpgrade);
+}
+
+void TestHostManifest()
+{
+	HostManifest Source;
+	Source.BuildId = "test-build-42";
+	CHECK(IsValidHostManifest(Source));
+
+	std::string Json;
+	JsonError Error = JsonError::InvalidInput;
+	CHECK(SerializeHostManifest(Source, Json, &Error));
+	CHECK(Error == JsonError::None);
+	CHECK(Json.find("\"host_version\":\"0.5.0\"") != std::string::npos);
+	CHECK(Json.find("\"device_protocol_min\":10") != std::string::npos);
+
+	HostManifest Parsed;
+	CHECK(ParseHostManifest(
+		{ reinterpret_cast<const std::uint8_t*>(Json.data()), Json.size() }, Parsed, &Error));
+	CHECK(Parsed.ManifestVersion == DeviceExplorer::HostManifestVersion);
+	CHECK(Parsed.HostVersionText == DeviceExplorer::HostVersion);
+	CHECK(Parsed.BuildId == Source.BuildId);
+	CHECK(Parsed.DeviceProtocol.Minimum == DeviceExplorer::DeviceProtocolVersion);
+	CHECK(Parsed.DeviceProtocol.Maximum == DeviceExplorer::DeviceProtocolVersion);
+	CHECK(Parsed.WebApi.Minimum == DeviceExplorer::WebApiVersion);
+	CHECK(Parsed.PeerProtocol.Minimum == 0);
+
+	Source.DeviceProtocol.Maximum = Source.DeviceProtocol.Minimum - 1;
+	CHECK(!SerializeHostManifest(Source, Json, &Error));
+	CHECK(Error == JsonError::InvalidInput);
+
+	const std::string Invalid =
+		"{\"manifest_version\":1,\"host_version\":\"0.5.0\",\"build_id\":\"x\","
+		"\"device_protocol_min\":10,\"device_protocol_max\":10,\"web_api_min\":1,"
+		"\"web_api_max\":1,\"peer_protocol_min\":0,\"peer_protocol_max\":1}";
+	CHECK(!ParseHostManifest(
+		{ reinterpret_cast<const std::uint8_t*>(Invalid.data()), Invalid.size() }, Parsed, &Error));
+	CHECK(Error == JsonError::InvalidInput);
 }
 
 void TestMdnsCodec()
@@ -429,6 +467,8 @@ void TestJsonCodec()
 	const std::vector<std::string>* WideKeys = WideValue.TryGetObjectKeys();
 	CHECK(WideKeys != nullptr && WideKeys->size() == WideMemberCount);
 	CHECK(WideValue.FindMember("k98999") != nullptr);
+	const std::string EmbeddedLookup = "prefix-k98999-suffix";
+	CHECK(WideValue.FindMember(std::string_view(EmbeddedLookup).substr(7, 6)) != nullptr);
 }
 
 void TestWebSocketRoundTrip()
@@ -699,6 +739,7 @@ void TestRegisteredCloseCodes()
 int main()
 {
 	TestHttpUpgrade();
+	TestHostManifest();
 	TestMdnsCodec();
 	TestJsonCodec();
 	TestWebSocketRoundTrip();

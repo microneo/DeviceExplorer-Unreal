@@ -26,6 +26,7 @@ chosen token are environment-specific.
 The check is successful only when all of these hold:
 
 - both `/health` endpoints return `{"status":"ok"}`;
+- `/host-manifest` reports compatible device/Web API ranges and a build id;
 - `/api/config` reports the current device protocol and requested device port;
 - the WebSocket accept key and ping/pong behavior match RFC 6455;
 - both sides prove the token before a masked `hello` appears in `/api/devices`;

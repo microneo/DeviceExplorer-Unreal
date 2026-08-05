@@ -23,6 +23,8 @@ from typing import Any
 
 
 PROTOCOL_VERSION = 10
+HOST_MANIFEST_VERSION = 1
+WEB_API_VERSION = 1
 SERVICE_NAME = "_deviceexplorer._tcp.local"
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
@@ -463,6 +465,9 @@ def main() -> int:
     config_request, config_response, config = http_get(
         args.host, args.dashboard_port, "/api/config", args.timeout
     )
+    manifest_request, manifest_response, manifest = http_get(
+        args.host, args.dashboard_port, "/host-manifest", args.timeout
+    )
     if device_health.get("status") != "ok" or dashboard_health.get("status") != "ok":
         raise RuntimeError("one of the health endpoints is not healthy")
     if config.get("protocol_version") != PROTOCOL_VERSION:
@@ -471,6 +476,18 @@ def main() -> int:
         )
     if config.get("device_port") != args.device_port:
         raise RuntimeError("dashboard reports a different device port")
+    if manifest.get("manifest_version") != HOST_MANIFEST_VERSION:
+        raise RuntimeError("host reports an unsupported manifest schema")
+    if not (
+        manifest.get("device_protocol_min")
+        <= PROTOCOL_VERSION
+        <= manifest.get("device_protocol_max")
+    ):
+        raise RuntimeError("host manifest does not cover the current device protocol")
+    if not (
+        manifest.get("web_api_min") <= WEB_API_VERSION <= manifest.get("web_api_max")
+    ):
+        raise RuntimeError("host manifest does not cover the current Web API")
 
     websocket = websocket_smoke(
         args.host,
@@ -497,7 +514,7 @@ def main() -> int:
         raise RuntimeError("the smoke device did not appear in /api/devices")
 
     capture: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "protocol_version": PROTOCOL_VERSION,
         "captured_unix_seconds": int(time.time()),
         "endpoint": {
@@ -512,6 +529,8 @@ def main() -> int:
             "dashboard_health_response_base64": encode_capture(dashboard_health_response),
             "config_request_base64": encode_capture(config_request),
             "config_response_base64": encode_capture(config_response),
+            "manifest_request_base64": encode_capture(manifest_request),
+            "manifest_response_base64": encode_capture(manifest_response),
             "devices_request_base64": encode_capture(devices_request),
             "devices_response_base64": encode_capture(devices_response),
         },

@@ -35,6 +35,19 @@ enum class EDeviceExplorerBuiltinState : uint8
 	Closing
 };
 
+const TCHAR* DeviceExplorerBuiltinStateText(const EDeviceExplorerBuiltinState State)
+{
+	switch (State)
+	{
+		case EDeviceExplorerBuiltinState::Idle: return TEXT("idle");
+		case EDeviceExplorerBuiltinState::Connecting: return TEXT("connecting");
+		case EDeviceExplorerBuiltinState::Handshaking: return TEXT("handshaking");
+		case EDeviceExplorerBuiltinState::Connected: return TEXT("connected");
+		case EDeviceExplorerBuiltinState::Closing: return TEXT("closing");
+	}
+	return TEXT("unknown");
+}
+
 std::string DeviceExplorerStringToUtf8(const FString& Value)
 {
 	const FTCHARToUTF8 Converted(*Value);
@@ -132,13 +145,18 @@ public:
 		State = EDeviceExplorerBuiltinState::Connecting;
 		DeadlineSeconds = FPlatformTime::Seconds() + DeviceExplorerConnectTimeoutSeconds;
 		const bool bConnectedImmediately = Socket->Connect(*RemoteAddress);
-		if (bConnectedImmediately || Socket->GetConnectionState() == SCS_Connected)
+		if (bConnectedImmediately)
 		{
 			BeginHandshake();
 		}
-		else if (Socket->GetConnectionState() == SCS_ConnectionError)
+		else
 		{
-			Fail(TEXT("TCP connection failed"));
+			const ESocketErrors Error = SocketSubsystem->GetLastErrorCode();
+			if (Error != SE_NO_ERROR && Error != SE_EWOULDBLOCK && Error != SE_EINPROGRESS &&
+			    Error != SE_EALREADY)
+			{
+				Fail(FString::Printf(TEXT("TCP connect failed (socket error %d)"), static_cast<int32>(Error)));
+			}
 		}
 	}
 
@@ -148,17 +166,8 @@ public:
 
 		if (State == EDeviceExplorerBuiltinState::Connecting)
 		{
-			const ESocketConnectionState ConnectionState = Socket->GetConnectionState();
-			if (ConnectionState == SCS_Connected)
-			{
-				BeginHandshake();
-			}
-			else if (ConnectionState == SCS_ConnectionError)
-			{
-				Fail(TEXT("TCP connection failed"));
-				return;
-			}
-			else if (NowSeconds >= DeadlineSeconds)
+			if (!ProbeCompletedConnect()) return;
+			if (State == EDeviceExplorerBuiltinState::Connecting && NowSeconds >= DeadlineSeconds)
 			{
 				Fail(TEXT("TCP connection timed out"));
 				return;
@@ -213,6 +222,39 @@ public:
 	virtual const TCHAR* GetName() const override { return TEXT("Builtin"); }
 
 private:
+	bool ProbeCompletedConnect()
+	{
+		if (!Socket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::Zero())) return true;
+
+		// On Windows a refused non-blocking connect is writable too, and
+		// GetConnectionState() consequently reports SCS_Connected. A peek
+		// distinguishes the completed error from a successful idle connection:
+		// success has no bytes yet and reports would-block, while SO_ERROR is
+		// surfaced by Recv as the actual connect failure.
+		uint8 Probe = 0;
+		int32 Read = 0;
+		if (Socket->Recv(&Probe, 1, Read, ESocketReceiveFlags::Peek))
+		{
+			if (Read == 0)
+			{
+				Fail(TEXT("TCP peer closed during connect"));
+				return false;
+			}
+			BeginHandshake();
+			return true;
+		}
+
+		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		const ESocketErrors Error = SocketSubsystem->GetLastErrorCode();
+		if (Error == SE_NO_ERROR || Error == SE_EWOULDBLOCK)
+		{
+			BeginHandshake();
+			return true;
+		}
+		Fail(FString::Printf(TEXT("TCP connect failed (socket error %d)"), static_cast<int32>(Error)));
+		return false;
+	}
+
 	void BeginHandshake()
 	{
 		const std::array<std::uint8_t, 16> Nonce = MakeDeviceExplorerWebSocketNonce();
@@ -473,7 +515,11 @@ private:
 
 	void Fail(const FString& Reason)
 	{
-		UE_LOG(LogDeviceExplorerBuiltinTransport, Warning, TEXT("Builtin WebSocket failed: %s"), *Reason);
+		UE_LOG(LogDeviceExplorerBuiltinTransport, Warning,
+		       TEXT("Builtin WebSocket %s failed while %s: %s"),
+		       Host.IsEmpty() ? TEXT("connection") : *Host,
+		       DeviceExplorerBuiltinStateText(State),
+		       *Reason);
 		const bool bWasConnected = bEverConnected;
 		CloseSocket();
 		State = EDeviceExplorerBuiltinState::Idle;
