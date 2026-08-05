@@ -56,6 +56,8 @@ if(DEVICEEXPLORER_BUILD_HOST)
     add_library(dexp-host-core STATIC
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.h"
     )

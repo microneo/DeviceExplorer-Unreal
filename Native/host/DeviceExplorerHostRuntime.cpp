@@ -1,5 +1,7 @@
 #include "DeviceExplorerHostRuntime.h"
 
+#include "DeviceExplorerHostMdns.h"
+
 #include "DeviceExplorerAuthPrimitives.h"
 #include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerJson.h"
@@ -16,6 +18,8 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -330,12 +334,25 @@ std::string EncodeResponse(const HttpResponse& Response)
 	return Result;
 }
 
+std::string ContentTypeForPath(const std::filesystem::path& Path)
+{
+	const std::string Extension = LowerAscii(Path.extension().string());
+	if (Extension == ".html") return "text/html; charset=utf-8";
+	if (Extension == ".css") return "text/css; charset=utf-8";
+	if (Extension == ".js") return "text/javascript; charset=utf-8";
+	if (Extension == ".svg") return "image/svg+xml";
+	if (Extension == ".png") return "image/png";
+	if (Extension == ".json") return "application/json; charset=utf-8";
+	return "application/octet-stream";
+}
+
 class DeviceChannel
 {
 public:
 	virtual ~DeviceChannel() = default;
 	virtual void SendText(std::string Text) = 0;
 	virtual void Close() = 0;
+	virtual std::string LocalAddress() const = 0;
 };
 
 struct LogEntry
@@ -370,6 +387,7 @@ struct DeviceState
 	Json DataModules;
 	std::deque<LogEntry> Logs;
 	std::weak_ptr<DeviceChannel> Channel;
+	std::chrono::steady_clock::time_point LastActivity = std::chrono::steady_clock::now();
 };
 
 struct PendingRequest
@@ -379,11 +397,98 @@ struct PendingRequest
 	std::function<void(std::string)> Complete;
 };
 
+struct TransferState
+{
+	std::string Id;
+	std::string DeviceId;
+	std::string Root;
+	std::string RelativePath;
+	std::string Filename;
+	std::string State;
+	std::string Error;
+	std::string LocalPath;
+	std::string UploadSecret;
+	std::uint64_t Bytes = 0;
+	std::string CreatedAt;
+	std::string UpdatedAt;
+	std::chrono::steady_clock::time_point LastActivity = std::chrono::steady_clock::now();
+};
+
+std::string SafeFilename(const std::string& Value)
+{
+	std::string Result = std::filesystem::path(Value).filename().string();
+	for (char& Character : Result)
+	{
+		if (Character == '"' || Character == '\r' || Character == '\n') Character = '_';
+	}
+	return Result.empty() ? "download.bin" : Result;
+}
+
+std::string NormalizeRelativePath(const std::string& Value)
+{
+	std::filesystem::path Result;
+	for (const std::filesystem::path& Part : std::filesystem::path(Value))
+	{
+		if (Part == "." || Part.empty()) continue;
+		if (Part == ".." || Part.is_absolute()) return {};
+		Result /= Part;
+	}
+	return Result.generic_string();
+}
+
 struct HostState : public std::enable_shared_from_this<HostState>
 {
 	HostState(asio::io_context& InIo, const HostConfig& InConfig, BoundEndpoints InEndpoints, std::string InManifest)
-		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Manifest(std::move(InManifest))
+		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Manifest(std::move(InManifest)), MaintenanceTimer(Io)
 	{
+	}
+
+	void StartMaintenance()
+	{
+		MaintenanceTimer.expires_after(std::chrono::minutes(1));
+		std::weak_ptr<HostState> WeakSelf = shared_from_this();
+		MaintenanceTimer.async_wait([WeakSelf](const asio::error_code& Error)
+		{
+			if (Error) return;
+			if (const std::shared_ptr<HostState> Self = WeakSelf.lock())
+			{
+				Self->CleanupExpiredState();
+				Self->StartMaintenance();
+			}
+		});
+	}
+
+	void StopMaintenance()
+	{
+		MaintenanceTimer.cancel();
+	}
+
+	void CleanupExpiredState()
+	{
+		const auto Now = std::chrono::steady_clock::now();
+		for (auto Iterator = Transfers.begin(); Iterator != Transfers.end();)
+		{
+			if (Now - Iterator->second.LastActivity <= Config.TransferTtl)
+			{
+				++Iterator;
+				continue;
+			}
+			std::error_code Ignored;
+			std::filesystem::remove(Iterator->second.LocalPath, Ignored);
+			std::filesystem::remove(Iterator->second.LocalPath + ".part", Ignored);
+			Iterator = Transfers.erase(Iterator);
+		}
+		for (auto Iterator = Devices.begin(); Iterator != Devices.end();)
+		{
+			if (!Iterator->second.Connected && Now - Iterator->second.LastActivity > Config.DisconnectedDeviceTtl)
+			{
+				Iterator = Devices.erase(Iterator);
+			}
+			else
+			{
+				++Iterator;
+			}
+		}
 	}
 
 	void Log(const LogLevel Level, const std::string& Message) const
@@ -413,6 +518,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		Device.Connected = true;
 		Device.ConnectedAt = IsoNow();
 		Device.LastSeen = Device.ConnectedAt;
+		Device.LastActivity = std::chrono::steady_clock::now();
 		Device.Channel = Channel;
 		Device.Capabilities = Member(Hello, "capabilities") ? *Member(Hello, "capabilities") : Json{};
 		Device.Commands = Member(Hello, "commands") ? *Member(Hello, "commands") : Json{};
@@ -434,6 +540,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 				Pair.second.Channel.reset();
 				Pair.second.Connected = false;
 				Pair.second.LastSeen = IsoNow();
+				Pair.second.LastActivity = std::chrono::steady_clock::now();
 				break;
 			}
 		}
@@ -441,6 +548,18 @@ struct HostState : public std::enable_shared_from_this<HostState>
 
 	void OnMessage(const std::shared_ptr<DeviceChannel>& Channel, const Json& Message)
 	{
+		const std::string Type = StringMember(Message, "type");
+		if (Type == "transfer_result" && !BoolMember(Message, "success"))
+		{
+			if (TransferState* Transfer = FindTransfer(StringMember(Message, "transfer_id")))
+			{
+				Transfer->State = "failed";
+				Transfer->Error = StringMember(Message, "error");
+					Transfer->UpdatedAt = IsoNow();
+					Transfer->LastActivity = std::chrono::steady_clock::now();
+			}
+			return;
+		}
 		const std::string RequestId = StringMember(Message, "request_id");
 		if (!RequestId.empty())
 		{
@@ -466,7 +585,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		}
 		if (!Device) return;
 		Device->LastSeen = IsoNow();
-		const std::string Type = StringMember(Message, "type");
+		Device->LastActivity = std::chrono::steady_clock::now();
 		if (Type == "heartbeat")
 		{
 			Device->UptimeSeconds = IntegerMember(Message, "uptime_seconds");
@@ -611,12 +730,89 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		return true;
 	}
 
+	std::string CreateTransfer(const std::string& DeviceId,
+	                         const std::string& RootName,
+	                         const std::string& RelativePath,
+	                         const bool Archive)
+	{
+		const auto Found = Devices.find(DeviceId);
+		if (Found == Devices.end() || !Found->second.Connected) return {};
+		const std::shared_ptr<DeviceChannel> Channel = Found->second.Channel.lock();
+		if (!Channel || RootName.empty()) return {};
+		const std::string Normalized = NormalizeRelativePath(RelativePath);
+		if (!Archive && Normalized.empty()) return {};
+		TransferState Transfer;
+		Transfer.Id = MakeId();
+		Transfer.DeviceId = DeviceId;
+		Transfer.Root = RootName;
+		Transfer.RelativePath = Normalized;
+		Transfer.Filename = Archive ? SafeFilename(Normalized.empty() ? RootName : Normalized) + ".zip" : SafeFilename(Normalized);
+		Transfer.State = "requested";
+		Transfer.UploadSecret = MakeId();
+		Transfer.CreatedAt = IsoNow();
+		Transfer.UpdatedAt = Transfer.CreatedAt;
+		std::filesystem::path Directory = Config.TransferDirectory.empty()
+			? std::filesystem::temp_directory_path() / "DeviceExplorer" / "Transfers"
+			: std::filesystem::path(Config.TransferDirectory);
+		std::error_code Error;
+		std::filesystem::create_directories(Directory, Error);
+		if (Error) return {};
+		Transfer.LocalPath = (Directory / (Transfer.Id + ".bin")).string();
+		const std::string TransferId = Transfer.Id;
+		Transfers.emplace(TransferId, Transfer);
+
+		Json Message;
+		Message.SetObject();
+		AddString(Message, "type", "upload_file");
+		AddString(Message, "request_id", MakeId());
+		AddString(Message, "transfer_id", TransferId);
+		AddString(Message, "root", RootName);
+		AddString(Message, "path", Normalized);
+		AddBoolean(Message, "archive", Archive);
+		const std::string UploadHost = Channel->LocalAddress().empty() ? "127.0.0.1" : Channel->LocalAddress();
+		AddString(Message, "upload_url", "http://" + UploadHost + ':' + std::to_string(Endpoints.DevicePort) +
+		          "/device/transfers/" + TransferId + "?upload=" + Transfer.UploadSecret);
+		const std::string Text = Serialize(Message);
+		if (Text.empty())
+		{
+			Transfers.erase(TransferId);
+			return {};
+		}
+		Channel->SendText(Text);
+		return TransferJson(Transfers.at(TransferId));
+	}
+
+	std::string TransferJson(const TransferState& Transfer) const
+	{
+		Json Root;
+		Root.SetObject();
+		AddString(Root, "id", Transfer.Id);
+		AddString(Root, "device_id", Transfer.DeviceId);
+		AddString(Root, "root", Transfer.Root);
+		AddString(Root, "path", Transfer.RelativePath);
+		AddString(Root, "filename", Transfer.Filename);
+		AddString(Root, "state", Transfer.State);
+		AddUnsigned(Root, "bytes", Transfer.Bytes);
+		AddString(Root, "error", Transfer.Error);
+		AddString(Root, "created_at", Transfer.CreatedAt);
+		AddString(Root, "updated_at", Transfer.UpdatedAt);
+		return Serialize(Root);
+	}
+
+	TransferState* FindTransfer(const std::string& Id)
+	{
+		const auto Found = Transfers.find(Id);
+		return Found == Transfers.end() ? nullptr : &Found->second;
+	}
+
 	asio::io_context& Io;
 	HostConfig Config;
 	BoundEndpoints Endpoints;
 	std::string Manifest;
 	std::unordered_map<std::string, DeviceState> Devices;
 	std::unordered_map<std::string, std::shared_ptr<PendingRequest>> Pending;
+	std::unordered_map<std::string, TransferState> Transfers;
+	asio::steady_timer MaintenanceTimer;
 };
 
 class DeviceSession final : public DeviceChannel, public std::enable_shared_from_this<DeviceSession>
@@ -628,6 +824,8 @@ public:
 	{
 		asio::error_code Error;
 		RemoteAddress = this->Socket.remote_endpoint(Error).address().to_string();
+		Error.clear();
+		LocalEndpointAddress = this->Socket.local_endpoint(Error).address().to_string();
 	}
 
 	void Start()
@@ -668,6 +866,11 @@ public:
 	void Close() override
 	{
 		CloseSocket();
+	}
+
+	std::string LocalAddress() const override
+	{
+		return LocalEndpointAddress;
 	}
 
 private:
@@ -859,6 +1062,7 @@ private:
 	std::string Header;
 	std::string Prefix;
 	std::string RemoteAddress;
+	std::string LocalEndpointAddress;
 	Wire::WebSocketDecoder Decoder;
 	std::array<char, 64 * 1024> ReadBuffer{};
 	std::deque<std::shared_ptr<std::vector<std::uint8_t>>> WriteQueue;
@@ -870,6 +1074,319 @@ private:
 	bool Attached = false;
 	bool CloseAfterWrite = false;
 	bool Closed = false;
+};
+
+class UploadSession final : public std::enable_shared_from_this<UploadSession>
+{
+public:
+	UploadSession(Tcp::socket Socket, std::shared_ptr<HostState> State, HttpRequest Request)
+		: Socket(std::move(Socket)), State(std::move(State)), Request(std::move(Request))
+	{
+	}
+
+	void Start()
+	{
+		const std::string Prefix = "/device/transfers/";
+		TransferId = Request.Path.substr(Prefix.size());
+		TransferState* Transfer = State->FindTransfer(TransferId);
+		const auto Credential = Request.Query.find("upload");
+		if (!Transfer)
+		{
+			Reply(404, "Unknown transfer");
+			return;
+		}
+		if (Credential == Request.Query.end() || Transfer->UploadSecret.empty() ||
+		    !Wire::Auth::ConstantTimeEquals(Credential->second, Transfer->UploadSecret))
+		{
+			Reply(401, "Invalid upload credential");
+			return;
+		}
+		if (Request.ContentLength == 0)
+		{
+			Reply(411, "Content-Length is required");
+			return;
+		}
+		if (Request.ContentLength > State->Config.MaximumTransferBytes)
+		{
+			Reply(413, "Transfer is too large");
+			return;
+		}
+		if (Transfer->State != "requested" && Transfer->State != "failed")
+		{
+			Reply(409, "Transfer is not uploadable");
+			return;
+		}
+		FinalPath = Transfer->LocalPath;
+		PartPath = FinalPath + ".part";
+		File.open(PartPath, std::ios::binary | std::ios::trunc);
+		if (!File)
+		{
+			Reply(500, "Cannot create transfer file");
+			return;
+		}
+		Transfer->State = "uploading";
+		Transfer->Error.clear();
+		Transfer->Bytes = 0;
+		Transfer->UpdatedAt = IsoNow();
+		Transfer->LastActivity = std::chrono::steady_clock::now();
+		const std::size_t PrefixBytes = static_cast<std::size_t>(std::min<std::uint64_t>(Request.Body.size(), Request.ContentLength));
+		if (PrefixBytes != 0)
+		{
+			File.write(Request.Body.data(), static_cast<std::streamsize>(PrefixBytes));
+			Written = PrefixBytes;
+		}
+		if (!File)
+		{
+			Fail("Cannot write transfer file");
+			return;
+		}
+		UpdateProgress();
+		if (Written == Request.ContentLength) Finish();
+		else Read();
+	}
+
+private:
+	void Read()
+	{
+		const std::size_t Wanted = static_cast<std::size_t>(std::min<std::uint64_t>(Buffer.size(), Request.ContentLength - Written));
+		auto Self = shared_from_this();
+		Socket.async_read_some(asio::buffer(Buffer.data(), Wanted), [Self](const asio::error_code& Error, const std::size_t Bytes)
+		{
+			if (Error || Bytes == 0)
+			{
+				Self->Fail("Upload ended before Content-Length");
+				return;
+			}
+			Self->File.write(Self->Buffer.data(), static_cast<std::streamsize>(Bytes));
+			if (!Self->File)
+			{
+				Self->Fail("Cannot write transfer file");
+				return;
+			}
+			Self->Written += Bytes;
+			Self->UpdateProgress();
+			if (Self->Written == Self->Request.ContentLength) Self->Finish();
+			else Self->Read();
+		});
+	}
+
+	void UpdateProgress()
+	{
+		if (TransferState* Transfer = State->FindTransfer(TransferId))
+		{
+			Transfer->Bytes = Written;
+			Transfer->UpdatedAt = IsoNow();
+			Transfer->LastActivity = std::chrono::steady_clock::now();
+		}
+	}
+
+	void Finish()
+	{
+		File.close();
+		std::error_code Error;
+		std::filesystem::remove(FinalPath, Error);
+		Error.clear();
+		std::filesystem::rename(PartPath, FinalPath, Error);
+		if (Error)
+		{
+			Fail("Cannot finalize transfer file");
+			return;
+		}
+		if (TransferState* Transfer = State->FindTransfer(TransferId))
+		{
+			Transfer->State = "ready";
+			Transfer->Bytes = Written;
+			Transfer->UpdatedAt = IsoNow();
+			Transfer->LastActivity = std::chrono::steady_clock::now();
+		}
+		Json Result;
+		Result.SetObject();
+		AddString(Result, "status", "ready");
+		AddUnsigned(Result, "bytes", Written);
+		ReplyJson(200, Result);
+	}
+
+	void Fail(const std::string& Message)
+	{
+		File.close();
+		std::error_code Ignored;
+		std::filesystem::remove(PartPath, Ignored);
+		if (TransferState* Transfer = State->FindTransfer(TransferId))
+		{
+			Transfer->State = "failed";
+			Transfer->Error = Message;
+			Transfer->UpdatedAt = IsoNow();
+			Transfer->LastActivity = std::chrono::steady_clock::now();
+		}
+		Reply(500, Message);
+	}
+
+	void Reply(const int Status, const std::string& Message)
+	{
+		ReplyJson(Status, ErrorJson(Message));
+	}
+
+	void ReplyJson(const int Status, const Json& Body)
+	{
+		Response = EncodeResponse({ Status, "application/json; charset=utf-8", Serialize(Body), { { "Cache-Control", "no-store" } } });
+		auto Self = shared_from_this();
+		asio::async_write(Socket, asio::buffer(Response), [Self](const asio::error_code&, std::size_t)
+		{
+			asio::error_code Ignored;
+			Self->Socket.shutdown(Tcp::socket::shutdown_both, Ignored);
+			Self->Socket.close(Ignored);
+		});
+	}
+
+	Tcp::socket Socket;
+	std::shared_ptr<HostState> State;
+	HttpRequest Request;
+	std::string TransferId;
+	std::string FinalPath;
+	std::string PartPath;
+	std::ofstream File;
+	std::array<char, 64 * 1024> Buffer{};
+	std::uint64_t Written = 0;
+	std::string Response;
+};
+
+class DownloadSession final : public std::enable_shared_from_this<DownloadSession>
+{
+public:
+	DownloadSession(Tcp::socket Socket, std::string Path, std::string Filename, const std::uint64_t Size)
+		: Socket(std::move(Socket)), File(std::move(Path), std::ios::binary), Remaining(Size)
+	{
+		Header = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Length: " +
+		         std::to_string(Size) + "\r\nContent-Disposition: attachment; filename=\"" + SafeFilename(Filename) +
+		         "\"\r\nX-Content-Type-Options: nosniff\r\n\r\n";
+	}
+
+	void Start()
+	{
+		if (!File)
+		{
+			Close();
+			return;
+		}
+		auto Self = shared_from_this();
+		asio::async_write(Socket, asio::buffer(Header), [Self](const asio::error_code& Error, std::size_t)
+		{
+			if (Error) Self->Close();
+			else Self->WriteChunk();
+		});
+	}
+
+private:
+	void WriteChunk()
+	{
+		if (Remaining == 0)
+		{
+			Close();
+			return;
+		}
+		const std::size_t Wanted = static_cast<std::size_t>(std::min<std::uint64_t>(Buffer.size(), Remaining));
+		File.read(Buffer.data(), static_cast<std::streamsize>(Wanted));
+		const std::size_t Read = static_cast<std::size_t>(File.gcount());
+		if (Read == 0)
+		{
+			Close();
+			return;
+		}
+		auto Self = shared_from_this();
+		asio::async_write(Socket, asio::buffer(Buffer.data(), Read), [Self, Read](const asio::error_code& Error, std::size_t)
+		{
+			if (Error)
+			{
+				Self->Close();
+				return;
+			}
+			Self->Remaining -= Read;
+			Self->WriteChunk();
+		});
+	}
+
+	void Close()
+	{
+		asio::error_code Ignored;
+		Socket.shutdown(Tcp::socket::shutdown_both, Ignored);
+		Socket.close(Ignored);
+	}
+
+	Tcp::socket Socket;
+	std::ifstream File;
+	std::uint64_t Remaining = 0;
+	std::string Header;
+	std::array<char, 64 * 1024> Buffer{};
+};
+
+class TraceForwardSession final : public std::enable_shared_from_this<TraceForwardSession>
+{
+public:
+	using Completion = std::function<void(bool, std::string)>;
+
+	TraceForwardSession(asio::io_context& Io, std::string Path, const std::uint16_t Port, Completion Complete)
+		: Socket(Io), File(std::move(Path), std::ios::binary), Endpoint(asio::ip::address_v4::loopback(), Port),
+		  Complete(std::move(Complete))
+	{
+	}
+
+	void Start()
+	{
+		std::array<char, 4> Magic{};
+		if (!File.read(Magic.data(), static_cast<std::streamsize>(Magic.size())) || Magic != std::array<char, 4>{ 'T', 'R', 'C', '2' })
+		{
+			Finish(false, "File does not start with TRC2");
+			return;
+		}
+		File.clear();
+		File.seekg(0);
+		auto Self = shared_from_this();
+		Socket.async_connect(Endpoint, [Self](const asio::error_code& Error)
+		{
+			if (Error)
+			{
+				Self->Finish(false, "Cannot connect to Unreal Trace Server on port " + std::to_string(Self->Endpoint.port()));
+				return;
+			}
+			Self->WriteChunk();
+		});
+	}
+
+private:
+	void WriteChunk()
+	{
+		File.read(Buffer.data(), static_cast<std::streamsize>(Buffer.size()));
+		const std::size_t Bytes = static_cast<std::size_t>(File.gcount());
+		if (Bytes == 0)
+		{
+			Finish(File.eof(), File.eof() ? std::string{} : "Cannot read trace file");
+			return;
+		}
+		auto Self = shared_from_this();
+		asio::async_write(Socket, asio::buffer(Buffer.data(), Bytes), [Self](const asio::error_code& Error, std::size_t)
+		{
+			if (Error) Self->Finish(false, "Trace forwarding was interrupted");
+			else Self->WriteChunk();
+		});
+	}
+
+	void Finish(const bool Success, std::string Error)
+	{
+		asio::error_code Ignored;
+		Socket.shutdown(Tcp::socket::shutdown_both, Ignored);
+		Socket.close(Ignored);
+		if (Complete)
+		{
+			Completion Callback = std::move(Complete);
+			Callback(Success, std::move(Error));
+		}
+	}
+
+	Tcp::socket Socket;
+	std::ifstream File;
+	Tcp::endpoint Endpoint;
+	Completion Complete;
+	std::array<char, 64 * 1024> Buffer{};
 };
 
 class HttpSession final : public std::enable_shared_from_this<HttpSession>
@@ -915,6 +1432,12 @@ private:
 				return;
 			}
 			std::make_shared<DeviceSession>(std::move(Socket), State, Request.RawHeader, std::move(Request.Body))->Start();
+			return;
+		}
+		if (!Dashboard && Request.Method == "PUT" && Request.Path.find("/device/transfers/") == 0)
+		{
+			if (Request.Body.size() > Request.ContentLength) Request.Body.resize(static_cast<std::size_t>(Request.ContentLength));
+			std::make_shared<UploadSession>(std::move(Socket), State, std::move(Request))->Start();
 			return;
 		}
 		const std::size_t Maximum = Request.Path.find("/device/transfers/") == 0
@@ -1007,6 +1530,17 @@ private:
 				return;
 			}
 		}
+		const std::string TransferPrefix = "/api/transfers/";
+		if (Request.Path.find(TransferPrefix) == 0)
+		{
+			RouteTransfer(Request.Path.substr(TransferPrefix.size()));
+			return;
+		}
+		if (Request.Method == "GET")
+		{
+			ServeStatic();
+			return;
+		}
 		ReplyJson(404, ErrorJson("Route not found"));
 	}
 
@@ -1067,6 +1601,16 @@ private:
 				ReplyJson(400, ErrorJson("Invalid JSON"));
 				return;
 			}
+			if (Action == "transfers")
+			{
+				const std::string Result = State->CreateTransfer(DeviceId,
+				                                                StringMember(Body, "root"),
+				                                                StringMember(Body, "path"),
+				                                                BoolMember(Body, "archive"));
+				if (Result.empty()) ReplyJson(404, ErrorJson("Device is offline or transfer path is invalid"));
+				else Reply({ 202, "application/json; charset=utf-8", Result, { { "Cache-Control", "no-store" } } });
+				return;
+			}
 			if (Action == "command")
 			{
 				AddString(Message, "type", "execute_command");
@@ -1111,6 +1655,114 @@ private:
 		}
 	}
 
+	void RouteTransfer(const std::string& Remainder)
+	{
+		const std::size_t Slash = Remainder.find('/');
+		const std::string Id = Remainder.substr(0, Slash);
+		const std::string Action = Slash == std::string::npos ? std::string{} : Remainder.substr(Slash + 1);
+		TransferState* Transfer = State->FindTransfer(Id);
+		if (!Transfer)
+		{
+			ReplyJson(404, ErrorJson("Unknown transfer"));
+			return;
+		}
+		if (Action.empty() && Request.Method == "GET")
+		{
+			Reply({ 200, "application/json; charset=utf-8", State->TransferJson(*Transfer), { { "Cache-Control", "no-store" } } });
+			return;
+		}
+		if (Action == "download" && Request.Method == "GET")
+		{
+			if (Transfer->State != "ready")
+			{
+				ReplyJson(409, ErrorJson("Transfer is not ready"));
+				return;
+			}
+			std::error_code Error;
+			const std::uint64_t Size = std::filesystem::file_size(Transfer->LocalPath, Error);
+			if (Error)
+			{
+				ReplyJson(404, ErrorJson("Transfer file is missing"));
+				return;
+			}
+			Replied = true;
+			std::make_shared<DownloadSession>(std::move(Socket), Transfer->LocalPath, Transfer->Filename, Size)->Start();
+			return;
+		}
+		if (Action == "trace" && Request.Method == "POST")
+		{
+			if (Transfer->State != "ready")
+			{
+				ReplyJson(409, ErrorJson("Transfer is not ready"));
+				return;
+			}
+			auto Self = shared_from_this();
+			std::make_shared<TraceForwardSession>(State->Io, Transfer->LocalPath, State->Config.TracePort,
+				[Self](const bool Success, std::string Error)
+				{
+					if (!Success)
+					{
+						Self->ReplyJson(502, ErrorJson(Error.empty() ? "Trace forwarding failed" : Error));
+						return;
+					}
+					Json Result;
+					Result.SetObject();
+					AddString(Result, "status", "sent");
+					Self->ReplyJson(200, Result);
+				})->Start();
+			return;
+		}
+		ReplyJson(404, ErrorJson("Route not found"));
+	}
+
+	void ServeStatic()
+	{
+		if (State->Config.WebRoot.empty())
+		{
+			ReplyJson(404, ErrorJson("File not found"));
+			return;
+		}
+		const std::string Relative = Request.Path == "/" ? "index.html" : Request.Path.substr(1);
+		const std::string Normalized = NormalizeRelativePath(Relative);
+		if (Normalized.empty() || Normalized != Relative)
+		{
+			ReplyJson(403, ErrorJson("Invalid path"));
+			return;
+		}
+		std::error_code Error;
+		const std::filesystem::path Root = std::filesystem::weakly_canonical(State->Config.WebRoot, Error);
+		if (Error)
+		{
+			ReplyJson(404, ErrorJson("File not found"));
+			return;
+		}
+		const std::filesystem::path Full = std::filesystem::weakly_canonical(Root / Normalized, Error);
+		if (Error)
+		{
+			ReplyJson(404, ErrorJson("File not found"));
+			return;
+		}
+		const std::filesystem::path RelativeCheck = std::filesystem::relative(Full, Root, Error);
+		if (Error || RelativeCheck.empty() || *RelativeCheck.begin() == "..")
+		{
+			ReplyJson(403, ErrorJson("Invalid path"));
+			return;
+		}
+		std::ifstream File(Full, std::ios::binary);
+		if (!File)
+		{
+			ReplyJson(404, ErrorJson("File not found"));
+			return;
+		}
+		std::string Body((std::istreambuf_iterator<char>(File)), std::istreambuf_iterator<char>());
+		const bool Immutable = Normalized.find("assets/") == 0;
+		Reply({ 200,
+		        ContentTypeForPath(Full),
+		        std::move(Body),
+		        { { "Cache-Control", Immutable ? "public, max-age=31536000, immutable" : "no-cache" },
+		          { "Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'" } } });
+	}
+
 	void ReplyJson(const int Status, const Json& Body)
 	{
 		Reply({ Status, "application/json; charset=utf-8", Serialize(Body), { { "Cache-Control", "no-store" } } });
@@ -1148,11 +1800,15 @@ private:
 struct HostRuntime::Implementation
 {
 	Implementation(asio::io_context& Io, const HostConfig& Config, BoundEndpoints Endpoints, std::string Manifest)
-		: State(std::make_shared<HostState>(Io, Config, std::move(Endpoints), std::move(Manifest)))
+		: State(std::make_shared<HostState>(Io, Config, Endpoints, std::move(Manifest))),
+		  Mdns(std::make_unique<MdnsAdvertiser>(Io, Config, std::move(Endpoints)))
 	{
+		State->StartMaintenance();
+		(void) Mdns->Start();
 	}
 
 	std::shared_ptr<HostState> State;
+	std::unique_ptr<MdnsAdvertiser> Mdns;
 };
 
 HostRuntime::HostRuntime(asio::io_context& Io,
@@ -1172,6 +1828,8 @@ void HostRuntime::Accept(Tcp::socket Socket, const bool Dashboard)
 
 void HostRuntime::Stop()
 {
+	Impl->Mdns->Stop();
+	Impl->State->StopMaintenance();
 	for (auto& Pair : Impl->State->Devices)
 	{
 		if (const std::shared_ptr<DeviceChannel> Channel = Pair.second.Channel.lock()) Channel->Close();

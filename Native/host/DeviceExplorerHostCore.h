@@ -31,6 +31,8 @@ struct HostConfig
 	std::size_t LogCapacity = 100000;
 	std::uint64_t MaximumTransferBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 	std::chrono::milliseconds RequestTimeout{ 10000 };
+	std::chrono::seconds TransferTtl{ 1800 };
+	std::chrono::seconds DisconnectedDeviceTtl{ 3600 };
 	std::string BuildId = "unknown";
 	LogCallback Log;
 };
