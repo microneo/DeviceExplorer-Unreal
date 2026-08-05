@@ -11,6 +11,14 @@
 #include <string_view>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// windows.h defines min and max as macros, which breaks std::numeric_limits::max.
+// The identity tests compile this file without the host's Asio compile definitions.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Windows.h>
 #else
 #include <sys/stat.h>
