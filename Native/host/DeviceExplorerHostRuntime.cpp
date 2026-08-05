@@ -555,8 +555,8 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			{
 				Transfer->State = "failed";
 				Transfer->Error = StringMember(Message, "error");
-					Transfer->UpdatedAt = IsoNow();
-					Transfer->LastActivity = std::chrono::steady_clock::now();
+				Transfer->UpdatedAt = IsoNow();
+				Transfer->LastActivity = std::chrono::steady_clock::now();
 			}
 			return;
 		}
@@ -1440,10 +1440,9 @@ private:
 			std::make_shared<UploadSession>(std::move(Socket), State, std::move(Request))->Start();
 			return;
 		}
-		const std::size_t Maximum = Request.Path.find("/device/transfers/") == 0
-			? 0
-			: MaximumJsonBytes;
-		if (Request.ContentLength > Maximum && Maximum != 0)
+		// Everything past this point buffers the whole body before it is routed. The
+		// upload, which streams to disk instead, has already been dispatched above.
+		if (Request.ContentLength > MaximumJsonBytes)
 		{
 			ReplyJson(413, ErrorJson("Request body is too large"));
 			return;
