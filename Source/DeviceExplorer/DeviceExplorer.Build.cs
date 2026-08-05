@@ -33,7 +33,8 @@ public class DeviceExplorer : ModuleRules
             PublicFrameworks.AddRange(new[]
             {
                 "CFNetwork",
-                "Foundation"
+                "Foundation",
+                "Network"
             });
         }
     }
