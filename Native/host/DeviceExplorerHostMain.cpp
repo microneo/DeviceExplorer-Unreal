@@ -99,11 +99,27 @@ bool SplitUnrealArgument(const std::string_view Argument, const std::string_view
 	return true;
 }
 
+#if defined(_WIN32)
+// The narrow environment block is encoded in the active code page, so a user profile
+// outside it would resolve to a different directory than the Editor, which reads the
+// wide value. Both sides must agree: this path carries the singleton lock.
+std::filesystem::path EnvironmentPath(const wchar_t* Name)
+{
+	const DWORD Length = GetEnvironmentVariableW(Name, nullptr, 0);
+	if (Length == 0) return {};
+	std::wstring Value(Length, L'\0');
+	const DWORD Written = GetEnvironmentVariableW(Name, Value.data(), Length);
+	if (Written == 0 || Written >= Length) return {};
+	Value.resize(Written);
+	return std::filesystem::path(std::move(Value));
+}
+#endif
+
 std::filesystem::path DefaultStateDirectory()
 {
 #if defined(_WIN32)
-	const char* Base = std::getenv("LOCALAPPDATA");
-	return Base && *Base ? std::filesystem::path(Base) / "DeviceExplorer" / "Host" : std::filesystem::path{};
+	const std::filesystem::path Base = EnvironmentPath(L"LOCALAPPDATA");
+	return Base.empty() ? std::filesystem::path{} : Base / "DeviceExplorer" / "Host";
 #elif defined(__APPLE__)
 	const char* Home = std::getenv("HOME");
 	return Home && *Home ? std::filesystem::path(Home) / "Library" / "Application Support" / "DeviceExplorer" / "Host" : std::filesystem::path{};
