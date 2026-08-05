@@ -65,6 +65,7 @@ int main()
 	Config.DashboardPort = 0;
 	Config.DeviceAddress = "127.0.0.1";
 	Config.DevicePort = 0;
+	Config.Token = "integration-test-token-that-is-long-enough";
 	Config.BuildId = "integration-test";
 	DeviceExplorer::Host::HostCore Host(std::move(Config));
 	std::string Error;
@@ -98,7 +99,7 @@ int main()
 	CHECK(ConfigResponse.find("HTTP/1.1 200 OK") == 0);
 	CHECK(Body(ConfigResponse).find("\"device_port\":" + std::to_string(Endpoints.DevicePort)) != std::string::npos);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/missing").find("HTTP/1.1 404 Not Found") == 0);
-	CHECK(Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/device/connect").find("HTTP/1.1 503 Service Unavailable") == 0);
+	CHECK(Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/device/connect").find("HTTP/1.1 400 Bad Request") == 0);
 
 	Done.store(true);
 	EventLoop.join();
@@ -108,6 +109,7 @@ int main()
 	UnsafeConfig.DashboardAddress = "0.0.0.0";
 	UnsafeConfig.DashboardPort = 0;
 	UnsafeConfig.DevicePort = 0;
+	UnsafeConfig.Token = "integration-test-token-that-is-long-enough";
 	DeviceExplorer::Host::HostCore UnsafeHost(std::move(UnsafeConfig));
 	CHECK(!UnsafeHost.Start(Error));
 	CHECK(Error.find("loopback") != std::string::npos);

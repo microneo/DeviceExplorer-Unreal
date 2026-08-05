@@ -4,6 +4,7 @@
 #include "Containers/RingBuffer.h"
 #include "DeviceExplorerAuth.h"
 #include "DeviceExplorerHostManifest.h"
+#include "DeviceExplorerHostBuildId.h"
 #include "DeviceExplorerHostMdns.h"
 #include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerTypes.h"
@@ -16,7 +17,6 @@
 #include "HAL/PlatformTime.h"
 #include "IPAddress.h"
 #include "Misc/FileHelper.h"
-#include "Misc/App.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
@@ -228,12 +228,9 @@ void SendJsonError(FSocket* Socket, const int32 Status, const FString& Error)
 void SendHostManifest(FSocket* Socket)
 {
 	DeviceExplorer::Wire::HostManifest Manifest;
-	const FString BuildVersion = FApp::GetBuildVersion();
-	if (!BuildVersion.IsEmpty())
-	{
-		const FTCHARToUTF8 BuildId(*BuildVersion);
-		Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
-	}
+	const FString BuildVersion = GetDeviceExplorerLegacyHostBuildId();
+	const FTCHARToUTF8 BuildId(*BuildVersion);
+	Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
 	std::string Json;
 	if (!DeviceExplorer::Wire::SerializeHostManifest(Manifest, Json))
 	{

@@ -50,35 +50,40 @@ legacy baseline.
 See `Tests/Autobahn/README.md` for both directions of the RFC 6455 conformance
 run and the explicitly excluded performance/compression groups.
 
-## Standalone host migration
+## Standalone host
 
-The first D2 vertical slice builds two additional targets:
+D2 builds two additional targets:
 
 - `dexp-host-core`, a process-independent static library owning the standalone
   Asio event loop and listeners;
 - `dexp-host`, a thin executable for arguments, signals, logging, and process
   exit.
 
-It already exposes real listeners with bounded HTTP headers, loopback-only
-dashboard binding, IPv4-only device binding, port `0` support, and these routes
-on both listeners:
+The host exposes bounded HTTP and WebSocket parsing, a loopback-only dashboard,
+an IPv4 device listener, port `0` support, and these routes on both listeners:
 
 ```text
 GET /health
 GET /host-manifest
 ```
 
-The dashboard listener additionally exposes `GET /api/config`. The manifest is
-the same portable schema served by the existing UE host and printed by:
+The dashboard serves the committed WebUI and the complete protocol-10 API for
+device registry, logs, console, commands, file browsing, data modules, streamed
+file/directory transfers, and trace forwarding. The device listener accepts
+mutually authenticated WebSocket sessions and credentialed streaming uploads.
+It also advertises `_deviceexplorer._tcp.local.` with the token fingerprint.
+
+The manifest is the same portable schema served by the legacy UE host and is
+printed without opening listeners by:
 
 ```sh
 build/native/dexp-host --version-json
 ```
 
-This executable is intentionally a migration checkpoint, not yet a replacement
-for `DeviceExplorerHost`: `/device/connect` returns `503` until authenticated
-device sessions and the existing dashboard API move into `dexp-host-core`. The
-UE host remains the production path for at least that milestone.
+`dexp-host` uses a per-user lock so two editor processes do not start competing
+hosts. Pass `--state-dir` to isolate integration tests. Transfers are written to
+`.part` files and atomically renamed only after the declared content length has
+arrived; stale transfers and disconnected devices expire automatically.
 
 Standalone Asio is pinned by commit and fetched during CMake configure. For an
 offline or centrally managed dependency, point CMake at an existing checkout:
@@ -98,6 +103,17 @@ Convenience wrappers configure, build, and run the complete native test suite:
 Scripts/BuildDeviceExplorerNativeHost.sh
 ```
 
-`dexp-host-integration-tests` binds both listeners to ephemeral ports and checks
-health, the compatibility manifest, the config response, failure routes, and
-the dashboard loopback invariant over real TCP.
+Add `-Install` on PowerShell or `--install` as the third shell argument to copy
+the executable into a versioned per-user directory and atomically switch
+`current.txt`. The Editor prefers this installed native host after checking its
+manifest and falls back to the legacy project binary for one migration
+milestone. Running binaries are never overwritten.
+
+The build id is regenerated at build time, not configure time. Source archives
+without Git metadata can provide `-DDEVICEEXPLORER_BUILD_ID_OVERRIDE=...`.
+
+`dexp-host-integration-tests` checks listener and routing invariants over real
+TCP. When Python is available, `dexp-host-production-smoke` additionally starts
+an isolated executable and verifies mutual authentication, logs, a proxied
+command, streaming upload/download, trace forwarding, WebUI security headers,
+and the per-user singleton lock.

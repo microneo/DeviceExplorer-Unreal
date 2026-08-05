@@ -7,7 +7,11 @@ param(
 
     [string] $AsioRoot,
 
-    [switch] $SkipTests
+    [switch] $SkipTests,
+
+    [switch] $Install,
+
+    [string] $InstallRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +43,18 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) {
         throw "Native host tests failed with exit code $LASTEXITCODE."
     }
+}
+
+if ($Install) {
+    $Candidates = @(
+        (Join-Path $BuildDir "$Configuration/dexp-host.exe"),
+        (Join-Path $BuildDir "dexp-host.exe")
+    )
+    $Executable = $Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($Executable)) {
+        throw "Cannot locate dexp-host.exe below $BuildDir."
+    }
+    & (Join-Path $PSScriptRoot "InstallDeviceExplorerNativeHost.ps1") -Executable $Executable -InstallRoot $InstallRoot
 }
 
 Write-Host "DeviceExplorer native host built in $BuildDir." -ForegroundColor Green

@@ -17,6 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check explicit source list
         run: python Scripts/CheckWireSources.py
+      - name: Cache pinned Asio sources
+        uses: actions/cache@v4
+        with:
+          path: build/native-${{ matrix.unity }}/_deps
+          key: asio-${{ runner.os }}-${{ matrix.unity }}-8806a6803cde7054c3049d3666d3ec36786568c5
       - name: Configure
         run: cmake -S Native -B build/native-${{ matrix.unity }} -DCMAKE_BUILD_TYPE=Release -DCMAKE_UNITY_BUILD=${{ matrix.unity }}
       - name: Build

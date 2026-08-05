@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -23,6 +24,15 @@ struct HostConfig
 	std::uint16_t DashboardPort = 18080;
 	std::string DeviceAddress = "0.0.0.0";
 	std::uint16_t DevicePort = 18081;
+	std::string Token;
+	std::string WebRoot;
+	std::string TransferDirectory;
+	std::uint16_t TracePort = 1981;
+	std::size_t LogCapacity = 100000;
+	std::uint64_t MaximumTransferBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+	std::chrono::milliseconds RequestTimeout{ 10000 };
+	std::chrono::seconds TransferTtl{ 1800 };
+	std::chrono::seconds DisconnectedDeviceTtl{ 3600 };
 	std::string BuildId = "unknown";
 	LogCallback Log;
 };

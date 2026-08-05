@@ -1,3 +1,4 @@
+#include "DeviceExplorerAuthPrimitives.h"
 #include "DeviceExplorerHttpUpgrade.h"
 #include "DeviceExplorerHostManifest.h"
 #include "DeviceExplorerJson.h"
@@ -32,6 +33,22 @@ void Check(const bool Condition, const char* Expression, const int Line)
 std::vector<std::uint8_t> Bytes(const std::string& Text)
 {
 	return { Text.begin(), Text.end() };
+}
+
+void TestAuthPrimitives()
+{
+	using namespace DeviceExplorer::Wire::Auth;
+	const std::string ClientNonce = "0123456789abcdef0123456789abcdef";
+	const std::string HostNonce = "00000000000000000000000000000000";
+	CHECK(ComputeProof("token", HostProofLabel, ClientNonce, HostNonce) ==
+	      "e5ad3480f24e7d81df61e1ce266ec2bea161e0c6abfe2ca702dedb12e4d6725f");
+	CHECK(ComputeProof("token", DeviceProofLabel, ClientNonce, HostNonce) ==
+	      "4cd37f68e1756ece49d208b6f35b2c6f83708d6a5036da8a4195e16a5d4ef887");
+	CHECK(ComputeTokenFingerprint("token") == "1ec0cfe231196ff9");
+	CHECK(IsValidNonce(ClientNonce));
+	CHECK(!IsValidNonce("0123456789ABCDEF0123456789ABCDEF"));
+	CHECK(ConstantTimeEquals("proof", "proof"));
+	CHECK(!ConstantTimeEquals({}, {}));
 }
 
 void TestHttpUpgrade()
@@ -738,6 +755,7 @@ void TestRegisteredCloseCodes()
 
 int main()
 {
+	TestAuthPrimitives();
 	TestHttpUpgrade();
 	TestHostManifest();
 	TestMdnsCodec();

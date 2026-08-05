@@ -1,10 +1,10 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Ticker.h"
 #include "DeviceExplorerHostApplication.h"
+#include "DeviceExplorerHostBuildId.h"
 #include "DeviceExplorerHostManifest.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
-#include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/Parse.h"
@@ -31,12 +31,9 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 	if (FParse::Param(FCommandLine::Get(), TEXT("VersionJson")))
 	{
 		DeviceExplorer::Wire::HostManifest Manifest;
-		const FString BuildVersion = FApp::GetBuildVersion();
-		if (!BuildVersion.IsEmpty())
-		{
-			const FTCHARToUTF8 BuildId(*BuildVersion);
-			Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
-		}
+		const FString BuildVersion = GetDeviceExplorerLegacyHostBuildId();
+		const FTCHARToUTF8 BuildId(*BuildVersion);
+		Manifest.BuildId.assign(BuildId.Get(), static_cast<std::size_t>(BuildId.Length()));
 		std::string Json;
 		const bool bSerialized = DeviceExplorer::Wire::SerializeHostManifest(Manifest, Json);
 		if (bSerialized)
