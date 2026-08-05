@@ -10,5 +10,8 @@ public class DeviceExplorerWire : ModuleRules
         bEnableExceptions = false;
         bUseRTTI = false;
         CppStandard = CppStandardVersion.Cpp20;
+
+        // Only Unreal/ uses Core, to route this module's allocation through FMemory.
+        PrivateDependencyModuleNames.Add("Core");
     }
 }
