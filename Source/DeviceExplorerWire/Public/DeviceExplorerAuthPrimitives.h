@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DeviceExplorerWebSocket.h"
+
 #include <cstddef>
 #include <string>
 #include <string_view>
