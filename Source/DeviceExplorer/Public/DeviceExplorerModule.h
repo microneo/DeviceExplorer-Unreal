@@ -23,11 +23,14 @@ public:
 private:
 	void RegisterDefaultFeatures();
 	bool Tick(float DeltaTime);
+	bool ResolveCandidateToken(FDeviceExplorerEndpointCandidate& Candidate);
 	void OnEndpointEvent(EDeviceExplorerEndpointEvent Event, FDeviceExplorerEndpointCandidate Candidate);
 	void Connect(FDeviceExplorerEndpointCandidate Candidate);
 	void Disconnect();
 	void ConnectManually(const TArray<FString>& Arguments);
 	void UnpinManualEndpoint(const TArray<FString>& Arguments);
+	void SendAuthRequest();
+	bool HandleAuthMessage(const FString& Type, const TSharedPtr<class FJsonObject>& Message);
 	void SendHello();
 	void SendHeartbeat();
 	void HandleMessage(const FString& Message);
@@ -41,6 +44,7 @@ private:
 	void StartUpload(const FString& TransferId, const FString& UploadURL, const FString& UploadPath, const FString& ArchivePath);
 	void SendTransferFailure(const FString& TransferId, const FString& Error);
 	void SendJson(const TSharedRef<class FJsonObject>& Message);
+	void SendUnauthenticatedJson(const TSharedRef<class FJsonObject>& Message);
 	FString GetOrCreateDeviceId() const;
 
 	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> EndpointSources;
@@ -53,9 +57,13 @@ private:
 	IConsoleObject* ConnectConsoleCommand = nullptr;
 	IConsoleObject* UnpinConsoleCommand = nullptr;
 
+	TOptional<FDeviceExplorerEndpointCandidate> AuthenticatingCandidate;
 	FString DeviceId;
+	FString ClientNonce;
 	double LastHeartbeatSeconds = 0.0;
 	uint64 ConnectionGeneration = 0;
 	bool bConnecting = false;
+	bool bAuthenticated = false;
+	bool bLoggedFingerprintMismatch = false;
 	bool bStarted = false;
 };

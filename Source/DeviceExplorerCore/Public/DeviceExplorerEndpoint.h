@@ -72,12 +72,16 @@ struct FDeviceExplorerEndpointCandidate
 	FString CandidateId;
 	FDeviceExplorerResolvedEndpoint Endpoint;
 	FString Token;
+	FString HostFingerprint;
 	FString Instance;
 	bool bManual = false;
 
 	bool IsValid() const
 	{
-		return !ProviderId.IsNone() && !CandidateId.IsEmpty() && Endpoint.IsUsable() && !Token.IsEmpty();
+		// A discovery source reports where a host is and which token it claims, never the
+		// token itself, so either one identifies a usable candidate.
+		return !ProviderId.IsNone() && !CandidateId.IsEmpty() && Endpoint.IsUsable() &&
+		       (!Token.IsEmpty() || !HostFingerprint.IsEmpty());
 	}
 
 	FString Key() const

@@ -13,6 +13,8 @@ public class DeviceExplorerEditor : ModuleRules
             "CoreUObject",
             "DesktopPlatform",
             "DeveloperSettings",
+            "DeviceExplorer",
+            "DeviceExplorerCore",
             "Engine",
             "Projects",
             "Settings",

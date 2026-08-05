@@ -34,7 +34,7 @@ std::vector<std::uint8_t> Bytes(const std::string& Text)
 
 void TestHttpUpgrade()
 {
-	CHECK(DeviceExplorer::DeviceProtocolVersion == 9);
+	CHECK(DeviceExplorer::DeviceProtocolVersion == 10);
 	const std::string Key = "dGhlIHNhbXBsZSBub25jZQ==";
 	std::string Accept;
 	CHECK(MakeWebSocketAccept(Key, Accept));
@@ -205,7 +205,7 @@ void TestMdnsCodec()
 	MdnsServiceAnnouncement Source;
 	Source.InstanceName = "DeviceExplorer-test._deviceexplorer._tcp.local";
 	Source.HostName = "test-deviceexplorer.local";
-	Source.Token = "golden-token";
+	Source.TokenFingerprint = "0123456789abcdef";
 	Source.DevicePort = 18081;
 	Source.DashboardPort = 18080;
 	Source.ProtocolVersion = DeviceExplorer::DeviceProtocolVersion;
@@ -220,7 +220,7 @@ void TestMdnsCodec()
 	CHECK(Parsed.Announcement.ServiceName == Source.ServiceName);
 	CHECK(Parsed.Announcement.InstanceName == Source.InstanceName);
 	CHECK(Parsed.Announcement.HostName == Source.HostName);
-	CHECK(Parsed.Announcement.Token == Source.Token);
+	CHECK(Parsed.Announcement.TokenFingerprint == Source.TokenFingerprint);
 	CHECK(Parsed.Announcement.DevicePort == Source.DevicePort);
 	CHECK(Parsed.Announcement.DashboardPort == Source.DashboardPort);
 	CHECK(Parsed.Announcement.ProtocolVersion == Source.ProtocolVersion);
@@ -233,18 +233,18 @@ void TestMdnsCodec()
 	CHECK(Goodbye.Status == MdnsStatus::Complete);
 	CHECK(Goodbye.Announcement.TimeToLive == 0);
 
-	std::vector<std::uint8_t> MissingToken = Packet;
-	const std::vector<std::uint8_t> TokenKey = Bytes("token=");
-	const auto TokenPosition = std::search(MissingToken.begin(), MissingToken.end(), TokenKey.begin(), TokenKey.end());
-	CHECK(TokenPosition != MissingToken.end());
-	if (TokenPosition != MissingToken.end())
+	std::vector<std::uint8_t> MissingFingerprint = Packet;
+	const std::vector<std::uint8_t> FingerprintKey = Bytes("fp=");
+	const auto FingerprintPosition = std::search(MissingFingerprint.begin(), MissingFingerprint.end(), FingerprintKey.begin(), FingerprintKey.end());
+	CHECK(FingerprintPosition != MissingFingerprint.end());
+	if (FingerprintPosition != MissingFingerprint.end())
 	{
-		*(TokenPosition + 1) = static_cast<std::uint8_t>('a');
+		*(FingerprintPosition + 1) = static_cast<std::uint8_t>('a');
 	}
-	const MdnsAnnouncementParseResult MissingTokenResult =
-		ParseMdnsAnnouncement({ MissingToken.data(), MissingToken.size() });
-	CHECK(MissingTokenResult.Status == MdnsStatus::Error);
-	CHECK(MissingTokenResult.Error == MdnsError::MissingToken);
+	const MdnsAnnouncementParseResult MissingFingerprintResult =
+		ParseMdnsAnnouncement({ MissingFingerprint.data(), MissingFingerprint.size() });
+	CHECK(MissingFingerprintResult.Status == MdnsStatus::Error);
+	CHECK(MissingFingerprintResult.Error == MdnsError::MissingFingerprint);
 
 	const MdnsAnnouncementParseResult OtherService =
 		ParseMdnsAnnouncement({ Packet.data(), Packet.size() }, "_different._tcp.local");

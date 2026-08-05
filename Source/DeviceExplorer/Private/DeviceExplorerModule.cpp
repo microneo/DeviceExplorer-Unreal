@@ -3,19 +3,20 @@
 #include "Async/Async.h"
 #include "Containers/StringConv.h"
 #include "Containers/Ticker.h"
+#include "DeviceExplorerAuth.h"
 #include "DeviceExplorerCommandCapture.h"
 #include "DeviceExplorerConnectionCoordinator.h"
 #include "DeviceExplorerConsoleCatalog.h"
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
 #include "DeviceExplorerLogService.h"
+#include "DeviceExplorerSettings.h"
 #include "DeviceExplorerTrace.h"
 #include "DeviceExplorerTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineGlobals.h"
-#include "GenericPlatform/GenericPlatformHttp.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -29,10 +30,12 @@
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/App.h"
 #include "Misc/Build.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Crc.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/Guid.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/StringOutputDevice.h"
 #include "Modules/ModuleManager.h"
@@ -52,9 +55,9 @@ namespace
 constexpr int64 ArchiveStreamChunkSize = 1 << 20;    // keeps memory flat regardless of source file size
 const FName RuntimeOwner(TEXT("DeviceExplorerRuntime"));
 
-FString BuildWebSocketURL(const FDeviceExplorerResolvedEndpoint& Endpoint, const FString& Token)
+FString BuildWebSocketURL(const FDeviceExplorerResolvedEndpoint& Endpoint)
 {
-	return FString::Printf(TEXT("ws://%s/device/connect?token=%s"), *Endpoint.Serialized.ToString(), *FGenericPlatformHttp::UrlEncode(Token));
+	return FString::Printf(TEXT("ws://%s/device/connect"), *Endpoint.Serialized.ToString());
 }
 
 double GetAppUptimeSeconds()
@@ -645,6 +648,24 @@ void FDeviceExplorerModule::StartupModule()
 #else
 	RegisterDefaultFeatures();
 	bStarted = true;
+
+	FString ProvisionedToken;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("DeviceExplorerToken="), ProvisionedToken))
+	{
+		// A build launched from a device's home screen has no command line.
+		ProvisionedToken = GetDefault<UDeviceExplorerSettings>()->SessionToken.TrimStartAndEnd();
+	}
+	if (!ProvisionedToken.IsEmpty())
+	{
+		if (DeviceExplorer::Auth::IsWeakToken(ProvisionedToken))
+		{
+			UE_LOG(LogDeviceExplorer, Warning,
+			       TEXT("The DeviceExplorer session token is short enough to be guessed offline from the "
+			            "advertised fingerprint. Clear it in project settings to have one generated."));
+		}
+		DeviceExplorer::Auth::SetProvisionedToken(ProvisionedToken);
+	}
+
 	FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
 	DeviceId = GetOrCreateDeviceId();
 	LogService = MakeUnique<FDeviceExplorerLogService>([this](const TSharedRef<FJsonObject>& Message) { SendJson(Message); });
@@ -829,7 +850,7 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 		}
 	}
 
-	if (Socket.IsValid() && Socket->IsConnected())
+	if (bAuthenticated && Socket.IsValid() && Socket->IsConnected())
 	{
 		LogService->Flush();
 		if (Now - LastHeartbeatSeconds >= 5.0)
@@ -841,10 +862,47 @@ bool FDeviceExplorerModule::Tick(float DeltaTime)
 	return true;
 }
 
+bool FDeviceExplorerModule::ResolveCandidateToken(FDeviceExplorerEndpointCandidate& Candidate)
+{
+	// A source that carries no token was told where a host is, not which token it holds.
+	if (Candidate.Token.IsEmpty())
+	{
+		Candidate.Token = DeviceExplorer::Auth::GetProvisionedToken();
+	}
+	if (Candidate.Token.IsEmpty())
+	{
+		UE_LOG(LogDeviceExplorer, Verbose, TEXT("Ignoring %s: no session token was provisioned"),
+		       *Candidate.Endpoint.Serialized.ToString());
+		return false;
+	}
+
+	// Selects our host among several; a copied fingerprint still fails the challenge.
+	if (!Candidate.HostFingerprint.IsEmpty() &&
+	    !DeviceExplorer::Auth::ConstantTimeEquals(Candidate.HostFingerprint,
+	                                              DeviceExplorer::Auth::ComputeTokenFingerprint(Candidate.Token)))
+	{
+		// Reported once: foreign hosts are normal on a shared network, but without any
+		// report a host started without a matching -Token looks like no host at all.
+		if (!bLoggedFingerprintMismatch)
+		{
+			bLoggedFingerprintMismatch = true;
+			UE_LOG(LogDeviceExplorer, Warning, TEXT("Ignoring %s and any other host whose token differs from this build's"),
+			       *Candidate.Endpoint.Serialized.ToString());
+		}
+		return false;
+	}
+	return true;
+}
+
 void FDeviceExplorerModule::OnEndpointEvent(const EDeviceExplorerEndpointEvent Event, FDeviceExplorerEndpointCandidate Candidate)
 {
 	// Source callbacks can arrive after ShutdownModule() clears bStarted.
 	if (!bStarted || !ConnectionCoordinator)
+	{
+		return;
+	}
+
+	if (Event != EDeviceExplorerEndpointEvent::Removed && !ResolveCandidateToken(Candidate))
 	{
 		return;
 	}
@@ -871,7 +929,8 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 	Disconnect();
 	bConnecting = true;
 	const uint64 AttemptGeneration = ConnectionGeneration;
-	const FString URL = BuildWebSocketURL(Candidate.Endpoint, Candidate.Token);
+	const FString URL = BuildWebSocketURL(Candidate.Endpoint);
+	AuthenticatingCandidate = Candidate;
 	Socket = FWebSocketsModule::Get().CreateWebSocket(URL);
 
 	Socket->OnConnected().AddLambda(
@@ -883,9 +942,9 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 			}
 			bConnecting = false;
 			LastHeartbeatSeconds = 0.0;
-			ConnectionCoordinator->MarkConnected(Candidate);
-			SendHello();
-			UE_LOG(LogDeviceExplorer, Display, TEXT("Connected to %s via %s"), *Candidate.Endpoint.Serialized.ToString(), *Candidate.ProviderId.ToString());
+			SendAuthRequest();
+			UE_LOG(LogDeviceExplorer, Display, TEXT("Authenticating with %s via %s"),
+			       *Candidate.Endpoint.Serialized.ToString(), *Candidate.ProviderId.ToString());
 		});
 	Socket->OnConnectionError().AddLambda(
 		[this, AttemptGeneration, Candidate](const FString& Error)
@@ -923,6 +982,9 @@ void FDeviceExplorerModule::Disconnect()
 {
 	++ConnectionGeneration;
 	bConnecting = false;
+	bAuthenticated = false;
+	AuthenticatingCandidate.Reset();
+	ClientNonce.Reset();
 	if (!Socket.IsValid())
 	{
 		return;
@@ -1079,6 +1141,78 @@ void FDeviceExplorerModule::SendHello()
 	SendJson(Message);
 }
 
+void FDeviceExplorerModule::SendAuthRequest()
+{
+	bAuthenticated = false;
+	ClientNonce = DeviceExplorer::Auth::MakeNonce();
+
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("auth_request"));
+	Message->SetNumberField(TEXT("protocol_version"), DeviceExplorer::ProtocolVersion);
+	Message->SetStringField(TEXT("client_nonce"), ClientNonce);
+	SendUnauthenticatedJson(Message);
+}
+
+bool FDeviceExplorerModule::HandleAuthMessage(const FString& Type, const TSharedPtr<FJsonObject>& Message)
+{
+	if (!AuthenticatingCandidate.IsSet() || !ConnectionCoordinator)
+	{
+		return false;
+	}
+
+	if (Type == TEXT("auth_challenge"))
+	{
+		FString HostNonce;
+		FString HostProof;
+		Message->TryGetStringField(TEXT("host_nonce"), HostNonce);
+		Message->TryGetStringField(TEXT("host_proof"), HostProof);
+
+		const FString Endpoint = AuthenticatingCandidate->Endpoint.Serialized.ToString();
+		const FString Expected = DeviceExplorer::Auth::ComputeProof(
+			AuthenticatingCandidate->Token, DeviceExplorer::Auth::HostProofLabel, ClientNonce, HostNonce);
+		if (!DeviceExplorer::Auth::IsValidNonce(HostNonce) ||
+		    !DeviceExplorer::Auth::ConstantTimeEquals(HostProof, Expected))
+		{
+			UE_LOG(LogDeviceExplorer, Warning, TEXT("%s could not prove it holds our session token; disconnecting"), *Endpoint);
+			ConnectionCoordinator->MarkFailed(*AuthenticatingCandidate, FPlatformTime::Seconds());
+			// Close instead of Disconnect: this runs inside the socket's own message
+			// delegate, and Disconnect releases the socket. OnClosed does the cleanup.
+			Socket->Close();
+			return true;
+		}
+
+		TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
+		Response->SetStringField(TEXT("type"), TEXT("auth_response"));
+		Response->SetStringField(TEXT("client_proof"),
+		                         DeviceExplorer::Auth::ComputeProof(AuthenticatingCandidate->Token,
+		                                                           DeviceExplorer::Auth::DeviceProofLabel,
+		                                                           ClientNonce, HostNonce));
+		SendUnauthenticatedJson(Response);
+		return true;
+	}
+
+	if (Type == TEXT("auth_error"))
+	{
+		FString Error;
+		Message->TryGetStringField(TEXT("error"), Error);
+		UE_LOG(LogDeviceExplorer, Warning, TEXT("%s refused authentication: %s"),
+		       *AuthenticatingCandidate->Endpoint.Serialized.ToString(), *Error);
+		return true;
+	}
+
+	if (Type == TEXT("auth_ok"))
+	{
+		bAuthenticated = true;
+		ConnectionCoordinator->MarkConnected(*AuthenticatingCandidate);
+		UE_LOG(LogDeviceExplorer, Display, TEXT("Connected to %s via %s"),
+		       *AuthenticatingCandidate->Endpoint.Serialized.ToString(), *AuthenticatingCandidate->ProviderId.ToString());
+		SendHello();
+		return true;
+	}
+
+	return false;
+}
+
 void FDeviceExplorerModule::SendHeartbeat()
 {
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
@@ -1097,6 +1231,14 @@ void FDeviceExplorerModule::HandleMessage(const FString& Message)
 	}
 
 	const FString Type = Json->GetStringField(TEXT("type"));
+	if (HandleAuthMessage(Type, Json))
+	{
+		return;
+	}
+	if (!bAuthenticated)
+	{
+		return;
+	}
 	if (LogService && LogService->HandleMessage(Type, Json))
 	{
 		return;
@@ -1613,6 +1755,15 @@ void FDeviceExplorerModule::SendTransferFailure(const FString& TransferId, const
 }
 
 void FDeviceExplorerModule::SendJson(const TSharedRef<FJsonObject>& Message)
+{
+	if (!bAuthenticated)
+	{
+		return;
+	}
+	SendUnauthenticatedJson(Message);
+}
+
+void FDeviceExplorerModule::SendUnauthenticatedJson(const TSharedRef<FJsonObject>& Message)
 {
 	if (!Socket.IsValid() || !Socket->IsConnected())
 	{

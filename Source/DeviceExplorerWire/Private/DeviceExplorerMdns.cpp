@@ -328,7 +328,7 @@ bool EncodeMdnsAnnouncement(const MdnsServiceAnnouncement& Announcement,
 	                        MdnsError* OutError)
 {
 	if (Announcement.DevicePort == 0 || Announcement.InstanceName.empty() ||
-	    Announcement.HostName.empty() || Announcement.Token.empty() ||
+	    Announcement.HostName.empty() || Announcement.TokenFingerprint.empty() ||
 	    Announcement.IPv4Addresses.empty() || Announcement.IPv4Addresses.size() > 65532)
 	{
 		SetError(OutError, MdnsError::InvalidAnnouncement);
@@ -359,9 +359,9 @@ bool EncodeMdnsAnnouncement(const MdnsServiceAnnouncement& Announcement,
 
 	std::vector<std::uint8_t> TxtData;
 	const std::string Version = "version=" + std::to_string(Announcement.ProtocolVersion);
-	const std::string Token = "token=" + Announcement.Token;
+	const std::string Fingerprint = "fp=" + Announcement.TokenFingerprint;
 	const std::string DashboardPort = "ui_port=" + std::to_string(Announcement.DashboardPort);
-	if (!AddTxtString(TxtData, Version) || !AddTxtString(TxtData, Token) ||
+	if (!AddTxtString(TxtData, Version) || !AddTxtString(TxtData, Fingerprint) ||
 	    !AddTxtString(TxtData, DashboardPort) ||
 	    !AddRecord(Records, Announcement.InstanceName, DnsTypeTxt, 0x8001,
 	               Announcement.TimeToLive, TxtData))
@@ -522,7 +522,7 @@ MdnsAnnouncementParseResult ParseMdnsAnnouncement(const ByteView Packet,
 				const std::string_view Key = Entry.substr(0, Equals);
 				const std::string_view Value = Entry.substr(Equals + 1);
 				std::uint32_t ParsedNumber = 0;
-				if (NamesEqual(Key, "token")) Announcement.Token = std::string(Value);
+				if (NamesEqual(Key, "fp")) Announcement.TokenFingerprint = std::string(Value);
 				else if (NamesEqual(Key, "version") &&
 				         ParseDecimal(Value, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), ParsedNumber))
 				{
@@ -538,7 +538,7 @@ MdnsAnnouncementParseResult ParseMdnsAnnouncement(const ByteView Packet,
 		IncludeTtl(MinimumTtl, Record.TimeToLive);
 		break;
 	}
-	if (Announcement.Token.empty()) return AnnouncementError(MdnsError::MissingToken);
+	if (Announcement.TokenFingerprint.empty()) return AnnouncementError(MdnsError::MissingFingerprint);
 
 	for (const ResourceRecord& Record : Records)
 	{
@@ -568,7 +568,7 @@ const char* MdnsErrorText(const MdnsError Error)
 		case MdnsError::InvalidAnnouncement: return "invalid mDNS announcement";
 		case MdnsError::MissingService: return "mDNS service not present";
 		case MdnsError::MissingServiceRecord: return "mDNS SRV record not present";
-		case MdnsError::MissingToken: return "mDNS token TXT entry not present";
+		case MdnsError::MissingFingerprint: return "mDNS fingerprint TXT entry not present";
 	}
 	return "unknown mDNS error";
 }

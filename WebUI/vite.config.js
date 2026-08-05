@@ -8,7 +8,7 @@ import { DEVICEEXPLORER_PROTOCOL_VERSION } from "./protocol-version.js";
 const webUiRoot = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(webUiRoot, "..");
 const outputDirectory = path.join(pluginRoot, "Resources", "Web");
-const protocolHeader = path.join(pluginRoot, "Source", "DeviceExplorerCore", "Public", "DeviceExplorerTypes.h");
+const protocolHeader = path.join(pluginRoot, "Source", "DeviceExplorerWire", "Public", "DeviceExplorerProtocol.h");
 
 function verifyProtocolVersion() {
   if (!existsSync(protocolHeader)) return;

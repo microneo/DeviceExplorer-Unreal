@@ -187,12 +187,12 @@ FString DataToString(NSData* Data)
 		return;
 	}
 
-	FString Token;
+	FString Fingerprint;
 	NSData* TXTRecord = Sender.TXTRecordData;
 	if (TXTRecord != nil)
 	{
 		NSDictionary<NSString*, NSData*>* Values = [NSNetService dictionaryFromTXTRecordData:TXTRecord];
-		Token = DataToString(Values[@"token"]);
+		Fingerprint = DataToString(Values[@"fp"]);
 	}
 
 	const bool bWasPublished = [PublishedServiceNames containsObject:Sender.name];
@@ -202,7 +202,7 @@ FString DataToString(NSData* Data)
 	const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
 	AsyncTask(ENamedThreads::GameThread,
 	          [CallbackCopy, Event = bWasPublished ? EDeviceExplorerEndpointEvent::Updated : EDeviceExplorerEndpointEvent::Added,
-	           Host = MoveTemp(Host), Token = MoveTemp(Token), Instance, Port]() mutable
+	           Host = MoveTemp(Host), Fingerprint = MoveTemp(Fingerprint), Instance, Port]() mutable
 	          {
 				  if (CallbackCopy)
 				  {
@@ -212,7 +212,7 @@ FString DataToString(NSData* Data)
 					  Candidate.Endpoint.Serialized.Address = MoveTemp(Host);
 					  Candidate.Endpoint.Serialized.Port = Port;
 					  Candidate.Endpoint.Serialized.Family = EDeviceExplorerAddressFamily::IPv4;
-					  Candidate.Token = MoveTemp(Token);
+					  Candidate.HostFingerprint = MoveTemp(Fingerprint);
 					  Candidate.Instance = Instance;
 					  CallbackCopy(Event, MoveTemp(Candidate));
 				  }

@@ -29,7 +29,7 @@ enum class MdnsError : std::uint8_t
 	InvalidAnnouncement,
 	MissingService,
 	MissingServiceRecord,
-	MissingToken
+	MissingFingerprint
 };
 
 struct MdnsQueryMatch
@@ -43,7 +43,8 @@ struct MdnsServiceAnnouncement
 	std::string ServiceName = DeviceExplorerMdnsServiceName;
 	std::string InstanceName;
 	std::string HostName;
-	std::string Token;
+	// Public label from the host's session token; the token itself never leaves the host.
+	std::string TokenFingerprint;
 	std::uint16_t DevicePort = 0;
 	std::uint16_t DashboardPort = 0;
 	std::int32_t ProtocolVersion = 0;

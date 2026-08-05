@@ -1,6 +1,7 @@
 #include "DeviceExplorerHostMdns.h"
 
 #include "Containers/StringConv.h"
+#include "DeviceExplorerAuth.h"
 #include "DeviceExplorerMdns.h"
 #include "DeviceExplorerProtocol.h"
 #include "HAL/PlatformProcess.h"
@@ -50,10 +51,10 @@ FString SafeDnsLabel(FString Value)
 }
 }    // namespace
 
-FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const int32 InDashboardPort, FString InToken)
+FDeviceExplorerHostMdns::FDeviceExplorerHostMdns(const int32 InDevicePort, const int32 InDashboardPort, const FString& InToken)
 	: DevicePort(InDevicePort)
 	, DashboardPort(InDashboardPort)
-	, Token(MoveTemp(InToken))
+	, TokenFingerprint(DeviceExplorer::Auth::ComputeTokenFingerprint(InToken))
 	, ServiceName(UTF8_TO_TCHAR(DeviceExplorer::Wire::DeviceExplorerMdnsServiceName))
 {
 	const FString Machine = SafeDnsLabel(FPlatformProcess::ComputerName());
@@ -220,7 +221,7 @@ TArray<uint8> FDeviceExplorerHostMdns::BuildAnnouncement(const uint32 Ttl) const
 	Announcement.ServiceName = ToUtf8(ServiceName);
 	Announcement.InstanceName = ToUtf8(InstanceName);
 	Announcement.HostName = ToUtf8(HostName);
-	Announcement.Token = ToUtf8(Token);
+	Announcement.TokenFingerprint = ToUtf8(TokenFingerprint);
 	Announcement.DevicePort = static_cast<std::uint16_t>(DevicePort);
 	Announcement.DashboardPort = static_cast<std::uint16_t>(DashboardPort);
 	Announcement.ProtocolVersion = DeviceExplorer::ProtocolVersion;

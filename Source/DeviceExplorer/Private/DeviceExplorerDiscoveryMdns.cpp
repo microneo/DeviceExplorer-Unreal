@@ -77,7 +77,7 @@ bool ParseResponse(const uint8* Data,
 	OutCandidate.Endpoint.Serialized.Address = MoveTemp(HostIp);
 	OutCandidate.Endpoint.Serialized.Port = Result.Announcement.DevicePort;
 	OutCandidate.Endpoint.Serialized.Family = EDeviceExplorerAddressFamily::IPv4;
-	OutCandidate.Token = FromUtf8(Result.Announcement.Token);
+	OutCandidate.HostFingerprint = FromUtf8(Result.Announcement.TokenFingerprint);
 	OutCandidate.Instance = OutCandidate.CandidateId;
 	OutTimeToLive = Result.Announcement.TimeToLive;
 	return true;

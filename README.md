@@ -15,10 +15,21 @@ Features:
 - trace and profiling artifact transfer;
 - reusable C++ runtime modules rendered automatically by the WebUI;
 - standalone host plus Editor start, stop, restart, and dashboard actions;
-- mDNS discovery with manual address and token fallback.
+- mDNS discovery with manual address fallback, and a mutually authenticated device
+  link.
 
 The runtime client is excluded from Shipping builds. The dashboard listener is
-localhost-only.
+localhost-only. A client needs the host's session token before it can connect, and it
+never learns it from the network: discovery only advertises a fingerprint, and host
+and client each prove they hold the token before any data is exchanged.
+
+The Editor writes a token into the project settings the first time it starts the
+host, so any build packaged from the project carries it and connects on its own —
+including a build installed on a device, which has no command line to pass one.
+`-DeviceExplorerToken=<token>` overrides it for a one-off session. Because the token
+is committed with the project and packaged into its builds, everyone holding either
+one can reach a host running that token; clear **Project Settings → Plugins →
+DeviceExplorer (Project) → Session Token** to go back to a token per host session.
 
 ## Requirements
 
@@ -87,6 +98,9 @@ second property. Manual connection remains available:
 -DeviceExplorerServer=<ip>:<port> -DeviceExplorerToken=<token>
 ```
 
+Neither flag is needed when the project carries a session token; the address flag
+only skips discovery. The Editor prints the current token when it starts the host.
+
 The same fallback can be stored in the user-local
 `Saved/Config/<Platform>/GameUserSettings.ini` rather than a project config:
 
@@ -102,9 +116,10 @@ automatic connection remains sticky when other hosts are announced; after a
 disconnect the last working host is tried first and other candidates follow
 with per-endpoint backoff.
 
-The token is sent in plaintext on the local network and identifies a host; it
-is not an authentication secret. Do not commit a real token to
-`DefaultEngine.ini` or another version-controlled file.
+The token is an authentication secret: discovery advertises only a fingerprint of
+it, and host and client each prove they hold it before any data is exchanged. A
+token in `DefaultEngine.ini` is committed with the project and packaged into its
+builds, so treat it as shared with everyone who has either.
 
 ## Components
 
@@ -315,11 +330,9 @@ the generated `Resources/Web` output.
 
 ## Known issues
 
-- Several hosts on one network compete for the same service. A build attaches to
-  the first `_deviceexplorer._tcp` instance that answers, which may belong to
-  another machine, and the token then rejects the connection. Pin the connection
-  with `-DeviceExplorerServer=<ip>:<port> -DeviceExplorerToken=<token>` when more
-  than one host is running.
+- A build ignores announcements whose fingerprint does not match its provisioned
+  token, so several hosts can share a network. A build with no token stays
+  disconnected instead of attaching to whichever host answered first.
 - Platform coverage is partial. The Editor integration is Win64 and Mac only, and
   discovery is exercised on desktop and iOS devices. The iOS Simulator does not
   see the mDNS responses, so it needs the manual address flags. Consoles are
