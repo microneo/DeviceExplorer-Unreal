@@ -1048,7 +1048,8 @@ void FDeviceExplorerHostServer::HandleWebSocket(FSocket* Socket, const FHttpRequ
 					CloseCode = 1007;
 				}
 				else if (Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::FrameTooLarge ||
-				         Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::MessageTooLarge)
+				         Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::MessageTooLarge ||
+				         Decoder.GetError() == DeviceExplorer::Wire::WebSocketError::FrameQueueFull)
 				{
 					CloseCode = 1009;
 				}

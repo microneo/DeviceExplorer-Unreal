@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace DeviceExplorer::Wire
@@ -74,6 +75,8 @@ public:
 	const std::vector<JsonValue>* TryGetObjectValues() const;
 
 	bool Append(JsonValue Value);
+	// Inserts a new case-sensitive key and returns false for a duplicate.
+	bool InsertMember(std::string Key, JsonValue Value);
 	// Replaces an existing member with the same case-sensitive key.
 	bool SetMember(std::string Key, JsonValue Value);
 	const JsonValue* FindMember(std::string_view Key) const;
@@ -88,6 +91,7 @@ private:
 	std::vector<JsonValue> ArrayValues;
 	std::vector<std::string> ObjectKeys;
 	std::vector<JsonValue> ObjectValues;
+	std::unordered_map<std::string, std::size_t> ObjectIndex;
 };
 
 struct DeviceExplorerMessage

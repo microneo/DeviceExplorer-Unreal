@@ -10,8 +10,8 @@
 class FDeviceExplorerConnectionCoordinator;
 class FDeviceExplorerConsoleCatalog;
 class FDeviceExplorerLogService;
+class IDeviceExplorerTransport;
 class IConsoleObject;
-class IWebSocket;
 
 class FDeviceExplorerModule final : public IModuleInterface
 {
@@ -52,7 +52,7 @@ private:
 	TUniquePtr<FDeviceExplorerConnectionCoordinator> ConnectionCoordinator;
 	TUniquePtr<FDeviceExplorerLogService> LogService;
 	TUniquePtr<FDeviceExplorerConsoleCatalog> ConsoleCatalog;
-	TSharedPtr<IWebSocket> Socket;
+	TUniquePtr<IDeviceExplorerTransport> Transport;
 	FTSTicker::FDelegateHandle TickerHandle;
 	IConsoleObject* ConnectConsoleCommand = nullptr;
 	IConsoleObject* UnpinConsoleCommand = nullptr;

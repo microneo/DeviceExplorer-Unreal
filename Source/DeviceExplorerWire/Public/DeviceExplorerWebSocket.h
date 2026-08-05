@@ -56,6 +56,7 @@ enum class WebSocketError : std::uint8_t
 	NonMinimalLength,
 	FrameTooLarge,
 	MessageTooLarge,
+	FrameQueueFull,
 	InvalidControlFrame,
 	InvalidFragmentSequence,
 	InvalidUtf8,
@@ -66,6 +67,7 @@ struct WebSocketLimits
 {
 	std::uint64_t MaximumFramePayloadBytes = 8ULL * 1024ULL * 1024ULL;
 	std::uint64_t MaximumMessagePayloadBytes = 8ULL * 1024ULL * 1024ULL;
+	std::size_t MaximumQueuedFrames = 1024;
 };
 
 struct WebSocketFrame
@@ -99,6 +101,19 @@ private:
 	std::uint64_t FragmentedMessageBytes = 0;
 	std::vector<std::uint8_t> FragmentedText;
 };
+
+// Opaque free-function facade for consumers across a modular UE DLL boundary.
+// The concrete class remains available to monolithic and standalone builds but
+// is intentionally not exported because its STL fields trigger C4251 under UBT.
+struct WebSocketDecoderHandle;
+
+DEVICEEXPLORERWIRE_API WebSocketDecoderHandle* CreateWebSocketDecoder(
+	WebSocketRole LocalRole, WebSocketLimits Limits = {});
+DEVICEEXPLORERWIRE_API void DestroyWebSocketDecoder(WebSocketDecoderHandle* Decoder);
+DEVICEEXPLORERWIRE_API bool ConsumeWebSocketBytes(WebSocketDecoderHandle* Decoder, ByteView Bytes);
+DEVICEEXPLORERWIRE_API bool DrainWebSocketFrame(WebSocketDecoderHandle* Decoder, WebSocketFrame& OutFrame);
+DEVICEEXPLORERWIRE_API WebSocketError GetWebSocketDecoderError(const WebSocketDecoderHandle* Decoder);
+DEVICEEXPLORERWIRE_API const char* GetWebSocketDecoderErrorText(const WebSocketDecoderHandle* Decoder);
 
 DEVICEEXPLORERWIRE_API bool EncodeWebSocketFrame(const WebSocketFrame& Frame,
 	                      WebSocketRole SenderRole,

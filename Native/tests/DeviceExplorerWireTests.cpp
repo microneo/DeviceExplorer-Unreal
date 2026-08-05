@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -40,6 +41,13 @@ void TestHttpUpgrade()
 	CHECK(MakeWebSocketAccept(Key, Accept));
 	CHECK(Accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 	CHECK(!MakeWebSocketAccept("not-base64", Accept));
+	const std::uint8_t Nonce[16] = {
+		't', 'h', 'e', ' ', 's', 'a', 'm', 'p', 'l', 'e', ' ', 'n', 'o', 'n', 'c', 'e'
+	};
+	std::string GeneratedKey;
+	CHECK(MakeWebSocketClientKey({ Nonce, sizeof(Nonce) }, GeneratedKey));
+	CHECK(GeneratedKey == Key);
+	CHECK(!MakeWebSocketClientKey({ Nonce, sizeof(Nonce) - 1 }, GeneratedKey));
 
 	const std::string RequestBytes = SerializeWebSocketUpgradeRequest(
 		"/device/connect?token=golden", "127.0.0.1:18081", Key, { { "X-Test", "one" } });
@@ -151,7 +159,17 @@ void TestHttpUpgrade()
 	                            "Connection: keep-alive\r\nConnection: upgrade");
 	const HttpUpgradeParseResult SplitResponseResult = ParseWebSocketUpgradeResponse(
 		{ reinterpret_cast<const std::uint8_t*>(SplitResponseTokens.data()), SplitResponseTokens.size() }, Accept, Response);
-	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Complete);
+	CHECK(SplitResponseResult.Status == HttpUpgradeStatus::Error);
+	CHECK(SplitResponseResult.Error == HttpUpgradeError::InvalidUpgrade);
+
+	std::string DuplicateResponseUpgrade = ResponseBytes;
+	const std::size_t DuplicateUpgradeEnd = DuplicateResponseUpgrade.find("\r\n\r\n");
+	CHECK(DuplicateUpgradeEnd != std::string::npos);
+	DuplicateResponseUpgrade.insert(DuplicateUpgradeEnd, "\r\nUpgrade: websocket");
+	const HttpUpgradeParseResult DuplicateUpgradeResult = ParseWebSocketUpgradeResponse(
+		{ reinterpret_cast<const std::uint8_t*>(DuplicateResponseUpgrade.data()), DuplicateResponseUpgrade.size() }, Accept, Response);
+	CHECK(DuplicateUpgradeResult.Status == HttpUpgradeStatus::Error);
+	CHECK(DuplicateUpgradeResult.Error == HttpUpgradeError::InvalidUpgrade);
 }
 
 void TestMdnsCodec()
@@ -226,6 +244,29 @@ void TestMdnsCodec()
 	CHECK(Parsed.Announcement.ProtocolVersion == Source.ProtocolVersion);
 	CHECK(Parsed.Announcement.TimeToLive == Source.TimeToLive);
 	CHECK(Parsed.Announcement.IPv4Addresses == Source.IPv4Addresses);
+
+	MdnsServiceAnnouncement EscapedSource = Source;
+	EscapedSource.InstanceName = "DeviceExplorer\\.Lab\\\\One._deviceexplorer._tcp.local";
+	CHECK(EncodeMdnsAnnouncement(EscapedSource, Packet, &Error));
+	const MdnsAnnouncementParseResult Escaped = ParseMdnsAnnouncement({ Packet.data(), Packet.size() });
+	CHECK(Escaped.Status == MdnsStatus::Complete);
+	CHECK(Escaped.Announcement.InstanceName == EscapedSource.InstanceName);
+	std::vector<std::uint8_t> ReencodedEscaped;
+	CHECK(EncodeMdnsAnnouncement(Escaped.Announcement, ReencodedEscaped, &Error));
+	CHECK(ReencodedEscaped == Packet);
+	std::vector<std::uint8_t> LiteralDotQuery;
+	CHECK(EncodeMdnsQuery("literal\\.", LiteralDotQuery, &Error));
+	const MdnsQueryParseResult LiteralDotResult = ParseMdnsQuery(
+		{ LiteralDotQuery.data(), LiteralDotQuery.size() }, "literal\\.", "other.local", "other.local");
+	CHECK(LiteralDotResult.Status == MdnsStatus::Complete);
+	CHECK(LiteralDotResult.Match.Name == "literal\\.");
+
+	std::vector<std::uint8_t> ZeroPadded = Packet;
+	ZeroPadded.insert(ZeroPadded.end(), { 0, 0, 0, 0 });
+	CHECK(ParseMdnsAnnouncement({ ZeroPadded.data(), ZeroPadded.size() }).Status == MdnsStatus::Complete);
+	std::vector<std::uint8_t> NonZeroPadded = Packet;
+	NonZeroPadded.push_back(1);
+	CHECK(ParseMdnsAnnouncement({ NonZeroPadded.data(), NonZeroPadded.size() }).Error == MdnsError::MalformedPacket);
 
 	Source.TimeToLive = 0;
 	CHECK(EncodeMdnsAnnouncement(Source, Packet, &Error));
@@ -357,6 +398,23 @@ void TestJsonCodec()
 
 	CHECK(!ParseJson({ nullptr, 1 }, StringWithNull, {}, &Error));
 	CHECK(Error == JsonError::InvalidInput);
+
+	// Keep this near the default node limit: duplicate detection and lookup must
+	// remain indexed instead of turning a bounded 1 MiB document into O(n^2).
+	std::string WideObject = "{";
+	constexpr std::size_t WideMemberCount = 99000;
+	for (std::size_t Index = 0; Index < WideMemberCount; ++Index)
+	{
+		if (Index > 0) WideObject.push_back(',');
+		WideObject += "\"k" + std::to_string(Index) + "\":0";
+	}
+	WideObject.push_back('}');
+	JsonValue WideValue;
+	CHECK(ParseJson(
+		{ reinterpret_cast<const std::uint8_t*>(WideObject.data()), WideObject.size() }, WideValue, {}, &Error));
+	const std::vector<std::string>* WideKeys = WideValue.TryGetObjectKeys();
+	CHECK(WideKeys != nullptr && WideKeys->size() == WideMemberCount);
+	CHECK(WideValue.FindMember("k98999") != nullptr);
 }
 
 void TestWebSocketRoundTrip()
@@ -390,6 +448,26 @@ void TestWebSocketRoundTrip()
 	CHECK(ClientDecoder.Drain(Decoded));
 	CHECK(Decoded.Opcode == WebSocketOpcode::Pong);
 	CHECK(Decoded.Payload == Pong.Payload);
+}
+
+void TestOpaqueWebSocketDecoder()
+{
+	WebSocketFrame Source;
+	Source.Opcode = WebSocketOpcode::Text;
+	Source.Payload = Bytes("opaque");
+	std::vector<std::uint8_t> Encoded;
+	CHECK(EncodeWebSocketFrame(Source, WebSocketRole::Server, 0, Encoded));
+
+	WebSocketDecoderHandle* Decoder = CreateWebSocketDecoder(WebSocketRole::Client);
+	CHECK(Decoder != nullptr);
+	CHECK(ConsumeWebSocketBytes(Decoder, { Encoded.data(), Encoded.size() }));
+	CHECK(GetWebSocketDecoderError(Decoder) == WebSocketError::None);
+	WebSocketFrame Decoded;
+	CHECK(DrainWebSocketFrame(Decoder, Decoded));
+	CHECK(Decoded.Payload == Source.Payload);
+	DestroyWebSocketDecoder(Decoder);
+	CHECK(!ConsumeWebSocketBytes(nullptr, { Encoded.data(), Encoded.size() }));
+	CHECK(GetWebSocketDecoderError(nullptr) == WebSocketError::InvalidInput);
 }
 
 void TestWebSocketLengthBoundaries()
@@ -495,6 +573,12 @@ void TestInvalidFrames()
 	CHECK(!EncodeWebSocketFrame(BadClose, WebSocketRole::Server, 0, Encoded, &Error));
 	CHECK(Error == WebSocketError::InvalidClosePayload);
 
+	WebSocketFrame BadCloseReason;
+	BadCloseReason.Opcode = WebSocketOpcode::Close;
+	BadCloseReason.Payload = { 0x03, 0xE8, 0xC0, 0x80 };
+	CHECK(!EncodeWebSocketFrame(BadCloseReason, WebSocketRole::Server, 0, Encoded, &Error));
+	CHECK(Error == WebSocketError::InvalidUtf8);
+
 	WebSocketLimits Limits;
 	Limits.MaximumFramePayloadBytes = 16;
 	Limits.MaximumMessagePayloadBytes = 3;
@@ -505,6 +589,52 @@ void TestInvalidFrames()
 	WebSocketDecoder LimitedDecoder(WebSocketRole::Server, Limits);
 	CHECK(!LimitedDecoder.Consume({ Encoded.data(), Encoded.size() }));
 	CHECK(LimitedDecoder.GetError() == WebSocketError::MessageTooLarge);
+
+	WebSocketLimits QueueLimits;
+	QueueLimits.MaximumQueuedFrames = 8;
+	std::vector<std::uint8_t> EmptyFrames;
+	WebSocketFrame Empty;
+	Empty.Opcode = WebSocketOpcode::Binary;
+	for (std::size_t Index = 0; Index < QueueLimits.MaximumQueuedFrames + 1; ++Index)
+	{
+		std::vector<std::uint8_t> OneFrame;
+		CHECK(EncodeWebSocketFrame(Empty, WebSocketRole::Server, 0, OneFrame));
+		EmptyFrames.insert(EmptyFrames.end(), OneFrame.begin(), OneFrame.end());
+	}
+	WebSocketDecoder QueueLimitedDecoder(WebSocketRole::Client, QueueLimits);
+	CHECK(!QueueLimitedDecoder.Consume({ EmptyFrames.data(), EmptyFrames.size() }));
+	CHECK(QueueLimitedDecoder.GetError() == WebSocketError::FrameQueueFull);
+}
+
+void TestDeterministicMalformedInputs()
+{
+	std::uint32_t State = 0xD1C0DEC5U;
+	const auto NextByte = [&State]()
+	{
+		State = State * 1664525U + 1013904223U;
+		return static_cast<std::uint8_t>(State >> 24);
+	};
+	for (std::size_t Iteration = 0; Iteration < 20000; ++Iteration)
+	{
+		State = State * 1664525U + 1013904223U;
+		std::vector<std::uint8_t> Input((State >> 16) % 513U);
+		for (std::uint8_t& Byte : Input) Byte = NextByte();
+		const ByteView View{ Input.data(), Input.size() };
+
+		JsonValue Json;
+		JsonError JsonFailure = JsonError::None;
+		(void) ParseJson(View, Json, {}, &JsonFailure);
+		(void) ParseMdnsAnnouncement(View);
+		(void) ParseMdnsQuery(View, DeviceExplorerMdnsServiceName, "instance.local", "host.local");
+		WebSocketUpgradeRequest Request;
+		(void) ParseWebSocketUpgradeRequest(View, Request);
+		WebSocketUpgradeResponse Response;
+		(void) ParseWebSocketUpgradeResponse(View, "invalid-random-accept", Response);
+		WebSocketDecoder Client(WebSocketRole::Client);
+		WebSocketDecoder Server(WebSocketRole::Server);
+		(void) Client.Consume(View);
+		(void) Server.Consume(View);
+	}
 }
 
 void TestWebSocketBufferedLimit()
@@ -558,9 +688,11 @@ int main()
 	TestMdnsCodec();
 	TestJsonCodec();
 	TestWebSocketRoundTrip();
+	TestOpaqueWebSocketDecoder();
 	TestWebSocketLengthBoundaries();
 	TestFragmentationAndUtf8();
 	TestInvalidFrames();
+	TestDeterministicMalformedInputs();
 	TestWebSocketBufferedLimit();
 	TestRegisteredCloseCodes();
 	if (Failures != 0)

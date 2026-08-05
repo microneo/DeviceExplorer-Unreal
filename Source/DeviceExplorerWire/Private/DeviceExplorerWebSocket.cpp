@@ -3,9 +3,20 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <new>
 
 namespace DeviceExplorer::Wire
 {
+struct WebSocketDecoderHandle
+{
+	explicit WebSocketDecoderHandle(const WebSocketRole LocalRole, const WebSocketLimits Limits)
+		: Decoder(LocalRole, Limits)
+	{
+	}
+
+	WebSocketDecoder Decoder;
+};
+
 namespace
 {
 bool IsKnownOpcode(const std::uint8_t Value)
@@ -65,10 +76,14 @@ bool ValidateCompleteFrame(const WebSocketFrame& Frame, WebSocketError* OutError
 		if (Frame.Payload.size() >= 2)
 		{
 			const std::uint16_t Code = (static_cast<std::uint16_t>(Frame.Payload[0]) << 8) | Frame.Payload[1];
-			if (!IsValidWebSocketCloseCode(Code) ||
-			    !IsValidWebSocketUtf8({ Frame.Payload.data() + 2, Frame.Payload.size() - 2 }))
+			if (!IsValidWebSocketCloseCode(Code))
 			{
 				SetError(OutError, WebSocketError::InvalidClosePayload);
+				return false;
+			}
+			if (!IsValidWebSocketUtf8({ Frame.Payload.data() + 2, Frame.Payload.size() - 2 }))
+			{
+				SetError(OutError, WebSocketError::InvalidUtf8);
 				return false;
 			}
 		}
@@ -234,6 +249,10 @@ bool WebSocketDecoder::ParseAvailable()
 		{
 			return false;
 		}
+		if (Frames.size() >= Limits.MaximumQueuedFrames)
+		{
+			return Fail(WebSocketError::FrameQueueFull);
+		}
 		Frames.push_back(std::move(Frame));
 		Offset += HeaderSize + PayloadBytes;
 	}
@@ -323,12 +342,43 @@ const char* WebSocketDecoder::GetErrorText() const
 		case WebSocketError::NonMinimalLength: return "payload length is not minimally encoded";
 		case WebSocketError::FrameTooLarge: return "frame payload exceeds the limit";
 		case WebSocketError::MessageTooLarge: return "message payload exceeds the limit";
+		case WebSocketError::FrameQueueFull: return "decoded frame queue exceeds the limit";
 		case WebSocketError::InvalidControlFrame: return "invalid control frame";
 		case WebSocketError::InvalidFragmentSequence: return "invalid fragmentation sequence";
 		case WebSocketError::InvalidUtf8: return "invalid UTF-8 text";
 		case WebSocketError::InvalidClosePayload: return "invalid close payload";
 	}
 	return "unknown WebSocket error";
+}
+
+WebSocketDecoderHandle* CreateWebSocketDecoder(const WebSocketRole LocalRole, const WebSocketLimits Limits)
+{
+	return new (std::nothrow) WebSocketDecoderHandle(LocalRole, Limits);
+}
+
+void DestroyWebSocketDecoder(WebSocketDecoderHandle* Decoder)
+{
+	delete Decoder;
+}
+
+bool ConsumeWebSocketBytes(WebSocketDecoderHandle* Decoder, const ByteView Bytes)
+{
+	return Decoder != nullptr && Decoder->Decoder.Consume(Bytes);
+}
+
+bool DrainWebSocketFrame(WebSocketDecoderHandle* Decoder, WebSocketFrame& OutFrame)
+{
+	return Decoder != nullptr && Decoder->Decoder.Drain(OutFrame);
+}
+
+WebSocketError GetWebSocketDecoderError(const WebSocketDecoderHandle* Decoder)
+{
+	return Decoder != nullptr ? Decoder->Decoder.GetError() : WebSocketError::InvalidInput;
+}
+
+const char* GetWebSocketDecoderErrorText(const WebSocketDecoderHandle* Decoder)
+{
+	return Decoder != nullptr ? Decoder->Decoder.GetErrorText() : "WebSocket decoder is null";
 }
 
 bool EncodeWebSocketFrame(const WebSocketFrame& Frame,

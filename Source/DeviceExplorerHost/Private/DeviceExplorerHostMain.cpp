@@ -1,6 +1,7 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Ticker.h"
 #include "DeviceExplorerHostApplication.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/CoreDelegates.h"
 #include "RequiredProgramMainCPPInclude.h"
@@ -20,6 +21,10 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 		}
 	}
 	GEngineLoop.PreInit(FilteredArgV.Num(), FilteredArgV.GetData());
+	// Program targets do not install the Launch graceful-termination handler for
+	// us. Without it, Ctrl+C on Windows terminates the process before mDNS Stop()
+	// can publish the TTL=0 goodbye packet.
+	FPlatformMisc::SetGracefulTerminationHandler();
 
 	FDeviceExplorerHostApplication Application;
 	if (!Application.Initialize())

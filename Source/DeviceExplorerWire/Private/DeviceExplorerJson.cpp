@@ -194,14 +194,14 @@ private:
 			if (Bytes.Data[Offset] != '"') return Fail(JsonError::UnexpectedToken);
 			std::string Key;
 			if (!ParseString(Key)) return false;
-			if (OutValue.FindMember(Key) != nullptr) return Fail(JsonError::DuplicateKey);
 			SkipWhitespace();
 			if (Offset >= Bytes.Size) return Fail(JsonError::UnexpectedEnd);
 			if (Bytes.Data[Offset] != ':') return Fail(JsonError::UnexpectedToken);
 			++Offset;
 			SkipWhitespace();
 			JsonValue Value;
-			if (!ParseValue(Depth + 1, Value) || !OutValue.SetMember(std::move(Key), std::move(Value))) return false;
+			if (!ParseValue(Depth + 1, Value)) return false;
+			if (!OutValue.InsertMember(std::move(Key), std::move(Value))) return Fail(JsonError::DuplicateKey);
 			SkipWhitespace();
 			if (Offset >= Bytes.Size) return Fail(JsonError::UnexpectedEnd);
 			if (Bytes.Data[Offset] == '}')
@@ -532,6 +532,7 @@ void JsonValue::Reset(const JsonType NewType)
 	ArrayValues.clear();
 	ObjectKeys.clear();
 	ObjectValues.clear();
+	ObjectIndex.clear();
 }
 
 void JsonValue::SetNull()
@@ -622,40 +623,47 @@ bool JsonValue::Append(JsonValue Value)
 	return true;
 }
 
+bool JsonValue::InsertMember(std::string Key, JsonValue Value)
+{
+	if (Type != JsonType::Object || !IsValidUtf8(Key) || ObjectIndex.find(Key) != ObjectIndex.end())
+	{
+		return false;
+	}
+	const std::size_t Index = ObjectKeys.size();
+	ObjectKeys.push_back(Key);
+	ObjectValues.push_back(std::move(Value));
+	ObjectIndex.emplace(std::move(Key), Index);
+	return true;
+}
+
 bool JsonValue::SetMember(std::string Key, JsonValue Value)
 {
 	if (Type != JsonType::Object || !IsValidUtf8(Key)) return false;
-	for (std::size_t Index = 0; Index < ObjectKeys.size(); ++Index)
+	const auto Existing = ObjectIndex.find(Key);
+	if (Existing != ObjectIndex.end())
 	{
-		if (ObjectKeys[Index] == Key)
-		{
-			ObjectValues[Index] = std::move(Value);
-			return true;
-		}
+		ObjectValues[Existing->second] = std::move(Value);
+		return true;
 	}
-	ObjectKeys.push_back(std::move(Key));
+	const std::size_t Index = ObjectKeys.size();
+	ObjectKeys.push_back(Key);
 	ObjectValues.push_back(std::move(Value));
+	ObjectIndex.emplace(std::move(Key), Index);
 	return true;
 }
 
 const JsonValue* JsonValue::FindMember(const std::string_view Key) const
 {
 	if (Type != JsonType::Object) return nullptr;
-	for (std::size_t Index = 0; Index < ObjectKeys.size(); ++Index)
-	{
-		if (ObjectKeys[Index] == Key) return &ObjectValues[Index];
-	}
-	return nullptr;
+	const auto Existing = ObjectIndex.find(std::string(Key));
+	return Existing == ObjectIndex.end() ? nullptr : &ObjectValues[Existing->second];
 }
 
 JsonValue* JsonValue::FindMember(const std::string_view Key)
 {
 	if (Type != JsonType::Object) return nullptr;
-	for (std::size_t Index = 0; Index < ObjectKeys.size(); ++Index)
-	{
-		if (ObjectKeys[Index] == Key) return &ObjectValues[Index];
-	}
-	return nullptr;
+	const auto Existing = ObjectIndex.find(std::string(Key));
+	return Existing == ObjectIndex.end() ? nullptr : &ObjectValues[Existing->second];
 }
 
 bool IsValidJsonNumber(const std::string_view Value)
