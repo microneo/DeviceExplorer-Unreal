@@ -30,8 +30,12 @@ fi
 version_directory="$install_root/versions/$build_id"
 installed_executable="$version_directory/DeviceExplorerHost"
 mkdir -p -- "$version_directory"
-cp -- "$executable" "$installed_executable"
-chmod +x "$installed_executable"
+# Copying straight onto a running host fails with ETXTBSY; a rename replaces the
+# directory entry instead and leaves the running process on the old inode.
+staged="$version_directory/DeviceExplorerHost.$$.tmp"
+cp -- "$executable" "$staged"
+chmod +x "$staged"
+mv -f -- "$staged" "$installed_executable"
 
 temporary_pointer="$install_root/current.txt.$$.tmp"
 printf 'versions/%s/DeviceExplorerHost\n' "$build_id" > "$temporary_pointer"
