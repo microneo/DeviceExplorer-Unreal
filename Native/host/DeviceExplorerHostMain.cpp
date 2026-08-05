@@ -64,7 +64,7 @@ int main(const int ArgCount, char** ArgValues)
 			PrintUsage();
 			return 0;
 		}
-		if (Argument == "--version-json")
+		if (Argument == "--version-json" || Argument == "-VersionJson")
 		{
 			VersionJson = true;
 			continue;
