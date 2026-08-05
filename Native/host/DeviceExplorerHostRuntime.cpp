@@ -381,6 +381,7 @@ struct DeviceState
 	std::string LastSeen;
 	std::uint64_t DroppedLogs = 0;
 	std::uint64_t NextSequence = 1;
+	std::size_t LogBytes = 0;
 	Json Capabilities;
 	Json Commands;
 	Json FileRoots;
@@ -394,6 +395,7 @@ struct PendingRequest
 {
 	explicit PendingRequest(asio::io_context& Io) : Timer(Io) {}
 	asio::steady_timer Timer;
+	std::weak_ptr<DeviceChannel> Channel;
 	std::function<void(std::string)> Complete;
 };
 
@@ -500,6 +502,12 @@ struct HostState : public std::enable_shared_from_this<HostState>
 	{
 		const std::string Id = StringMember(Hello, "device_id");
 		if (Id.empty()) return;
+		if (Devices.find(Id) == Devices.end() && Devices.size() >= Config.MaximumDevices)
+		{
+			Log(LogLevel::Warning, "device registry is full; refusing " + RemoteAddress);
+			Channel->Close();
+			return;
+		}
 		DeviceState& Device = Devices[Id];
 		if (const std::shared_ptr<DeviceChannel> Previous = Device.Channel.lock())
 		{
@@ -567,6 +575,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			if (Found != Pending.end())
 			{
 				const std::shared_ptr<PendingRequest> Request = Found->second;
+				if (Request->Channel.lock() != Channel) return;
 				Pending.erase(Found);
 				Request->Timer.cancel();
 				Request->Complete(Serialize(Message));
@@ -610,10 +619,13 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			if (LogLine.Category.size() > 256) LogLine.Category.resize(256);
 			if (LogLine.Verbosity.size() > 64) LogLine.Verbosity.resize(64);
 			if (LogLine.Message.size() > MaximumLogMessageBytes) LogLine.Message.resize(MaximumLogMessageBytes);
+			Device->LogBytes += LogLine.Timestamp.size() + LogLine.Category.size() + LogLine.Verbosity.size() + LogLine.Message.size();
 			Device->Logs.push_back(std::move(LogLine));
 		}
-		while (Device->Logs.size() > Config.LogCapacity)
+		while (Device->Logs.size() > Config.LogCapacity || Device->LogBytes > Config.LogCapacityBytes)
 		{
+			const LogEntry& Removed = Device->Logs.front();
+			Device->LogBytes -= Removed.Timestamp.size() + Removed.Category.size() + Removed.Verbosity.size() + Removed.Message.size();
 			Device->Logs.pop_front();
 			++Device->DroppedLogs;
 		}
@@ -694,6 +706,8 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		AddUnsigned(Root, "dropped", Found->second.DroppedLogs);
 		AddUnsigned(Root, "buffered", Found->second.Logs.size());
 		AddUnsigned(Root, "capacity", Config.LogCapacity);
+		AddUnsigned(Root, "buffered_bytes", Found->second.LogBytes);
+		AddUnsigned(Root, "capacity_bytes", Config.LogCapacityBytes);
 		return Serialize(Root);
 	}
 
@@ -710,6 +724,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		const std::string Text = Serialize(Message);
 		if (Text.empty()) return false;
 		const std::shared_ptr<PendingRequest> Request = std::make_shared<PendingRequest>(Io);
+		Request->Channel = Channel;
 		Request->Complete = std::move(Complete);
 		Pending.emplace(RequestId, Request);
 		Request->Timer.expires_after(Config.RequestTimeout);
@@ -1490,6 +1505,9 @@ private:
 			Json Result;
 			Result.SetObject();
 			AddString(Result, "status", "ok");
+			AddString(Result, "node_id", State->Config.NodeId);
+			AddUnsigned(Result, "host_session", State->Config.HostSession);
+			AddString(Result, "instance_id", State->Config.InstanceId);
 			ReplyJson(200, Result);
 			return;
 		}
@@ -1510,6 +1528,9 @@ private:
 			AddInteger(Result, "protocol_version", DeviceProtocolVersion);
 			AddInteger(Result, "device_port", State->Endpoints.DevicePort);
 			AddString(Result, "service_type", "_deviceexplorer._tcp.local.");
+			AddString(Result, "node_id", State->Config.NodeId);
+			AddUnsigned(Result, "host_session", State->Config.HostSession);
+			AddString(Result, "instance_id", State->Config.InstanceId);
 			ReplyJson(200, Result);
 			return;
 		}

@@ -115,6 +115,11 @@ bool HostCore::Start(std::string& OutError)
 		OutError = "session token is required";
 		return false;
 	}
+	if (Impl->Config.NodeId.empty() || Impl->Config.HostSession == 0 || Impl->Config.InstanceId.empty())
+	{
+		OutError = "persisted host identity is required";
+		return false;
+	}
 	Wire::HostManifest Manifest;
 	Manifest.BuildId = Impl->Config.BuildId.empty() ? "unknown" : Impl->Config.BuildId;
 	if (!Wire::SerializeHostManifest(Manifest, Impl->ManifestJson))
@@ -151,6 +156,7 @@ bool HostCore::Start(std::string& OutError)
 	Impl->Accept(Impl->DeviceAcceptor, ListenerKind::Device);
 	Impl->Log(LogLevel::Information, "dashboard listening on " + Impl->Endpoints.DashboardAddress + ':' + std::to_string(Impl->Endpoints.DashboardPort));
 	Impl->Log(LogLevel::Information, "device listener on " + Impl->Endpoints.DeviceAddress + ':' + std::to_string(Impl->Endpoints.DevicePort));
+	Impl->Log(LogLevel::Information, "host identity " + Impl->Config.NodeId + " session " + std::to_string(Impl->Config.HostSession));
 	OutError.clear();
 	return true;
 }

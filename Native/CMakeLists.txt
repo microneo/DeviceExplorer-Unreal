@@ -57,6 +57,8 @@ if(DEVICEEXPLORER_BUILD_HOST)
     add_library(dexp-host-core STATIC
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostIdentity.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostIdentity.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.cpp"
@@ -64,6 +66,9 @@ if(DEVICEEXPLORER_BUILD_HOST)
     )
     target_include_directories(dexp-host-core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/host")
     target_link_libraries(dexp-host-core PUBLIC dexp-wire PRIVATE dexp-asio)
+    if(WIN32)
+        target_link_libraries(dexp-host-core PRIVATE iphlpapi)
+    endif()
     target_compile_features(dexp-host-core PUBLIC cxx_std_17)
 
     set(DEVICEEXPLORER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -84,6 +89,20 @@ if(DEVICEEXPLORER_BUILD_HOST)
     target_include_directories(dexp-host PRIVATE "${DEVICEEXPLORER_GENERATED_DIR}")
     target_link_libraries(dexp-host PRIVATE dexp-host-core)
     target_compile_features(dexp-host PRIVATE cxx_std_17)
+    if(APPLE)
+        set(DEVICEEXPLORER_HOST_INFO_PLIST "${DEVICEEXPLORER_GENERATED_DIR}/DeviceExplorerHostInfo.plist")
+        file(MAKE_DIRECTORY "${DEVICEEXPLORER_GENERATED_DIR}")
+        configure_file(
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostInfo.plist.in"
+            "${DEVICEEXPLORER_HOST_INFO_PLIST}"
+            @ONLY
+        )
+        # A command-line Mach-O has no bundle plist for macOS local-network privacy.
+        # Embed the same metadata section that Xcode's INFOPLIST_FILE setting creates.
+        target_link_options(dexp-host PRIVATE
+            "LINKER:-sectcreate,__TEXT,__info_plist,${DEVICEEXPLORER_HOST_INFO_PLIST}"
+        )
+    endif()
 
     foreach(DEVICEEXPLORER_HOST_TARGET dexp-host-core dexp-host)
         if(MSVC)
@@ -105,6 +124,20 @@ if(DEVICEEXPLORER_BUILD_HOST)
             target_compile_options(dexp-host-integration-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
         endif()
         add_test(NAME dexp-host-integration-tests COMMAND dexp-host-integration-tests)
+        add_executable(dexp-host-identity-tests
+            "${CMAKE_CURRENT_LIST_DIR}/tests/DeviceExplorerHostIdentityTests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostIdentity.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostIdentity.h"
+        )
+        target_include_directories(dexp-host-identity-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/host")
+        target_link_libraries(dexp-host-identity-tests PRIVATE dexp-wire)
+        target_compile_features(dexp-host-identity-tests PRIVATE cxx_std_17)
+        if(MSVC)
+            target_compile_options(dexp-host-identity-tests PRIVATE /W4 /WX)
+        else()
+            target_compile_options(dexp-host-identity-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME dexp-host-identity-tests COMMAND dexp-host-identity-tests)
         add_test(NAME dexp-host-version-json COMMAND dexp-host --version-json)
         set_tests_properties(dexp-host-version-json PROPERTIES
             PASS_REGULAR_EXPRESSION "\"manifest_version\":1"

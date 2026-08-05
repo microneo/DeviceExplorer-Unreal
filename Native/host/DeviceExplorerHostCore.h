@@ -27,8 +27,13 @@ struct HostConfig
 	std::string Token;
 	std::string WebRoot;
 	std::string TransferDirectory;
+	std::string NodeId;
+	std::uint64_t HostSession = 0;
+	std::string InstanceId;
 	std::uint16_t TracePort = 1981;
 	std::size_t LogCapacity = 100000;
+	std::size_t LogCapacityBytes = 16 * 1024 * 1024;
+	std::size_t MaximumDevices = 1024;
 	std::uint64_t MaximumTransferBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 	std::chrono::milliseconds RequestTimeout{ 10000 };
 	std::chrono::seconds TransferTtl{ 1800 };

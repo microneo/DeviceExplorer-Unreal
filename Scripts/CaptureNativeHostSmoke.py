@@ -119,6 +119,7 @@ def main() -> int:
 
     device_id = "native-host-smoke"
     connection = connect_device(args.host, args.device_port, args.token, args.timeout)
+    second_connection: socket.socket | None = None
     try:
         connection.sendall(encode_json_frame({
             "type": "hello",
@@ -154,6 +155,18 @@ def main() -> int:
         if status != 200 or json_body(body)["entries"][0]["message"] != "streamed through native host":
             raise RuntimeError("log stream did not reach the dashboard")
 
+        second_connection = connect_device(args.host, args.device_port, args.token, args.timeout)
+        second_connection.sendall(encode_json_frame({
+            "type": "hello",
+            "device_id": "native-host-smoke-peer",
+            "name": "NativeHostSmokePeer",
+            "protocol_version": PROTOCOL_VERSION,
+            "capabilities": [],
+            "commands": [],
+            "file_roots": [],
+            "data_modules": [],
+        }))
+
         proxy_result: dict[str, Any] = {}
         def post_command() -> None:
             proxy_result["response"] = http_request(
@@ -169,6 +182,15 @@ def main() -> int:
         command_thread = threading.Thread(target=post_command)
         command_thread.start()
         _, command = recv_json_frame(connection, "execute_command")
+        second_connection.sendall(encode_json_frame({
+            "type": "command_result",
+            "request_id": command["request_id"],
+            "success": True,
+            "output": "wrong channel",
+        }))
+        time.sleep(0.05)
+        if not command_thread.is_alive():
+            raise RuntimeError("a different authenticated channel completed a pending request")
         connection.sendall(encode_json_frame({
             "type": "command_result",
             "request_id": command["request_id"],
@@ -252,6 +274,8 @@ def main() -> int:
         if status != 200 or "content-security-policy" not in headers or b"DeviceExplorer" not in index:
             raise RuntimeError("dashboard static files were not served securely")
     finally:
+        if second_connection is not None:
+            second_connection.close()
         connection.close()
 
     print("native host production smoke passed")

@@ -85,6 +85,18 @@ hosts. Pass `--state-dir` to isolate integration tests. Transfers are written to
 `.part` files and atomically renamed only after the declared content length has
 arrived; stale transfers and disconnected devices expire automatically.
 
+The same state directory contains an atomically replaced `identity.json`.
+`NodeId` remains stable for that OS user, `HostSession` is incremented and
+persisted before listeners or mDNS start, and `InstanceId` changes for every
+process. `/health` and `/api/config` expose the three values for diagnostics.
+The identity store also provides the monotonic `AdvancePast()` operation needed
+when a future peer reports a newer remembered session.
+
+Authenticated devices are bounded: the registry accepts at most 1024 entries
+and each device log ring is limited both by line count and by 16 MiB of payload.
+Pending request ids are accepted only from the device channel to which the
+request was sent.
+
 Standalone Asio is pinned by commit and fetched during CMake configure. For an
 offline or centrally managed dependency, point CMake at an existing checkout:
 
@@ -102,6 +114,9 @@ Convenience wrappers configure, build, and run the complete native test suite:
 ```sh
 Scripts/BuildDeviceExplorerNativeHost.sh
 ```
+
+On macOS and Linux, `Scripts/BuildDeviceExplorer.sh --install` provides the
+user-facing option form used by the Editor workflow.
 
 Add `-Install` on PowerShell or `--install` as the third shell argument to copy
 the executable into a versioned per-user directory and atomically switch
