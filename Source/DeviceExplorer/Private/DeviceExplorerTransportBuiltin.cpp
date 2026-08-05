@@ -126,7 +126,7 @@ public:
 		Socket->SetNoDelay(true);
 
 		bool bValidAddress = false;
-		TSharedRef<FInternetAddr> RemoteAddress = SocketSubsystem->CreateInternetAddr();
+		RemoteAddress = SocketSubsystem->CreateInternetAddr();
 		RemoteAddress->SetIp(*Endpoint.Serialized.Address, bValidAddress);
 		RemoteAddress->SetPort(Endpoint.Serialized.Port);
 		if (!bValidAddress)
@@ -144,18 +144,15 @@ public:
 		}
 		State = EDeviceExplorerBuiltinState::Connecting;
 		DeadlineSeconds = FPlatformTime::Seconds() + DeviceExplorerConnectTimeoutSeconds;
-		const bool bConnectedImmediately = Socket->Connect(*RemoteAddress);
-		if (bConnectedImmediately)
-		{
-			BeginHandshake();
-		}
-		else
+		// This only starts the connect: FSocket::Connect() reports success for EWOULDBLOCK
+		// too, so the outcome belongs to the probe in Tick and not to this return value.
+		if (!Socket->Connect(*RemoteAddress))
 		{
 			const ESocketErrors Error = SocketSubsystem->GetLastErrorCode();
 			if (Error != SE_NO_ERROR && Error != SE_EWOULDBLOCK && Error != SE_EINPROGRESS &&
 			    Error != SE_EALREADY)
 			{
-				Fail(FString::Printf(TEXT("TCP connect failed (socket error %d)"), static_cast<int32>(Error)));
+				Fail(FString::Printf(TEXT("TCP connect failed (%s)"), SocketSubsystem->GetSocketError(Error)));
 			}
 		}
 	}
@@ -224,34 +221,29 @@ public:
 private:
 	bool ProbeCompletedConnect()
 	{
-		if (!Socket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::Zero())) return true;
-
-		// On Windows a refused non-blocking connect is writable too, and
-		// GetConnectionState() consequently reports SCS_Connected. A peek
-		// distinguishes the completed error from a successful idle connection:
-		// success has no bytes yet and reports would-block, while SO_ERROR is
-		// surfaced by Recv as the actual connect failure.
-		uint8 Probe = 0;
-		int32 Read = 0;
-		if (Socket->Recv(&Probe, 1, Read, ESocketReceiveFlags::Peek))
+		if (Socket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::Zero()))
 		{
-			if (Read == 0)
-			{
-				Fail(TEXT("TCP peer closed during connect"));
-				return false;
-			}
 			BeginHandshake();
 			return true;
 		}
 
+		// Windows reports a refused connect through neither writability nor
+		// GetConnectionState(), which stays SCS_NotConnected for the whole attempt.
+		// Reissuing the connect is the one call that answers: it reports EISCONN once
+		// the handshake completed and the real failure once it did not.
 		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		Socket->Connect(*RemoteAddress);
 		const ESocketErrors Error = SocketSubsystem->GetLastErrorCode();
-		if (Error == SE_NO_ERROR || Error == SE_EWOULDBLOCK)
+		if (Error == SE_EISCONN)
 		{
 			BeginHandshake();
 			return true;
 		}
-		Fail(FString::Printf(TEXT("TCP connect failed (socket error %d)"), static_cast<int32>(Error)));
+		if (Error == SE_NO_ERROR || Error == SE_EWOULDBLOCK || Error == SE_EINPROGRESS || Error == SE_EALREADY)
+		{
+			return true;
+		}
+		Fail(FString::Printf(TEXT("TCP connect failed (%s)"), SocketSubsystem->GetSocketError(Error)));
 		return false;
 	}
 
@@ -554,6 +546,7 @@ private:
 			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
 			Socket = nullptr;
 		}
+		RemoteAddress.Reset();
 		DeviceExplorer::Wire::DestroyWebSocketDecoder(Decoder);
 		Decoder = nullptr;
 	}
@@ -582,6 +575,7 @@ private:
 
 	FDeviceExplorerTransportCallbacks Callbacks;
 	FSocket* Socket = nullptr;
+	TSharedPtr<FInternetAddr> RemoteAddress;
 	EDeviceExplorerBuiltinState State = EDeviceExplorerBuiltinState::Idle;
 	FString Host;
 	std::string ExpectedAccept;
