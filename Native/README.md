@@ -49,3 +49,55 @@ legacy baseline.
 
 See `Tests/Autobahn/README.md` for both directions of the RFC 6455 conformance
 run and the explicitly excluded performance/compression groups.
+
+## Standalone host migration
+
+The first D2 vertical slice builds two additional targets:
+
+- `dexp-host-core`, a process-independent static library owning the standalone
+  Asio event loop and listeners;
+- `dexp-host`, a thin executable for arguments, signals, logging, and process
+  exit.
+
+It already exposes real listeners with bounded HTTP headers, loopback-only
+dashboard binding, IPv4-only device binding, port `0` support, and these routes
+on both listeners:
+
+```text
+GET /health
+GET /host-manifest
+```
+
+The dashboard listener additionally exposes `GET /api/config`. The manifest is
+the same portable schema served by the existing UE host and printed by:
+
+```sh
+build/native/dexp-host --version-json
+```
+
+This executable is intentionally a migration checkpoint, not yet a replacement
+for `DeviceExplorerHost`: `/device/connect` returns `503` until authenticated
+device sessions and the existing dashboard API move into `dexp-host-core`. The
+UE host remains the production path for at least that milestone.
+
+Standalone Asio is pinned by commit and fetched during CMake configure. For an
+offline or centrally managed dependency, point CMake at an existing checkout:
+
+```sh
+cmake -S Native -B build/native -DDEVICEEXPLORER_ASIO_ROOT=/path/to/asio
+```
+
+The path must contain `include/asio.hpp`. It never enters `DeviceExplorerWire`.
+Convenience wrappers configure, build, and run the complete native test suite:
+
+```powershell
+.\Scripts\BuildDeviceExplorerNativeHost.ps1
+```
+
+```sh
+Scripts/BuildDeviceExplorerNativeHost.sh
+```
+
+`dexp-host-integration-tests` binds both listeners to ephemeral ports and checks
+health, the compatibility manifest, the config response, failure routes, and
+the dashboard loopback invariant over real TCP.
