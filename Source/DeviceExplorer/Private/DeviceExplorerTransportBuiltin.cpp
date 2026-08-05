@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerBuiltinTransport, Log, All);
+
 namespace
 {
 constexpr double DeviceExplorerConnectTimeoutSeconds = 10.0;
@@ -471,6 +473,7 @@ private:
 
 	void Fail(const FString& Reason)
 	{
+		UE_LOG(LogDeviceExplorerBuiltinTransport, Warning, TEXT("Builtin WebSocket failed: %s"), *Reason);
 		const bool bWasConnected = bEverConnected;
 		CloseSocket();
 		State = EDeviceExplorerBuiltinState::Idle;
