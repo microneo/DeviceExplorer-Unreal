@@ -34,7 +34,7 @@
 
 namespace DeviceExplorer::Host
 {
-namespace
+namespace RuntimeDetail
 {
 using Tcp = asio::ip::tcp;
 using Json = Wire::JsonValue;
@@ -1795,7 +1795,12 @@ private:
 	std::string ResponseBytes;
 	HttpRequest Request;
 };
-}    // namespace
+}    // namespace RuntimeDetail
+
+using RuntimeDetail::DeviceChannel;
+using RuntimeDetail::HostState;
+using RuntimeDetail::HttpSession;
+using RuntimeDetail::Tcp;
 
 struct HostRuntime::Implementation
 {
