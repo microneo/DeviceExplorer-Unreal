@@ -174,8 +174,9 @@ when no compatible native host is installed. The UE Program target and its
 older PowerShell build script remain available for one compatibility milestone,
 but are no longer the normal build path.
 
-The committed dashboard is used as is. Pass `-Web` to rebuild it first, and
-`-SkipWebInstall` with it when npm dependencies are already installed.
+Neither script touches the dashboard: the committed bundle in `Resources/Web` is
+used as is. Rebuild it separately with `Scripts\BuildWebUI.ps1`, adding
+`-SkipInstall` when npm dependencies are already installed.
 
 `Scripts\InstallDeviceExplorerHostTarget.ps1` installs the legacy host target on its
 own, which is what an IDE workflow needs before project files are generated.
