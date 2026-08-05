@@ -245,6 +245,20 @@ void TestMdnsCodec()
 	CHECK(Parsed.Announcement.TimeToLive == Source.TimeToLive);
 	CHECK(Parsed.Announcement.IPv4Addresses == Source.IPv4Addresses);
 
+	std::vector<std::uint8_t> WithOpt = Packet;
+	WithOpt[11] = 1;    // ARCOUNT
+	WithOpt.insert(WithOpt.end(), {
+		0,             // root owner name
+		0, 41,         // OPT
+		0x10, 0,       // 4096-byte UDP payload
+		0, 0, 0, 0,    // extended RCODE, version and flags
+		0, 0           // empty option data
+	});
+	const MdnsAnnouncementParseResult WithOptParsed =
+		ParseMdnsAnnouncement({ WithOpt.data(), WithOpt.size() });
+	CHECK(WithOptParsed.Status == MdnsStatus::Complete);
+	CHECK(WithOptParsed.Announcement.InstanceName == Source.InstanceName);
+
 	MdnsServiceAnnouncement EscapedSource = Source;
 	EscapedSource.InstanceName = "DeviceExplorer\\.Lab\\\\One._deviceexplorer._tcp.local";
 	CHECK(EncodeMdnsAnnouncement(EscapedSource, Packet, &Error));

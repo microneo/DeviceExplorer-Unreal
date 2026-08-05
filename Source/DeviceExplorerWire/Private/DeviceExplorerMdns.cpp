@@ -240,7 +240,9 @@ bool ReadName(const ByteView Packet, std::size_t& InOutOffset, std::string& OutN
 		Offset = LabelStart + LabelLength;
 	}
 	InOutOffset = ResumeOffset == std::numeric_limits<std::size_t>::max() ? Offset : ResumeOffset;
-	return !OutName.empty();
+	// The root is a valid owner name. EDNS(0) OPT records use it in the
+	// additional section, even though DeviceExplorer's own records never do.
+	return true;
 }
 
 bool AddRecord(std::vector<std::uint8_t>& Packet,
