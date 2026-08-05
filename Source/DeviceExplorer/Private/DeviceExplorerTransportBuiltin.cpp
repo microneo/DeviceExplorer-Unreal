@@ -90,10 +90,8 @@ public:
 	virtual ~FDeviceExplorerBuiltinTransport() override { CloseSilently(); }
 
 	virtual void Connect(const FDeviceExplorerResolvedEndpoint& Endpoint,
-	                     const FString& Token,
 	                     FDeviceExplorerTransportCallbacks InCallbacks) override
 	{
-		(void) Token;    // the session token is proved over the link, never carried in the URL
 		CloseSilently();
 		Callbacks = MoveTemp(InCallbacks);
 		if (!Endpoint.IsUsable())
@@ -122,7 +120,6 @@ public:
 			return;
 		}
 
-		Target = TEXT("/device/connect");
 		Host = Endpoint.Serialized.ToString();
 		Decoder = DeviceExplorer::Wire::CreateWebSocketDecoder(DeviceExplorer::Wire::WebSocketRole::Client);
 		if (Decoder == nullptr)
@@ -226,7 +223,7 @@ private:
 		}
 
 		const std::string Request = DeviceExplorer::Wire::SerializeWebSocketUpgradeRequest(
-			DeviceExplorerStringToUtf8(Target), DeviceExplorerStringToUtf8(Host), Key);
+			"/device/connect", DeviceExplorerStringToUtf8(Host), Key);
 		if (Request.empty() || !QueueBytes(
 			    reinterpret_cast<const std::uint8_t*>(Request.data()), Request.size()))
 		{
@@ -517,7 +514,6 @@ private:
 		CloseSocket();
 		State = EDeviceExplorerBuiltinState::Idle;
 		Callbacks = {};
-		Target.Reset();
 		Host.Reset();
 		ExpectedAccept.clear();
 		HandshakeBuffer.Reset();
@@ -538,7 +534,6 @@ private:
 	FDeviceExplorerTransportCallbacks Callbacks;
 	FSocket* Socket = nullptr;
 	EDeviceExplorerBuiltinState State = EDeviceExplorerBuiltinState::Idle;
-	FString Target;
 	FString Host;
 	std::string ExpectedAccept;
 	TArray<uint8> HandshakeBuffer;

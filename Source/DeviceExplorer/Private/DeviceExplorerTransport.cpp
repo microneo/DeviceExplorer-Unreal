@@ -1,6 +1,5 @@
 #include "DeviceExplorerTransport.h"
 
-#include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Parse.h"
@@ -13,29 +12,10 @@ const TCHAR* DeviceExplorerSettingsSection = TEXT("/Script/DeviceExplorer.Settin
 
 FString GetRequestedDeviceExplorerTransport()
 {
-	static IConsoleVariable* TransportVariable = []()
-	{
-		IConsoleManager& ConsoleManager = IConsoleManager::Get();
-		if (IConsoleVariable* Existing = ConsoleManager.FindConsoleVariable(TEXT("DeviceExplorer.Transport")))
-		{
-			return Existing;
-		}
-		return ConsoleManager.RegisterConsoleVariable(
-			TEXT("DeviceExplorer.Transport"),
-			TEXT("Auto"),
-			TEXT("DeviceExplorer WebSocket transport: Auto, Engine, or Builtin."),
-			ECVF_Default);
-	}();
-
 	FString Requested = TEXT("Auto");
 	if (GConfig != nullptr)
 	{
 		GConfig->GetString(DeviceExplorerSettingsSection, TEXT("Transport"), Requested, GGameUserSettingsIni);
-	}
-	const FString ConsoleValue = TransportVariable != nullptr ? TransportVariable->GetString() : FString();
-	if (!ConsoleValue.IsEmpty() && !ConsoleValue.Equals(TEXT("Auto"), ESearchCase::IgnoreCase))
-	{
-		Requested = ConsoleValue;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("DeviceExplorerTransport="), Requested);
 	Requested.TrimStartAndEndInline();

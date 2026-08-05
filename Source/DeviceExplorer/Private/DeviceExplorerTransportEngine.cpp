@@ -14,10 +14,8 @@ public:
 	virtual ~FDeviceExplorerEngineTransport() override { Close(); }
 
 	virtual void Connect(const FDeviceExplorerResolvedEndpoint& Endpoint,
-	                     const FString& Token,
 	                     FDeviceExplorerTransportCallbacks InCallbacks) override
 	{
-		(void) Token;    // the session token is proved over the link, never carried in the URL
 		Close();
 		Callbacks = MoveTemp(InCallbacks);
 		FModuleManager::LoadModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));

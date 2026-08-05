@@ -22,7 +22,6 @@ public:
 	virtual ~IDeviceExplorerTransport() = default;
 
 	virtual void Connect(const FDeviceExplorerResolvedEndpoint& Endpoint,
-	                     const FString& Token,
 	                     FDeviceExplorerTransportCallbacks Callbacks) = 0;
 	virtual void Tick(double NowSeconds) = 0;
 	virtual bool SendText(const FString& Message) = 0;

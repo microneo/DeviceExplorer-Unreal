@@ -981,7 +981,7 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 				HandleMessage(Message);
 			}
 		};
-	Transport->Connect(Candidate.Endpoint, Candidate.Token, MoveTemp(Callbacks));
+	Transport->Connect(Candidate.Endpoint, MoveTemp(Callbacks));
 }
 
 void FDeviceExplorerModule::Disconnect()

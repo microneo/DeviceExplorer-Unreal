@@ -120,10 +120,10 @@ Transport=Builtin
 ```
 
 or `-DeviceExplorerTransport=Builtin`. Accepted values are `Auto`, `Engine`,
-and `Builtin`; `DeviceExplorer.Transport` provides the same override as a
-console variable. The built-in path uses the shared `DeviceExplorerWire`
+and `Builtin`. The value is read once when the client module starts. The
+built-in path uses the shared `DeviceExplorerWire`
 handshake and RFC 6455 codecs, including masked client frames, partial I/O,
-fragmentation, ping/pong, bounded buffering, and close replies. The protocol-9
+fragmentation, ping/pong, bounded buffering, and close replies. The protocol
 JSON messages are unchanged.
 
 At runtime, `DeviceExplorer.Connect <ip>:<port> <token>` pins the client to a
