@@ -20,6 +20,8 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+// windows.h defines min and max as macros, which breaks std::numeric_limits::max.
+#define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
 using NativeSocket = SOCKET;
