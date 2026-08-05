@@ -4,9 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace DeviceExplorer::Wire
@@ -50,10 +50,17 @@ struct JsonLimits
 	std::size_t MaximumNodeCount = 100000;
 };
 
+struct JsonObjectStorage;
+
 class JsonValue
 {
 public:
-	JsonValue() = default;
+	JsonValue();
+	~JsonValue();
+	JsonValue(const JsonValue& Other);
+	JsonValue& operator=(const JsonValue& Other);
+	JsonValue(JsonValue&& Other) noexcept;
+	JsonValue& operator=(JsonValue&& Other) noexcept;
 
 	JsonType GetType() const { return Type; }
 	void SetNull();
@@ -89,9 +96,10 @@ private:
 	bool BooleanValue = false;
 	std::string ScalarValue;
 	std::vector<JsonValue> ArrayValues;
-	std::vector<std::string> ObjectKeys;
-	std::vector<JsonValue> ObjectValues;
-	std::unordered_map<std::string, std::size_t> ObjectIndex;
+	// Object-only storage stays off scalar and array nodes. Protocol documents
+	// contain many scalar values, so embedding three object containers in every
+	// JsonValue made the bounded node count consume far more memory than needed.
+	std::unique_ptr<JsonObjectStorage> ObjectValue;
 };
 
 struct DeviceExplorerMessage

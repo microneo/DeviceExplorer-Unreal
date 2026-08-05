@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the legacy protocol-9 host and optionally save raw wire captures.
+"""Exercise the current host protocol and optionally save raw wire captures.
 
 The script intentionally uses only the Python standard library. Start the UE
 host with a known token, then run this file from any machine on the same LAN.
@@ -12,20 +12,32 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import json
+import secrets
 import socket
 import struct
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
 
 
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 SERVICE_NAME = "_deviceexplorer._tcp.local"
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
-MASK_KEY = bytes.fromhex("12345678")
+CLIENT_NONCE = "0123456789abcdef0123456789abcdef"
+HOST_PROOF_LABEL = "deviceexplorer-host-v1"
+DEVICE_PROOF_LABEL = "deviceexplorer-device-v1"
+
+
+def compute_proof(token: str, label: str, client_nonce: str, host_nonce: str) -> str:
+    transcript = f"{label}\n{client_nonce}\n{host_nonce}".encode("utf-8")
+    return hmac.new(token.encode("utf-8"), transcript, hashlib.sha256).hexdigest()
+
+
+def token_fingerprint(token: str) -> str:
+    return hashlib.sha256(f"deviceexplorer-fp-v1\n{token}".encode("utf-8")).hexdigest()[:16]
 
 
 def recv_until(sock: socket.socket, marker: bytes, limit: int = 64 * 1024) -> bytes:
@@ -37,6 +49,16 @@ def recv_until(sock: socket.socket, marker: bytes, limit: int = 64 * 1024) -> by
         data.extend(chunk)
         if len(data) > limit:
             raise RuntimeError(f"response exceeded {limit} bytes")
+    return bytes(data)
+
+
+def recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise RuntimeError(f"connection closed with {size - len(data)} bytes missing")
+        data.extend(chunk)
     return bytes(data)
 
 
@@ -93,35 +115,51 @@ def encode_client_frame(opcode: int, payload: bytes) -> bytes:
         header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", len(payload))
     else:
         header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", len(payload))
-    masked = bytes(value ^ MASK_KEY[index % 4] for index, value in enumerate(payload))
-    return header + MASK_KEY + masked
+    mask_key = secrets.token_bytes(4)
+    masked = bytes(value ^ mask_key[index % 4] for index, value in enumerate(payload))
+    return header + mask_key + masked
 
 
 def recv_server_frame(sock: socket.socket) -> tuple[bytes, int, bytes]:
-    first = sock.recv(2)
-    if len(first) != 2:
-        raise RuntimeError("short WebSocket frame header")
+    first = recv_exact(sock, 2)
     if first[1] & 0x80:
         raise RuntimeError("server sent a masked WebSocket frame")
+    if first[0] & 0x70:
+        raise RuntimeError("server sent unsupported WebSocket extension bits")
+    if not first[0] & 0x80:
+        raise RuntimeError("smoke messages must fit one final WebSocket frame")
     length = first[1] & 0x7F
     extended = b""
     if length == 126:
-        extended = sock.recv(2)
-        if len(extended) != 2:
-            raise RuntimeError("short WebSocket 16-bit length")
+        extended = recv_exact(sock, 2)
         length = struct.unpack("!H", extended)[0]
     elif length == 127:
-        extended = sock.recv(8)
-        if len(extended) != 8:
-            raise RuntimeError("short WebSocket 64-bit length")
+        extended = recv_exact(sock, 8)
         length = struct.unpack("!Q", extended)[0]
-    payload = bytearray()
-    while len(payload) < length:
-        chunk = sock.recv(length - len(payload))
-        if not chunk:
-            raise RuntimeError("short WebSocket payload")
-        payload.extend(chunk)
-    return first + extended + bytes(payload), first[0] & 0x0F, bytes(payload)
+    payload = recv_exact(sock, length)
+    return first + extended + payload, first[0] & 0x0F, payload
+
+
+def encode_json_frame(message: dict[str, Any]) -> bytes:
+    return encode_client_frame(
+        0x1,
+        json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+    )
+
+
+def recv_json_frame(
+    sock: socket.socket, expected_type: str
+) -> tuple[bytes, dict[str, Any]]:
+    raw, opcode, payload = recv_server_frame(sock)
+    if opcode != 0x1:
+        raise RuntimeError(f"expected a text frame, received opcode {opcode}")
+    try:
+        message = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("host sent invalid authentication JSON") from error
+    if not isinstance(message, dict) or message.get("type") != expected_type:
+        raise RuntimeError(f"expected {expected_type}, received {message!r}")
+    return raw, message
 
 
 def websocket_smoke(
@@ -135,7 +173,7 @@ def websocket_smoke(
     expected_accept = base64.b64encode(
         hashlib.sha1((WEBSOCKET_KEY + WEBSOCKET_GUID).encode("ascii")).digest()
     ).decode("ascii")
-    target = f"/device/connect?token={quote_plus(token)}"
+    target = "/device/connect"
     request = (
         f"GET {target} HTTP/1.1\r\n"
         f"Host: {host}:{port}\r\n"
@@ -156,11 +194,45 @@ def websocket_smoke(
         if headers.get("sec-websocket-accept") != expected_accept:
             raise RuntimeError("WebSocket accept key does not match RFC 6455")
 
-        hello = json.dumps(
+        auth_request_frame = encode_json_frame(
+            {
+                "type": "auth_request",
+                "protocol_version": PROTOCOL_VERSION,
+                "client_nonce": CLIENT_NONCE,
+            }
+        )
+        sock.sendall(auth_request_frame)
+        auth_challenge_frame, challenge = recv_json_frame(sock, "auth_challenge")
+        host_nonce = challenge.get("host_nonce")
+        host_proof = challenge.get("host_proof")
+        if (
+            not isinstance(host_nonce, str)
+            or len(host_nonce) != 32
+            or any(character not in "0123456789abcdef" for character in host_nonce)
+            or not isinstance(host_proof, str)
+            or not hmac.compare_digest(
+                host_proof,
+                compute_proof(token, HOST_PROOF_LABEL, CLIENT_NONCE, host_nonce),
+            )
+        ):
+            raise RuntimeError("host did not prove the configured session token")
+
+        auth_response_frame = encode_json_frame(
+            {
+                "type": "auth_response",
+                "client_proof": compute_proof(
+                    token, DEVICE_PROOF_LABEL, CLIENT_NONCE, host_nonce
+                ),
+            }
+        )
+        sock.sendall(auth_response_frame)
+        auth_ok_frame, _ = recv_json_frame(sock, "auth_ok")
+
+        hello_frame = encode_json_frame(
             {
                 "type": "hello",
                 "device_id": device_id,
-                "name": "Protocol9Smoke",
+                "name": "ProtocolSmoke",
                 "project_name": "DeviceExplorer",
                 "engine_version": "black-box",
                 "platform": "Python",
@@ -172,13 +244,11 @@ def websocket_smoke(
                 "commands": [],
                 "file_roots": [],
                 "data_modules": [],
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
-        hello_frame = encode_client_frame(0x1, hello)
+            }
+        )
         sock.sendall(hello_frame)
 
-        ping_payload = b"protocol9"
+        ping_payload = b"deviceexplorer"
         ping_frame = encode_client_frame(0x9, ping_payload)
         sock.sendall(ping_frame)
         pong_frame, pong_opcode, pong_payload = recv_server_frame(sock)
@@ -190,6 +260,18 @@ def websocket_smoke(
         capture = {
             "upgrade_request_base64": base64.b64encode(request).decode("ascii"),
             "upgrade_response_base64": base64.b64encode(response).decode("ascii"),
+            "client_auth_request_frame_base64": base64.b64encode(
+                auth_request_frame
+            ).decode("ascii"),
+            "server_auth_challenge_frame_base64": base64.b64encode(
+                auth_challenge_frame
+            ).decode("ascii"),
+            "client_auth_response_frame_base64": base64.b64encode(
+                auth_response_frame
+            ).decode("ascii"),
+            "server_auth_ok_frame_base64": base64.b64encode(auth_ok_frame).decode(
+                "ascii"
+            ),
             "client_hello_frame_base64": base64.b64encode(hello_frame).decode("ascii"),
             "client_ping_frame_base64": base64.b64encode(ping_frame).decode("ascii"),
             "server_pong_frame_base64": base64.b64encode(pong_frame).decode("ascii"),
@@ -329,16 +411,17 @@ def mdns_smoke(token: str, device_port: int, timeout: float) -> dict[str, Any]:
             records = parse_mdns_records(response)
             if SERVICE_NAME not in {record["name"].lower() for record in records}:
                 continue
-            token_bytes = ("token=" + token).encode("utf-8")
-            if token_bytes not in response:
-                continue
             txt_entries = {
                 entry
                 for record in records
                 for entry in record.get("entries", [])
             }
             srv_ports = {record["port"] for record in records if record["type"] == 33}
-            if f"version={PROTOCOL_VERSION}" not in txt_entries or device_port not in srv_ports:
+            if (
+                f"version={PROTOCOL_VERSION}" not in txt_entries
+                or f"fp={token_fingerprint(token)}" not in txt_entries
+                or device_port not in srv_ports
+            ):
                 continue
             return {
                 "query_base64": base64.b64encode(query).decode("ascii"),
@@ -360,7 +443,7 @@ def main() -> int:
     parser.add_argument("--device-port", type=int, default=18081)
     parser.add_argument("--dashboard-port", type=int, default=18080)
     parser.add_argument("--token", required=True)
-    parser.add_argument("--device-id", default="protocol9-black-box-smoke")
+    parser.add_argument("--device-id", default="protocol-black-box-smoke")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--skip-mdns", action="store_true")
     parser.add_argument(
@@ -414,7 +497,7 @@ def main() -> int:
         raise RuntimeError("the smoke device did not appear in /api/devices")
 
     capture: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol_version": PROTOCOL_VERSION,
         "captured_unix_seconds": int(time.time()),
         "endpoint": {
@@ -440,9 +523,9 @@ def main() -> int:
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(capture, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"protocol-9 smoke passed; capture written to {args.output}")
+        print(f"protocol smoke passed; capture written to {args.output}")
     else:
-        print("protocol-9 smoke passed")
+        print("protocol smoke passed")
     return 0
 
 

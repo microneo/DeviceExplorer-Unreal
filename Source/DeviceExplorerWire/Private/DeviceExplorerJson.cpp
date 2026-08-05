@@ -1,12 +1,53 @@
 #include "DeviceExplorerJson.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 namespace DeviceExplorer::Wire
 {
+struct JsonObjectStorage
+{
+	std::vector<std::string> Keys;
+	std::vector<JsonValue> Values;
+	std::unordered_map<std::string, std::size_t> Index;
+};
+
 namespace
 {
+constexpr std::size_t JsonLinearObjectLookupLimit = 8;
+
+std::size_t FindObjectMemberIndex(const JsonObjectStorage& Object, const std::string_view Key)
+{
+	if (Object.Keys.size() <= JsonLinearObjectLookupLimit)
+	{
+		for (std::size_t Index = 0; Index < Object.Keys.size(); ++Index)
+		{
+			if (Object.Keys[Index] == Key) return Index;
+		}
+		return Object.Keys.size();
+	}
+	const auto Existing = Object.Index.find(std::string(Key));
+	return Existing == Object.Index.end() ? Object.Keys.size() : Existing->second;
+}
+
+void IndexObjectMembers(JsonObjectStorage& Object)
+{
+	if (Object.Keys.size() == JsonLinearObjectLookupLimit + 1)
+	{
+		Object.Index.reserve(Object.Keys.size());
+		for (std::size_t Index = 0; Index < Object.Keys.size(); ++Index)
+		{
+			Object.Index.emplace(Object.Keys[Index], Index);
+		}
+	}
+	else if (Object.Keys.size() > JsonLinearObjectLookupLimit + 1)
+	{
+		const std::size_t Index = Object.Keys.size() - 1;
+		Object.Index.emplace(Object.Keys[Index], Index);
+	}
+}
+
 void SetError(JsonError* OutError, const JsonError Error)
 {
 	if (OutError != nullptr)
@@ -524,15 +565,38 @@ bool ReadMessageFields(const JsonValue& Root,
 }
 }    // namespace
 
+JsonValue::JsonValue() = default;
+JsonValue::~JsonValue() = default;
+
+JsonValue::JsonValue(const JsonValue& Other)
+	: Type(Other.Type)
+	, BooleanValue(Other.BooleanValue)
+	, ScalarValue(Other.ScalarValue)
+	, ArrayValues(Other.ArrayValues)
+{
+	if (Other.ObjectValue) ObjectValue = std::make_unique<JsonObjectStorage>(*Other.ObjectValue);
+}
+
+JsonValue& JsonValue::operator=(const JsonValue& Other)
+{
+	if (this != &Other)
+	{
+		JsonValue Copy(Other);
+		*this = std::move(Copy);
+	}
+	return *this;
+}
+
+JsonValue::JsonValue(JsonValue&& Other) noexcept = default;
+JsonValue& JsonValue::operator=(JsonValue&& Other) noexcept = default;
+
 void JsonValue::Reset(const JsonType NewType)
 {
 	Type = NewType;
 	BooleanValue = false;
 	ScalarValue.clear();
 	ArrayValues.clear();
-	ObjectKeys.clear();
-	ObjectValues.clear();
-	ObjectIndex.clear();
+	ObjectValue.reset();
 }
 
 void JsonValue::SetNull()
@@ -582,6 +646,7 @@ void JsonValue::SetArray()
 void JsonValue::SetObject()
 {
 	Reset(JsonType::Object);
+	ObjectValue = std::make_unique<JsonObjectStorage>();
 }
 
 bool JsonValue::TryGetBoolean(bool& OutValue) const
@@ -608,12 +673,12 @@ const std::vector<JsonValue>* JsonValue::TryGetArray() const
 
 const std::vector<std::string>* JsonValue::TryGetObjectKeys() const
 {
-	return Type == JsonType::Object ? &ObjectKeys : nullptr;
+	return Type == JsonType::Object && ObjectValue ? &ObjectValue->Keys : nullptr;
 }
 
 const std::vector<JsonValue>* JsonValue::TryGetObjectValues() const
 {
-	return Type == JsonType::Object ? &ObjectValues : nullptr;
+	return Type == JsonType::Object && ObjectValue ? &ObjectValue->Values : nullptr;
 }
 
 bool JsonValue::Append(JsonValue Value)
@@ -625,45 +690,44 @@ bool JsonValue::Append(JsonValue Value)
 
 bool JsonValue::InsertMember(std::string Key, JsonValue Value)
 {
-	if (Type != JsonType::Object || !IsValidUtf8(Key) || ObjectIndex.find(Key) != ObjectIndex.end())
+	if (Type != JsonType::Object || !ObjectValue || !IsValidUtf8(Key) ||
+	    FindObjectMemberIndex(*ObjectValue, Key) != ObjectValue->Keys.size())
 	{
 		return false;
 	}
-	const std::size_t Index = ObjectKeys.size();
-	ObjectKeys.push_back(Key);
-	ObjectValues.push_back(std::move(Value));
-	ObjectIndex.emplace(std::move(Key), Index);
+	ObjectValue->Keys.push_back(std::move(Key));
+	ObjectValue->Values.push_back(std::move(Value));
+	IndexObjectMembers(*ObjectValue);
 	return true;
 }
 
 bool JsonValue::SetMember(std::string Key, JsonValue Value)
 {
-	if (Type != JsonType::Object || !IsValidUtf8(Key)) return false;
-	const auto Existing = ObjectIndex.find(Key);
-	if (Existing != ObjectIndex.end())
+	if (Type != JsonType::Object || !ObjectValue || !IsValidUtf8(Key)) return false;
+	const std::size_t Existing = FindObjectMemberIndex(*ObjectValue, Key);
+	if (Existing != ObjectValue->Keys.size())
 	{
-		ObjectValues[Existing->second] = std::move(Value);
+		ObjectValue->Values[Existing] = std::move(Value);
 		return true;
 	}
-	const std::size_t Index = ObjectKeys.size();
-	ObjectKeys.push_back(Key);
-	ObjectValues.push_back(std::move(Value));
-	ObjectIndex.emplace(std::move(Key), Index);
+	ObjectValue->Keys.push_back(std::move(Key));
+	ObjectValue->Values.push_back(std::move(Value));
+	IndexObjectMembers(*ObjectValue);
 	return true;
 }
 
 const JsonValue* JsonValue::FindMember(const std::string_view Key) const
 {
-	if (Type != JsonType::Object) return nullptr;
-	const auto Existing = ObjectIndex.find(std::string(Key));
-	return Existing == ObjectIndex.end() ? nullptr : &ObjectValues[Existing->second];
+	if (Type != JsonType::Object || !ObjectValue) return nullptr;
+	const std::size_t Existing = FindObjectMemberIndex(*ObjectValue, Key);
+	return Existing == ObjectValue->Keys.size() ? nullptr : &ObjectValue->Values[Existing];
 }
 
 JsonValue* JsonValue::FindMember(const std::string_view Key)
 {
-	if (Type != JsonType::Object) return nullptr;
-	const auto Existing = ObjectIndex.find(std::string(Key));
-	return Existing == ObjectIndex.end() ? nullptr : &ObjectValues[Existing->second];
+	if (Type != JsonType::Object || !ObjectValue) return nullptr;
+	const std::size_t Existing = FindObjectMemberIndex(*ObjectValue, Key);
+	return Existing == ObjectValue->Keys.size() ? nullptr : &ObjectValue->Values[Existing];
 }
 
 bool IsValidJsonNumber(const std::string_view Value)

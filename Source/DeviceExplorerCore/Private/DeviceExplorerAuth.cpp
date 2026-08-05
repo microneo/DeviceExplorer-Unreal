@@ -233,7 +233,7 @@ bool IsWeakToken(const FString& Token)
 
 bool ConstantTimeEquals(const FString& A, const FString& B)
 {
-	if (A.Len() != B.Len())
+	if (A.IsEmpty() || A.Len() != B.Len())
 	{
 		return false;
 	}
