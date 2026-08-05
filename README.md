@@ -34,7 +34,7 @@ DeviceExplorer (Project) → Session Token** to go back to a token per host sess
 ## Requirements
 
 - Unreal Engine 5;
-- Win64 or macOS for the Editor launcher;
+- Win64, macOS, or Linux for the Editor launcher;
 - Node.js 22 or newer only when modifying the WebUI.
 
 Device transport and discovery are IPv4-only in protocol v1. IPv6 endpoint
@@ -84,7 +84,7 @@ plugin itself, so a project that deletes `Plugins/DeviceExplorer` removes the
 `AddDependency` call as well; disabling the plugin in the `.uproject` needs no
 change.
 
-For iOS discovery, append this to
+For iOS and tvOS discovery, append this to
 `[/Script/IOSRuntimeSettings.IOSRuntimeSettings]` in `DefaultEngine.ini`:
 
 ```ini
@@ -92,7 +92,10 @@ AdditionalPlistData=<key>NSBonjourServices</key><array><string>_deviceexplorer._
 ```
 
 If `AdditionalPlistData` already exists, extend its value instead of adding a
-second property. Manual connection remains available:
+second property. visionOS uses the corresponding `VisionOSRuntimeSettings`
+section; packaged macOS applications need the same plist keys. The complete
+matrix and release checklist are in [Docs/PlatformSupport.md](Docs/PlatformSupport.md).
+Manual connection remains available:
 
 ```text
 -DeviceExplorerServer=<ip>:<port> -DeviceExplorerToken=<token>
@@ -153,25 +156,28 @@ The host is started, stopped, restarted, and opened from the DeviceExplorer
 item in the Editor status bar or from **Tools → DeviceExplorer**. Preferences
 are under **Editor Preferences → Plugins → DeviceExplorer**.
 
-Building it by hand is only needed outside the Editor. The build script
-installs the small `DeviceExplorerHost.Target.cs` wrapper into the project's
-`Source` directory when it is missing, then builds the standalone target:
+Building it by hand is only needed outside the Editor. The native host uses the
+same CMake build on Windows, macOS, and Linux and does not require Unreal Engine
+source:
 
 ```powershell
-.\Plugins\DeviceExplorer\Scripts\BuildDeviceExplorer.ps1 `
-  -EngineDir C:\Unreal\UE_5.x `
-  -Platform Win64 `
-  -Configuration Development
+.\Plugins\DeviceExplorer\Scripts\BuildDeviceExplorerNativeHost.ps1 -Install
 ```
 
-`-Project` is optional while the plugin sits in `<Project>/Plugins` and the
-project directory holds a single `.uproject`. `UE_ENGINE_DIR` can replace
-`-EngineDir`. The same script can be configured as a Rider External Tool.
+```sh
+Plugins/DeviceExplorer/Scripts/BuildDeviceExplorer.sh --install
+```
+
+The install is side-by-side and switches `current.txt` atomically, including
+when the previous executable is still running. The Editor invokes this path
+when no compatible native host is installed. The UE Program target and its
+older PowerShell build script remain available for one compatibility milestone,
+but are no longer the normal build path.
 
 The committed dashboard is used as is. Pass `-Web` to rebuild it first, and
 `-SkipWebInstall` with it when npm dependencies are already installed.
 
-`Scripts\InstallDeviceExplorerHostTarget.ps1` installs the host target on its
+`Scripts\InstallDeviceExplorerHostTarget.ps1` installs the legacy host target on its
 own, which is what an IDE workflow needs before project files are generated.
 It refuses to touch an existing `DeviceExplorerHost.Target.cs` that differs
 from the template unless `-Force` is passed.
