@@ -33,5 +33,6 @@ private:
 	FProcHandle HostProcess;
 	uint32 HostProcessId = 0;
 	bool bStopWithEditor = true;
+	bool bClientTokenFromLaunchArgument = false;
 	FString CurrentHostToken;
 };

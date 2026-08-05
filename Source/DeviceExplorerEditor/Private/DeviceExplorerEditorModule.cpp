@@ -13,8 +13,10 @@
 #include "IDesktopPlatform.h"
 #include "ISettingsModule.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/CommandLine.h"
 #include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
@@ -42,7 +44,15 @@ void FDeviceExplorerEditorModule::StartupModule()
 		               "Clear it in Project Settings to have a strong one generated."),
 		       true);
 	}
-	DeviceExplorer::Auth::SetProvisionedToken(ProjectToken);
+	// A launch argument names the host this Editor was told to reach. Both this module and
+	// the host it starts run after the client has read that argument, so neither may replace
+	// the token: the client would then prove itself to nobody and retry forever.
+	FString LaunchToken;
+	bClientTokenFromLaunchArgument = FParse::Value(FCommandLine::Get(), TEXT("DeviceExplorerToken="), LaunchToken);
+	if (!bClientTokenFromLaunchArgument)
+	{
+		DeviceExplorer::Auth::SetProvisionedToken(ProjectToken);
+	}
 
 	const UDeviceExplorerEditorSettings* Settings = GetDefault<UDeviceExplorerEditorSettings>();
 	bStopWithEditor = Settings->bStopWithEditor;
@@ -137,7 +147,10 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 
 	// The client in this process has no launch argument to read, so Play In Editor needs
 	// the token handed over directly.
-	DeviceExplorer::Auth::SetProvisionedToken(CurrentHostToken);
+	if (!bClientTokenFromLaunchArgument)
+	{
+		DeviceExplorer::Auth::SetProvisionedToken(CurrentHostToken);
+	}
 
 	Notify(FText::Format(LOCTEXT("Started", "DeviceExplorerHost started.\nManual connect token: {0}"), FText::FromString(CurrentHostToken)));
 	if (bOpenDashboard)
