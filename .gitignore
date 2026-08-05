@@ -3,6 +3,8 @@ DerivedDataCache/
 Intermediate/
 Saved/
 build/
+__pycache__/
+*.py[cod]
 
 .vs/
 .idea/

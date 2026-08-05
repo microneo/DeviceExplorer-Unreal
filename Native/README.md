@@ -29,8 +29,8 @@ the wire boundary.
 D1 contains WebSocket framing, mDNS, strict JSON, and the `type`/`request_id`
 message envelope. The host and UE client share the WebSocket and mDNS codecs.
 The UE client can use either the engine WebSockets implementation or the
-sans-I/O codec through its built-in `FSocket` adapter. The existing protocol-9
-runtime intentionally keeps Unreal's JSON model; the neutral DOM is available
+sans-I/O codec through its built-in `FSocket` adapter. The Unreal runtime
+intentionally keeps Unreal's JSON model; the neutral DOM is available
 to standalone consumers without forcing a second parser into that path. No
 socket, timer, thread, file-system, Unreal, exception, or RTTI dependency is
 permitted in `dexp-wire`.
@@ -42,7 +42,7 @@ shutdown, including the installed Ctrl+C handler, sends the TTL=0 announcement;
 forced process termination cannot run cleanup and therefore relies on TTL
 expiry.
 
-After building the UE host with this module, rerun the protocol-9 smoke with
+After building the UE host with this module, rerun the protocol smoke with
 `--expect-close-reply`. The flag verifies the RFC 6455 close handshake added by
 the new host adapter while the default mode remains usable against the D0
 legacy baseline.
