@@ -49,13 +49,15 @@ if(DEVICEEXPLORER_BUILD_HOST)
     target_include_directories(dexp-asio SYSTEM INTERFACE "${DEVICEEXPLORER_ASIO_INCLUDE_DIR}")
     target_compile_definitions(dexp-asio INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
     if(WIN32)
-        target_compile_definitions(dexp-asio INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_definitions(dexp-asio INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
     endif()
     target_link_libraries(dexp-asio INTERFACE Threads::Threads)
 
     add_library(dexp-host-core STATIC
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.h"
     )
     target_include_directories(dexp-host-core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/host")
     target_link_libraries(dexp-host-core PUBLIC dexp-wire PRIVATE dexp-asio)
