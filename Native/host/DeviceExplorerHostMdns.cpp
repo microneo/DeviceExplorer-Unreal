@@ -16,6 +16,15 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#include <Iphlpapi.h>
+#include <WinSock2.h>
+#else
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#endif
+
 namespace DeviceExplorer::Host
 {
 namespace
@@ -44,6 +53,46 @@ std::string RandomSuffix()
 	for (char& Character : Result) Character = Hex[Random() & 0x0F];
 	return Result;
 }
+
+void EnumerateInterfaceAddresses(std::set<std::uint32_t>& Addresses)
+{
+#if defined(_WIN32)
+	ULONG Size = 16 * 1024;
+	std::vector<std::uint8_t> Buffer(Size);
+	IP_ADAPTER_ADDRESSES* Adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(Buffer.data());
+	ULONG Result = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+	                                   nullptr, Adapters, &Size);
+	if (Result == ERROR_BUFFER_OVERFLOW)
+	{
+		Buffer.resize(Size);
+		Adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(Buffer.data());
+		Result = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+		                            nullptr, Adapters, &Size);
+	}
+	if (Result != NO_ERROR) return;
+	for (const IP_ADAPTER_ADDRESSES* Adapter = Adapters; Adapter != nullptr; Adapter = Adapter->Next)
+	{
+		if (Adapter->OperStatus != IfOperStatusUp) continue;
+		for (const IP_ADAPTER_UNICAST_ADDRESS* Address = Adapter->FirstUnicastAddress; Address != nullptr; Address = Address->Next)
+		{
+			if (Address->Address.lpSockaddr == nullptr || Address->Address.lpSockaddr->sa_family != AF_INET) continue;
+			const sockaddr_in* IPv4 = reinterpret_cast<const sockaddr_in*>(Address->Address.lpSockaddr);
+			Addresses.insert(ntohl(IPv4->sin_addr.s_addr));
+		}
+	}
+#else
+	ifaddrs* Head = nullptr;
+	if (getifaddrs(&Head) != 0) return;
+	for (const ifaddrs* Interface = Head; Interface != nullptr; Interface = Interface->ifa_next)
+	{
+		if (Interface->ifa_addr == nullptr || Interface->ifa_addr->sa_family != AF_INET ||
+		    (Interface->ifa_flags & IFF_UP) == 0) continue;
+		const sockaddr_in* IPv4 = reinterpret_cast<const sockaddr_in*>(Interface->ifa_addr);
+		Addresses.insert(ntohl(IPv4->sin_addr.s_addr));
+	}
+	freeifaddrs(Head);
+#endif
+}
 }    // namespace
 
 struct MdnsAdvertiser::Implementation
@@ -69,7 +118,7 @@ struct MdnsAdvertiser::Implementation
 	bool Start()
 	{
 		std::set<std::uint32_t> Unique;
-		TcpResolve(Unique);
+		EnumerateInterfaceAddresses(Unique);
 		for (const std::uint32_t AddressValue : Unique)
 		{
 			const asio::ip::address_v4 Address(AddressValue);
@@ -90,7 +139,8 @@ struct MdnsAdvertiser::Implementation
 		if (Error)
 		{
 			Log(LogLevel::Warning, "mDNS advertisement did not start: " + Error.message());
-			Socket.close();
+			asio::error_code Ignored;
+			Socket.close(Ignored);
 			return false;
 		}
 		for (const asio::ip::address_v4& Interface : Interfaces)
@@ -102,7 +152,8 @@ struct MdnsAdvertiser::Implementation
 		if (JoinedInterfaces.empty())
 		{
 			Log(LogLevel::Warning, "mDNS advertisement did not start: no multicast-capable IPv4 interface");
-			Socket.close();
+			asio::error_code Ignored;
+			Socket.close(Ignored);
 			return false;
 		}
 		Running = true;
@@ -110,18 +161,6 @@ struct MdnsAdvertiser::Implementation
 		Announce(120);
 		Schedule();
 		return true;
-	}
-
-	void TcpResolve(std::set<std::uint32_t>& Addresses)
-	{
-		asio::ip::tcp::resolver Resolver(Io);
-		asio::error_code Error;
-		const auto Results = Resolver.resolve(asio::ip::host_name(), "0", Error);
-		if (Error) return;
-		for (const auto& Result : Results)
-		{
-			if (Result.endpoint().address().is_v4()) Addresses.insert(Result.endpoint().address().to_v4().to_uint());
-		}
 	}
 
 	void Receive()

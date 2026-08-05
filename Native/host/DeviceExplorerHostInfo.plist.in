@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.deviceexplorer.host</string>
+    <key>CFBundleName</key>
+    <string>DeviceExplorerHost</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_deviceexplorer._tcp</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Connects development builds to local DeviceExplorer diagnostic tools.</string>
+</dict>
+</plist>

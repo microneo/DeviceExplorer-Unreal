@@ -1,4 +1,5 @@
 #include "DeviceExplorerHostCore.h"
+#include "DeviceExplorerHostIdentity.h"
 
 #include "DeviceExplorerHostManifest.h"
 
@@ -307,6 +308,16 @@ int main(const int ArgCount, char** ArgValues)
 		std::cerr << Error << '\n';
 		return 1;
 	}
+	DeviceExplorer::Host::HostIdentity Identity;
+	const DeviceExplorer::Host::HostIdentityStore IdentityStore(StateDirectory);
+	if (!IdentityStore.LoadAndAdvance(Identity, Error))
+	{
+		std::cerr << Error << '\n';
+		return 1;
+	}
+	Config.NodeId = Identity.NodeId;
+	Config.HostSession = Identity.HostSession;
+	Config.InstanceId = Identity.InstanceId;
 	Config.Log = [](const DeviceExplorer::Host::LogLevel Level, const std::string& Message)
 	{
 		std::ostream& Stream = Level == DeviceExplorer::Host::LogLevel::Error ? std::cerr : std::cout;

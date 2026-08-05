@@ -471,6 +471,7 @@ struct FDeviceExplorerHostServer::FDeviceState
 	FDateTime LastSeen;
 	uint64 DroppedLogs = 0;
 	uint64 NextSequence = 1;
+	uint64 LogBytes = 0;
 	TArray<FString> Capabilities;
 	TArray<TSharedPtr<FJsonValue>> Commands;
 	TArray<TSharedPtr<FJsonValue>> FileRoots;
@@ -492,6 +493,7 @@ struct FDeviceExplorerHostServer::FPendingRequest
 	}
 
 	FEvent* Event = nullptr;
+	TWeakPtr<FDeviceConnection> Connection;
 	TSharedPtr<FJsonObject> Result;
 };
 
@@ -1261,12 +1263,12 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 		return;
 	}
 
-	// Replies are matched by request_id alone, so a new feature's response type does not have
-	// to be listed here. Unmatched ids are ignored by CompletePendingRequest.
+	// A response type does not need to be listed here, but the request id is accepted only
+	// from the same authenticated channel that received the request.
 	FString RequestId;
 	if (Json->TryGetStringField(TEXT("request_id"), RequestId) && !RequestId.IsEmpty())
 	{
-		CompletePendingRequest(RequestId, Json);
+		CompletePendingRequest(Connection, RequestId, Json);
 		return;
 	}
 
@@ -1320,6 +1322,8 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 		Log.Category.LeftInline(256);
 		Log.Verbosity.LeftInline(64);
 		Log.Message.LeftInline(64 * 1024);
+		(*Device)->LogBytes += static_cast<uint64>(Log.Timestamp.GetAllocatedSize() + Log.Category.GetAllocatedSize() +
+		                                                  Log.Verbosity.GetAllocatedSize() + Log.Message.GetAllocatedSize());
 		(*Device)->Logs.Add(MoveTemp(Log));
 	}
 	const int32 Overflow = (*Device)->Logs.Num() - Config.LogCapacity;
@@ -1327,6 +1331,24 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 	{
 		(*Device)->Logs.PopFront(Overflow);
 		(*Device)->DroppedLogs += Overflow;
+		(*Device)->LogBytes = 0;
+		for (const FLogEntry& Buffered : (*Device)->Logs)
+		{
+			(*Device)->LogBytes += static_cast<uint64>(Buffered.Timestamp.GetAllocatedSize() + Buffered.Category.GetAllocatedSize() +
+			                                                  Buffered.Verbosity.GetAllocatedSize() + Buffered.Message.GetAllocatedSize());
+		}
+	}
+	while ((*Device)->LogBytes > static_cast<uint64>(Config.LogCapacityBytes) && (*Device)->Logs.Num() > 1)
+	{
+		const int32 RemoveCount = FMath::Max(1, (*Device)->Logs.Num() / 8);
+		(*Device)->Logs.PopFront(RemoveCount);
+		(*Device)->DroppedLogs += RemoveCount;
+		(*Device)->LogBytes = 0;
+		for (const FLogEntry& Buffered : (*Device)->Logs)
+		{
+			(*Device)->LogBytes += static_cast<uint64>(Buffered.Timestamp.GetAllocatedSize() + Buffered.Category.GetAllocatedSize() +
+			                                                  Buffered.Verbosity.GetAllocatedSize() + Buffered.Message.GetAllocatedSize());
+		}
 	}
 }
 
@@ -1338,7 +1360,17 @@ void FDeviceExplorerHostServer::AttachDevice(const TSharedRef<FDeviceConnection>
 		return;
 	}
 
+	const TSharedRef<FInternetAddr> RemoteAddress = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+	const bool bHasRemoteAddress = Connection->Socket->GetPeerAddress(*RemoteAddress);
+
 	FScopeLock Lock(&StateMutex);
+	if (!Devices.Contains(DeviceId) && Devices.Num() >= Config.MaximumDevices)
+	{
+		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Device registry is full; refusing %s"), *RemoteAddress->ToString(true));
+		Connection->bClosed.Store(true);
+		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
+		return;
+	}
 	TSharedPtr<FDeviceState>& Device = Devices.FindOrAdd(DeviceId);
 	if (!Device)
 	{
@@ -1405,8 +1437,7 @@ void FDeviceExplorerHostServer::AttachDevice(const TSharedRef<FDeviceConnection>
 		Device->DataModules = *DataModules;
 	}
 
-	TSharedRef<FInternetAddr> RemoteAddress = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
-	if (Connection->Socket->GetPeerAddress(*RemoteAddress))
+	if (bHasRemoteAddress)
 	{
 		Device->RemoteAddress = RemoteAddress->ToString(true);
 	}
@@ -1500,6 +1531,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 
 		TArray<TSharedPtr<FJsonValue>> Entries;
 		uint64 Dropped = 0;
+		uint64 BufferedBytes = 0;
 		int32 Buffered = 0;
 		{
 			FScopeLock Lock(&StateMutex);
@@ -1511,6 +1543,7 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 			}
 			Dropped = (*Device)->DroppedLogs;
 			Buffered = (*Device)->Logs.Num();
+			BufferedBytes = (*Device)->LogBytes;
 			for (const FLogEntry& Log : (*Device)->Logs)
 			{
 				if (Log.Sequence <= After || (!Category.IsEmpty() && !Log.Category.Contains(Category, ESearchCase::IgnoreCase)) ||
@@ -1538,6 +1571,8 @@ void FDeviceExplorerHostServer::HandleDeviceApi(FSocket* Socket, FHttpRequest& R
 		Result->SetNumberField(TEXT("dropped"), static_cast<double>(Dropped));
 		Result->SetNumberField(TEXT("buffered"), Buffered);
 		Result->SetNumberField(TEXT("capacity"), Config.LogCapacity);
+		Result->SetNumberField(TEXT("buffered_bytes"), static_cast<double>(BufferedBytes));
+		Result->SetNumberField(TEXT("capacity_bytes"), static_cast<double>(Config.LogCapacityBytes));
 		SendJsonResponse(Socket, 200, Result);
 		return;
 	}
@@ -2080,12 +2115,20 @@ TSharedPtr<FJsonObject> FDeviceExplorerHostServer::SendDeviceRequestAndWait(cons
 {
 	const FString RequestId = Message->GetStringField(TEXT("request_id"));
 	const TSharedRef<FPendingRequest> Pending = MakeShared<FPendingRequest>();
+	TSharedPtr<FDeviceConnection> Connection;
 	{
 		FScopeLock Lock(&StateMutex);
+		const TSharedPtr<FDeviceState>* Device = Devices.Find(DeviceId);
+		if (Device == nullptr || !(*Device)->bConnected || !(*Device)->Connection)
+		{
+			return nullptr;
+		}
+		Connection = (*Device)->Connection;
+		Pending->Connection = Connection;
 		PendingRequests.Add(RequestId, Pending);
 	}
 
-	if (!SendDeviceJson(DeviceId, Message))
+	if (!Connection->SendText(JsonString(Message)))
 	{
 		FScopeLock Lock(&StateMutex);
 		PendingRequests.Remove(RequestId);
@@ -2117,13 +2160,15 @@ bool FDeviceExplorerHostServer::SendDeviceJson(const FString& DeviceId, const TS
 	return Connection->SendText(JsonString(Message));
 }
 
-void FDeviceExplorerHostServer::CompletePendingRequest(const FString& RequestId, const TSharedPtr<FJsonObject>& Result)
+void FDeviceExplorerHostServer::CompletePendingRequest(const TSharedRef<FDeviceConnection>& Connection,
+	                                                   const FString& RequestId,
+	                                                   const TSharedPtr<FJsonObject>& Result)
 {
 	TSharedPtr<FPendingRequest> Pending;
 	{
 		FScopeLock Lock(&StateMutex);
 		const TSharedPtr<FPendingRequest>* Found = PendingRequests.Find(RequestId);
-		if (Found != nullptr)
+		if (Found != nullptr && (*Found)->Connection.Pin() == Connection)
 		{
 			Pending = *Found;
 			Pending->Result = Result;

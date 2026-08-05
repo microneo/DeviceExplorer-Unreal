@@ -24,7 +24,6 @@ private:
 	TSharedRef<SWidget> CreateStatusBarWidget();
 	TSharedRef<SWidget> BuildStatusBarMenu();
 	bool BuildHost();
-	bool InstallHostTarget(FText& OutError) const;
 	bool IsHostCompatible(const FString& Executable, FText& OutError) const;
 	FString FindHostExecutable() const;
 	FString FindLegacyHostExecutable() const;

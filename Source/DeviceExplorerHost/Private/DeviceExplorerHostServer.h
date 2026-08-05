@@ -16,6 +16,8 @@ struct FDeviceExplorerHostConfig
 	int32 DevicePort = 18081;
 	int32 TracePort = 1981;
 	int32 LogCapacity = 100000;
+	int64 LogCapacityBytes = 16ll * 1024 * 1024;
+	int32 MaximumDevices = 1024;
 	int64 MaximumTransferBytes = 16ll * 1024 * 1024 * 1024;
 	double RequestTimeoutSeconds = 10.0;
 	double TransferTtlSeconds = 1800.0;
@@ -68,7 +70,7 @@ private:
 
 	TSharedPtr<FJsonObject> SendDeviceRequestAndWait(const FString& DeviceId, const TSharedRef<FJsonObject>& Message);
 	bool SendDeviceJson(const FString& DeviceId, const TSharedRef<FJsonObject>& Message);
-	void CompletePendingRequest(const FString& RequestId, const TSharedPtr<FJsonObject>& Result);
+	void CompletePendingRequest(const TSharedRef<FDeviceConnection>& Connection, const FString& RequestId, const TSharedPtr<FJsonObject>& Result);
 
 	bool ForwardTrace(const FString& TransferId, FString& OutError);
 	void CleanupExpiredState();

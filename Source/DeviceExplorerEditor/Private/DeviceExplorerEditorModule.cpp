@@ -1,6 +1,5 @@
 #include "DeviceExplorerEditorModule.h"
 
-#include "DesktopPlatformModule.h"
 #include "DeviceExplorerAuth.h"
 #include "DeviceExplorerEditorSettings.h"
 #include "DeviceExplorerProtocol.h"
@@ -13,7 +12,6 @@
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
-#include "IDesktopPlatform.h"
 #include "ISettingsModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CommandLine.h"
@@ -222,9 +220,13 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	}
 
 	FString Executable = FindHostExecutable();
-	if (!FPaths::FileExists(Executable) && !BuildHost())
+	if (!FPaths::FileExists(Executable))
 	{
-		return;
+		if (!BuildHost())
+		{
+			return;
+		}
+		Executable = FindHostExecutable();
 	}
 	FText CompatibilityError;
 	if (!IsHostCompatible(Executable, CompatibilityError))
@@ -243,7 +245,7 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 		}
 		else
 		{
-			Executable = FindLegacyHostExecutable();
+			Executable = FindHostExecutable();
 			if (!IsHostCompatible(Executable, CompatibilityError))
 			{
 				UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("Rebuilt DeviceExplorer host '%s' was rejected: %s"), *Executable, *CompatibilityError.ToString());
@@ -319,73 +321,64 @@ void FDeviceExplorerEditorModule::RestartHost()
 	LaunchHost(false);
 }
 
-bool FDeviceExplorerEditorModule::InstallHostTarget(FText& OutError) const
+bool FDeviceExplorerEditorModule::BuildHost()
 {
-	const FString TargetPath = FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), TEXT("DeviceExplorerHost.Target.cs"));
-	if (FPaths::FileExists(TargetPath))
-	{
-		return true;
-	}
-
 	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("DeviceExplorer"));
 	if (!Plugin.IsValid())
 	{
-		OutError = LOCTEXT("PluginMissing", "Cannot locate the DeviceExplorer plugin.");
-		return false;
-	}
-
-	IFileManager& FileManager = IFileManager::Get();
-	const FString TemplatePath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Templates"), TEXT("DeviceExplorerHost.Target.cs"));
-	FileManager.MakeDirectory(*FPaths::GetPath(TargetPath), true);
-	if (FileManager.Copy(*TargetPath, *TemplatePath) != COPY_OK)
-	{
-		OutError = FText::Format(LOCTEXT("TargetInstallFailed", "Failed to write {0}."), FText::FromString(TargetPath));
-		return false;
-	}
-
-	return true;
-}
-
-bool FDeviceExplorerEditorModule::BuildHost()
-{
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	if (DesktopPlatform == nullptr || !DesktopPlatform->IsUnrealBuildToolAvailable())
-	{
-		Notify(LOCTEXT("BuildToolMissing", "UnrealBuildTool is not available.\nBuild the host with Scripts/BuildDeviceExplorer.ps1."), true);
+		Notify(LOCTEXT("PluginMissing", "Cannot locate the DeviceExplorer plugin."), true);
 		return false;
 	}
 
 	const EAppReturnType::Type Answer = FMessageDialog::Open(
 		EAppMsgType::YesNo,
-		LOCTEXT("BuildHostPrompt", "DeviceExplorerHost is missing or incompatible.\n\nBuild it now? The editor is blocked until the build finishes, which takes a few minutes the first time."),
+		LOCTEXT("BuildHostPrompt", "The native DeviceExplorerHost is missing or incompatible.\n\nBuild and install it now? The editor is blocked until the build finishes, which takes a few minutes the first time."),
 		LOCTEXT("BuildHostTitle", "DeviceExplorer"));
 	if (Answer != EAppReturnType::Yes)
 	{
 		return false;
 	}
 
-	FText InstallError;
-	if (!InstallHostTarget(InstallError))
+	const FString PluginRoot = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*Plugin->GetBaseDir());
+	const FString BuildDirectory = FPaths::ConvertRelativePathToFull(
+		FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("DeviceExplorer"), TEXT("NativeHost")));
+	FString Program;
+	FString Arguments;
+#if PLATFORM_WINDOWS
+	Program = TEXT("powershell.exe");
+	const FString Script = FPaths::Combine(PluginRoot, TEXT("Scripts"), TEXT("BuildDeviceExplorerNativeHost.ps1"));
+	Arguments = FString::Printf(
+		TEXT("-NoProfile -ExecutionPolicy Bypass -File \"%s\" -Configuration Release -BuildDir \"%s\" -Install"),
+		*Script,
+		*BuildDirectory);
+#else
+	Program = TEXT("/usr/bin/env");
+	const FString Script = FPaths::Combine(PluginRoot, TEXT("Scripts"), TEXT("BuildDeviceExplorerNativeHost.sh"));
+	Arguments = FString::Printf(TEXT("bash \"%s\" \"%s\" Release --install"), *Script, *BuildDirectory);
+#endif
+
+	int32 ReturnCode = 1;
+	FString StandardOutput;
+	FString StandardError;
+	const bool bLaunched = FPlatformProcess::ExecProcess(
+		*Program,
+		*Arguments,
+		&ReturnCode,
+		&StandardOutput,
+		&StandardError,
+		*PluginRoot);
+	if (!StandardOutput.IsEmpty())
 	{
-		Notify(InstallError, true);
-		return false;
+		UE_LOG(LogDeviceExplorerEditor, Display, TEXT("%s"), *StandardOutput);
+	}
+	if (!StandardError.IsEmpty())
+	{
+		UE_LOG(LogDeviceExplorerEditor, Warning, TEXT("%s"), *StandardError);
 	}
 
-	// Only Development produces the unsuffixed legacy executable name expected below.
-	const FString Arguments = FString::Printf(
-		TEXT("DeviceExplorerHost Development %s -Project=\"%s\" -Progress -WaitMutex -NoHotReloadFromIDE"),
-		FPlatformMisc::GetUBTPlatform(),
-		*IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::GetProjectFilePath()));
-
-	const bool bBuilt = DesktopPlatform->RunUnrealBuildTool(
-		LOCTEXT("BuildingHost", "Building DeviceExplorerHost..."),
-		FPaths::RootDir(),
-		Arguments,
-		GWarn);
-
-	if (!bBuilt || !FPaths::FileExists(FindLegacyHostExecutable()))
+	if (!bLaunched || ReturnCode != 0 || !FPaths::FileExists(FindHostExecutable()))
 	{
-		Notify(LOCTEXT("BuildFailed", "DeviceExplorerHost build failed.\nSee the Output Log for details."), true);
+		Notify(LOCTEXT("BuildFailed", "The native DeviceExplorerHost build failed.\nSee the Output Log for details, or run the platform build script from a terminal."), true);
 		return false;
 	}
 

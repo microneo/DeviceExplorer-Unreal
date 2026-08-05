@@ -7,7 +7,7 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerEndpointConfig, Log, All);
 
-#if PLATFORM_IOS
+#if PLATFORM_APPLE
 TUniquePtr<IDeviceExplorerEndpointSource> CreateAppleDeviceExplorerEndpointSource();
 #else
 TUniquePtr<IDeviceExplorerEndpointSource> CreateMdnsDeviceExplorerEndpointSource();
@@ -120,7 +120,7 @@ TArray<TUniquePtr<IDeviceExplorerEndpointSource>> CreateDeviceExplorerEndpointSo
 {
 	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> Result;
 	Result.Add(MakeUnique<FConfigDeviceExplorerEndpointSource>());
-#if PLATFORM_IOS
+#if PLATFORM_APPLE
 	Result.Add(CreateAppleDeviceExplorerEndpointSource());
 #else
 	Result.Add(CreateMdnsDeviceExplorerEndpointSource());

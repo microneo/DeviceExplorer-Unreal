@@ -11,7 +11,6 @@ public class DeviceExplorerEditor : ModuleRules
         {
             "Core",
             "CoreUObject",
-            "DesktopPlatform",
             "DeveloperSettings",
             "DeviceExplorer",
             "DeviceExplorerCore",

@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check explicit source list
         run: python Scripts/CheckWireSources.py
+      - name: Check public platform boundaries
+        run: python Scripts/CheckPlatformSources.py
       - name: Cache pinned Asio sources
         uses: actions/cache@v4
         with:

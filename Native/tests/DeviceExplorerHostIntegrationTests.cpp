@@ -67,6 +67,9 @@ int main()
 	Config.DevicePort = 0;
 	Config.Token = "integration-test-token-that-is-long-enough";
 	Config.BuildId = "integration-test";
+	Config.NodeId = "11111111-1111-4111-8111-111111111111";
+	Config.HostSession = 7;
+	Config.InstanceId = "22222222-2222-4222-8222-222222222222";
 	DeviceExplorer::Host::HostCore Host(std::move(Config));
 	std::string Error;
 	CHECK(Host.Start(Error));
@@ -85,7 +88,9 @@ int main()
 	const std::string DashboardHealth = Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/health");
 	const std::string DeviceHealth = Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/health");
 	CHECK(DashboardHealth.find("HTTP/1.1 200 OK") == 0);
-	CHECK(Body(DashboardHealth) == "{\"status\":\"ok\"}");
+	CHECK(Body(DashboardHealth).find("\"status\":\"ok\"") != std::string::npos);
+	CHECK(Body(DashboardHealth).find("\"node_id\":\"11111111-1111-4111-8111-111111111111\"") != std::string::npos);
+	CHECK(Body(DashboardHealth).find("\"host_session\":7") != std::string::npos);
 	CHECK(DeviceHealth.find("HTTP/1.1 200 OK") == 0);
 
 	const std::string ManifestResponse = Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/host-manifest");
@@ -98,6 +103,7 @@ int main()
 	const std::string ConfigResponse = Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/config");
 	CHECK(ConfigResponse.find("HTTP/1.1 200 OK") == 0);
 	CHECK(Body(ConfigResponse).find("\"device_port\":" + std::to_string(Endpoints.DevicePort)) != std::string::npos);
+	CHECK(Body(ConfigResponse).find("\"instance_id\":\"22222222-2222-4222-8222-222222222222\"") != std::string::npos);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/missing").find("HTTP/1.1 404 Not Found") == 0);
 	CHECK(Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/device/connect").find("HTTP/1.1 400 Bad Request") == 0);
 
@@ -110,6 +116,9 @@ int main()
 	UnsafeConfig.DashboardPort = 0;
 	UnsafeConfig.DevicePort = 0;
 	UnsafeConfig.Token = "integration-test-token-that-is-long-enough";
+	UnsafeConfig.NodeId = "11111111-1111-4111-8111-111111111111";
+	UnsafeConfig.HostSession = 7;
+	UnsafeConfig.InstanceId = "22222222-2222-4222-8222-222222222222";
 	DeviceExplorer::Host::HostCore UnsafeHost(std::move(UnsafeConfig));
 	CHECK(!UnsafeHost.Start(Error));
 	CHECK(Error.find("loopback") != std::string::npos);
