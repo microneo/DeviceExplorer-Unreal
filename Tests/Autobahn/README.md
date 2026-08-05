@@ -40,5 +40,8 @@ the conformance gate because they are long-running performance cases. Cases
 negotiate. No RFC 6455 correctness group is excluded.
 
 The runners wait for the selected listener instead of assuming Docker or the
-native agent starts within a fixed delay. The Linux runner also supplies the
-`host.docker.internal` mapping explicitly for engines without Docker Desktop.
+native agent starts within a fixed delay. Waiting for the fuzzing server means
+waiting for an upgrade it answers, because the published Docker port accepts
+connections before `wstest` is listening behind it. The Linux runner also
+supplies the `host.docker.internal` mapping explicitly for engines without
+Docker Desktop.
