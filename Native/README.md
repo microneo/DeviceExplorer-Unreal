@@ -89,13 +89,45 @@ The same state directory contains an atomically replaced `identity.json`.
 `NodeId` remains stable for that OS user, `HostSession` is incremented and
 persisted before listeners or mDNS start, and `InstanceId` changes for every
 process. `/health` and `/api/config` expose the three values for diagnostics.
-The identity store also provides the monotonic `AdvancePast()` operation needed
-when a future peer reports a newer remembered session.
+Peer rollback reconciliation uses the same `AdvancePast()` operation: a stale
+process persists `max_seen + 1` before it closes provisional links, immediately
+reannounces the corrected session, and reconnects.
 
 Authenticated devices are bounded: the registry accepts at most 1024 entries
 and each device log ring is limited both by line count and by 16 MiB of payload.
 Pending request ids are accepted only from the device channel to which the
 request was sent.
+
+## Peer control plane
+
+The first D3 control-plane slice is opt-in. Start two hosts in the same cluster
+with:
+
+```sh
+build/native/dexp-host --enable-distributed --cluster-id studio
+```
+
+Each host binds an ephemeral peer port by default and adds `cluster_id`,
+`node_id`, `host_session`, `instance_id`, the peer port, and protocol range to
+its existing DNS-SD TXT record. The lower `NodeId` initiates a direct link.
+For networks without multicast, add one or more numeric IPv4 seeds:
+
+```sh
+build/native/dexp-host --enable-distributed --cluster-id studio \
+  --peer-seed 192.0.2.10:42112
+```
+
+The peer listener uses bounded length-prefixed JSON frames, a symmetric
+`peer_hello`/`peer_hello_ack`, fixed version negotiation, a 64 KiB control
+queue, bounded handshake/peer/session caches, reconnect backoff, and
+application ping/pong. `GET /api/peers` reports live links and rejected or
+anomalous sessions. A peer that remembers a newer local `HostSession` triggers
+the persisted correction path before membership traffic is accepted.
+
+Distributed mode assumes a trusted development LAN. `ClusterId` separates
+environments but is not authentication or transport integrity; this milestone
+does not expose remote reads, writes, logs, or transfers, and those capabilities
+remain disabled until their explicit opt-in phases.
 
 Standalone Asio is pinned by commit and fetched during CMake configure. For an
 offline or centrally managed dependency, point CMake at an existing checkout:

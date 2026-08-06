@@ -1506,8 +1506,12 @@ private:
 			Result.SetObject();
 			AddString(Result, "status", "ok");
 			AddString(Result, "node_id", State->Config.NodeId);
-			AddUnsigned(Result, "host_session", State->Config.HostSession);
+			AddUnsigned(Result, "host_session", State->Config.LiveHostSession
+				? State->Config.LiveHostSession->load()
+				: State->Config.HostSession);
 			AddString(Result, "instance_id", State->Config.InstanceId);
+			AddBoolean(Result, "distributed_mode", State->Config.EnableDistributedMode);
+			AddUnsigned(Result, "peer_port", State->Endpoints.PeerPort);
 			ReplyJson(200, Result);
 			return;
 		}
@@ -1529,9 +1533,23 @@ private:
 			AddInteger(Result, "device_port", State->Endpoints.DevicePort);
 			AddString(Result, "service_type", "_deviceexplorer._tcp.local.");
 			AddString(Result, "node_id", State->Config.NodeId);
-			AddUnsigned(Result, "host_session", State->Config.HostSession);
+			AddUnsigned(Result, "host_session", State->Config.LiveHostSession
+				? State->Config.LiveHostSession->load()
+				: State->Config.HostSession);
 			AddString(Result, "instance_id", State->Config.InstanceId);
+			AddBoolean(Result, "distributed_mode", State->Config.EnableDistributedMode);
+			AddString(Result, "cluster_id", State->Config.ClusterId);
+			AddInteger(Result, "peer_protocol_version", PeerProtocolVersion);
+			AddInteger(Result, "peer_port", State->Endpoints.PeerPort);
 			ReplyJson(200, Result);
+			return;
+		}
+		if (Request.Method == "GET" && Request.Path == "/api/peers")
+		{
+			const std::string Body = State->Config.PeerDiagnostics
+				? State->Config.PeerDiagnostics()
+				: "{\"enabled\":false,\"peers\":[],\"peer_count\":0}";
+			Reply({ 200, "application/json; charset=utf-8", Body, { { "Cache-Control", "no-store" } } });
 			return;
 		}
 		if (Request.Method == "GET" && Request.Path == "/api/devices")
@@ -1866,5 +1884,10 @@ void HostRuntime::Stop()
 		Pair.second->Complete({});
 	}
 	Impl->State->Pending.clear();
+}
+
+void HostRuntime::Reannounce()
+{
+	Impl->Mdns->Reannounce();
 }
 }    // namespace DeviceExplorer::Host

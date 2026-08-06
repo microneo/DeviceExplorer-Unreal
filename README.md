@@ -18,6 +18,12 @@ Features:
 - mDNS discovery with manual address fallback, and a mutually authenticated device
   link.
 
+The native host also contains an opt-in peer control plane for multi-host
+discovery and liveness. It currently exchanges identity, negotiated peer
+protocol state, and ping/pong only; remote device operations are not enabled.
+Peer links assume a trusted development LAN and are disabled unless the host is
+started with `--enable-distributed` and an explicit cluster id.
+
 The runtime client is excluded from Shipping builds. The dashboard listener is
 localhost-only. A client needs the host's session token before it can connect, and it
 never learns it from the network: discovery only advertises a fingerprint, and host

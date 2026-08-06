@@ -21,6 +21,7 @@ public:
 
 	void Accept(asio::ip::tcp::socket Socket, bool Dashboard);
 	void Stop();
+	void Reannounce();
 
 private:
 	struct Implementation;

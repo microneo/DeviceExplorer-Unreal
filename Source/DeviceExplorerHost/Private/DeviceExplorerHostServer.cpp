@@ -402,6 +402,7 @@ struct FDeviceExplorerHostServer::FHttpRequest
 struct FDeviceExplorerHostServer::FLogEntry
 {
 	uint64 Sequence = 0;
+	uint64 Utf8Bytes = 0;
 	FString Timestamp;
 	FString Category;
 	FString Verbosity;
@@ -1322,33 +1323,30 @@ void FDeviceExplorerHostServer::HandleDeviceMessage(const TSharedRef<FDeviceConn
 		Log.Category.LeftInline(256);
 		Log.Verbosity.LeftInline(64);
 		Log.Message.LeftInline(64 * 1024);
-		(*Device)->LogBytes += static_cast<uint64>(Log.Timestamp.GetAllocatedSize() + Log.Category.GetAllocatedSize() +
-		                                                  Log.Verbosity.GetAllocatedSize() + Log.Message.GetAllocatedSize());
+		const FTCHARToUTF8 TimestampUtf8(*Log.Timestamp);
+		const FTCHARToUTF8 CategoryUtf8(*Log.Category);
+		const FTCHARToUTF8 VerbosityUtf8(*Log.Verbosity);
+		const FTCHARToUTF8 MessageUtf8(*Log.Message);
+		Log.Utf8Bytes = static_cast<uint64>(TimestampUtf8.Length() + CategoryUtf8.Length() +
+		                                    VerbosityUtf8.Length() + MessageUtf8.Length());
+		(*Device)->LogBytes += Log.Utf8Bytes;
 		(*Device)->Logs.Add(MoveTemp(Log));
 	}
 	const int32 Overflow = (*Device)->Logs.Num() - Config.LogCapacity;
 	if (Overflow > 0)
 	{
+		for (int32 Index = 0; Index < Overflow; ++Index)
+		{
+			(*Device)->LogBytes -= (*Device)->Logs[Index].Utf8Bytes;
+		}
 		(*Device)->Logs.PopFront(Overflow);
 		(*Device)->DroppedLogs += Overflow;
-		(*Device)->LogBytes = 0;
-		for (const FLogEntry& Buffered : (*Device)->Logs)
-		{
-			(*Device)->LogBytes += static_cast<uint64>(Buffered.Timestamp.GetAllocatedSize() + Buffered.Category.GetAllocatedSize() +
-			                                                  Buffered.Verbosity.GetAllocatedSize() + Buffered.Message.GetAllocatedSize());
-		}
 	}
 	while ((*Device)->LogBytes > static_cast<uint64>(Config.LogCapacityBytes) && (*Device)->Logs.Num() > 1)
 	{
-		const int32 RemoveCount = FMath::Max(1, (*Device)->Logs.Num() / 8);
-		(*Device)->Logs.PopFront(RemoveCount);
-		(*Device)->DroppedLogs += RemoveCount;
-		(*Device)->LogBytes = 0;
-		for (const FLogEntry& Buffered : (*Device)->Logs)
-		{
-			(*Device)->LogBytes += static_cast<uint64>(Buffered.Timestamp.GetAllocatedSize() + Buffered.Category.GetAllocatedSize() +
-			                                                  Buffered.Verbosity.GetAllocatedSize() + Buffered.Message.GetAllocatedSize());
-		}
+		(*Device)->LogBytes -= (*Device)->Logs[0].Utf8Bytes;
+		(*Device)->Logs.PopFront();
+		++(*Device)->DroppedLogs;
 	}
 }
 

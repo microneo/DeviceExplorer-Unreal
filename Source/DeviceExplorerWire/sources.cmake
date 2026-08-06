@@ -6,6 +6,7 @@ set(DEVICEEXPLORER_WIRE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/Private/DeviceExplorerHttpUpgrade.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/Private/DeviceExplorerJson.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/Private/DeviceExplorerMdns.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/Private/DeviceExplorerPeerProtocol.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/Private/DeviceExplorerWebSocket.cpp"
 )
 
@@ -15,6 +16,7 @@ set(DEVICEEXPLORER_WIRE_HEADERS
     "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerHttpUpgrade.h"
     "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerJson.h"
     "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerMdns.h"
+    "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerPeerProtocol.h"
     "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerProtocol.h"
     "${CMAKE_CURRENT_LIST_DIR}/Public/DeviceExplorerWebSocket.h"
 )

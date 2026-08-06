@@ -76,6 +76,17 @@ bool ParseProcessId(const std::string_view Text, std::uint64_t& OutProcessId)
 	return Result.ec == std::errc{} && Result.ptr == Text.data() + Text.size();
 }
 
+bool ParsePeerSeed(const std::string_view Text, DeviceExplorer::Host::PeerSeed& OutSeed)
+{
+	const std::size_t Colon = Text.rfind(':');
+	if (Colon == std::string_view::npos || Colon == 0 || Colon + 1 == Text.size()) return false;
+	std::uint16_t Port = 0;
+	if (!ParsePort(Text.substr(Colon + 1), Port) || Port == 0) return false;
+	OutSeed.Address.assign(Text.substr(0, Colon));
+	OutSeed.Port = Port;
+	return true;
+}
+
 bool ParentIsRunning(const std::uint64_t ProcessId)
 {
 	if (ProcessId == 0) return true;
@@ -191,6 +202,9 @@ void PrintUsage()
 		   "                 [--device-address ADDRESS] [--device-port PORT]\n"
 		   "                 [--trace-port PORT] [--token TOKEN] [--web-root PATH]\n"
 		   "                 [--transfer-dir PATH]\n"
+		   "                 [--enable-distributed --cluster-id ID]\n"
+		   "                 [--peer-address ADDRESS] [--peer-port PORT]\n"
+		   "                 [--peer-seed ADDRESS:PORT]\n"
 		   "                 [--parent-pid PID] [--state-dir PATH] [--build-id ID]\n"
 		   "                 [--version-json]\n";
 }
@@ -218,6 +232,11 @@ int main(const int ArgCount, char** ArgValues)
 			VersionJson = true;
 			continue;
 		}
+		if (Argument == "--enable-distributed" || Argument == "-EnableDistributed")
+		{
+			Config.EnableDistributedMode = true;
+			continue;
+		}
 		if (Argument == "--dashboard-address" && ReadValue(Index, ArgCount, ArgValues, Value))
 		{
 			Config.DashboardAddress = Value;
@@ -227,6 +246,25 @@ int main(const int ArgCount, char** ArgValues)
 		{
 			Config.DeviceAddress = Value;
 			continue;
+		}
+		if (Argument == "--peer-address" && ReadValue(Index, ArgCount, ArgValues, Value))
+		{
+			Config.PeerAddress = Value;
+			continue;
+		}
+		if (Argument == "--cluster-id" && ReadValue(Index, ArgCount, ArgValues, Value) && !Value.empty())
+		{
+			Config.ClusterId = Value;
+			continue;
+		}
+		if (Argument == "--peer-seed" && ReadValue(Index, ArgCount, ArgValues, Value))
+		{
+			DeviceExplorer::Host::PeerSeed Seed;
+			if (ParsePeerSeed(Value, Seed))
+			{
+				Config.PeerSeeds.push_back(std::move(Seed));
+				continue;
+			}
 		}
 		if (Argument == "--build-id" && ReadValue(Index, ArgCount, ArgValues, Value))
 		{
@@ -272,10 +310,17 @@ int main(const int ArgCount, char** ArgValues)
 		{
 			continue;
 		}
+		if (Argument == "--peer-port" && ReadValue(Index, ArgCount, ArgValues, Value) &&
+		    ParsePort(Value, Config.PeerPort))
+		{
+			continue;
+		}
 
 		if (SplitUnrealArgument(Argument, "DashboardPort", Value) && ParsePort(Value, Config.DashboardPort)) continue;
 		if (SplitUnrealArgument(Argument, "DevicePort", Value) && ParsePort(Value, Config.DevicePort)) continue;
 		if (SplitUnrealArgument(Argument, "TracePort", Value) && ParsePort(Value, Config.TracePort)) continue;
+		if (SplitUnrealArgument(Argument, "PeerPort", Value) && ParsePort(Value, Config.PeerPort)) continue;
+		if (SplitUnrealArgument(Argument, "ClusterId", Value) && !Value.empty()) { Config.ClusterId = Value; continue; }
 		if (SplitUnrealArgument(Argument, "ParentPID", Value) && ParseProcessId(Value, ParentProcessId)) continue;
 		if (SplitUnrealArgument(Argument, "Token", Value)) { Config.Token = Value; continue; }
 		if (SplitUnrealArgument(Argument, "WebRoot", Value)) { Config.WebRoot = Value; continue; }
@@ -318,6 +363,15 @@ int main(const int ArgCount, char** ArgValues)
 	Config.NodeId = Identity.NodeId;
 	Config.HostSession = Identity.HostSession;
 	Config.InstanceId = Identity.InstanceId;
+	Config.LiveHostSession = std::make_shared<std::atomic<std::uint64_t>>(Identity.HostSession);
+	Config.ApplyHostSessionCorrection = [&IdentityStore, &Identity](const std::uint64_t KnownSession,
+	                                                             std::uint64_t& OutSession,
+	                                                             std::string& OutError)
+	{
+		if (!IdentityStore.AdvancePast(KnownSession, Identity, OutError)) return false;
+		OutSession = Identity.HostSession;
+		return true;
+	};
 	Config.Log = [](const DeviceExplorer::Host::LogLevel Level, const std::string& Message)
 	{
 		std::ostream& Stream = Level == DeviceExplorer::Host::LogLevel::Error ? std::cerr : std::cout;
