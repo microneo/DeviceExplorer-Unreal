@@ -1,13 +1,8 @@
 #include "Async/Async.h"
 #include "DeviceExplorerDiscovery.h"
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-
 #import <Foundation/Foundation.h>
 #import <Network/Network.h>
-#include <netdb.h>
-#include <sys/socket.h>
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerDiscoveryApple, Log, All);
 
@@ -17,26 +12,31 @@ constexpr NSTimeInterval MinRetryDelay = 2.0;
 constexpr NSTimeInterval MaxRetryDelay = 30.0;
 const FName AppleBonjourProviderId(TEXT("AppleBonjour"));
 
-FString DataToString(NSData* Data)
+NSString* CopyFingerprint(nw_browse_result_t Result)
 {
-	if (Data == nil)
-	{
-		return FString();
-	}
-	NSString* String = [[NSString alloc] initWithData:Data encoding:NSUTF8StringEncoding];
-	FString Result = String == nil ? FString() : FString(UTF8_TO_TCHAR(String.UTF8String));
-#if !__has_feature(objc_arc)
-	[String release];
-#endif
-	return Result;
+	nw_txt_record_t Record = nw_browse_result_copy_txt_record_object(Result);
+	if (Record == nullptr) return nil;
+	__block NSString* Fingerprint = nil;
+	nw_txt_record_apply(Record, ^bool(const char* Key, nw_txt_record_find_key_t Found, const uint8_t* Value, size_t Length) {
+	  if (Key == nullptr || FCStringAnsi::Stricmp(Key, "fp") != 0 ||
+	      Found != nw_txt_record_find_key_non_empty_value || Value == nullptr)
+	  {
+		  return true;
+	  }
+	  Fingerprint = [[NSString alloc] initWithBytes:Value length:Length encoding:NSUTF8StringEncoding];
+	  return false;
+	});
+	nw_release(Record);
+	return Fingerprint;
 }
 }    // namespace
 
-@interface FDeviceExplorerNetworkBrowserDelegate : NSObject <NSNetServiceDelegate>
+@interface FDeviceExplorerNetworkBrowserDelegate : NSObject
 {
 @public
 	nw_browser_t Browser;
-	NSMutableDictionary<NSString*, NSNetService*>* Services;
+	NSMutableDictionary<NSString*, NSValue*>* Connections;
+	NSMutableDictionary<NSString*, NSString*>* Fingerprints;
 	NSMutableSet<NSString*>* PublishedServiceNames;
 	FDeviceExplorerEndpointEventCallback Callback;
 	NSTimeInterval RetryDelay;
@@ -54,7 +54,8 @@ FString DataToString(NSData* Data)
 	if (self != nil)
 	{
 		Browser = nullptr;
-		Services = [[NSMutableDictionary alloc] init];
+		Connections = [[NSMutableDictionary alloc] init];
+		Fingerprints = [[NSMutableDictionary alloc] init];
 		PublishedServiceNames = [[NSMutableSet alloc] init];
 		RetryDelay = MinRetryDelay;
 		SearchGeneration = 0;
@@ -66,7 +67,8 @@ FString DataToString(NSData* Data)
 {
 	[self stop];
 #if !__has_feature(objc_arc)
-	[Services release];
+	[Connections release];
+	[Fingerprints release];
 	[PublishedServiceNames release];
 	[super dealloc];
 #endif
@@ -74,10 +76,7 @@ FString DataToString(NSData* Data)
 
 - (void)cancelBrowser
 {
-	if (Browser == nullptr)
-	{
-		return;
-	}
+	if (Browser == nullptr) return;
 	nw_browser_set_state_changed_handler(Browser, nullptr);
 	nw_browser_set_browse_results_changed_handler(Browser, nullptr);
 	nw_browser_cancel(Browser);
@@ -85,12 +84,20 @@ FString DataToString(NSData* Data)
 	Browser = nullptr;
 }
 
+- (void)cancelConnection:(NSString*)Name
+{
+	NSValue* Wrapped = Connections[Name];
+	if (Wrapped == nil) return;
+	nw_connection_t Connection = static_cast<nw_connection_t>(Wrapped.pointerValue);
+	nw_connection_set_state_changed_handler(Connection, nullptr);
+	nw_connection_cancel(Connection);
+	nw_release(Connection);
+	[Connections removeObjectForKey:Name];
+}
+
 - (void)emitRemoval:(NSString*)Name
 {
-	if (![PublishedServiceNames containsObject:Name])
-	{
-		return;
-	}
+	if (![PublishedServiceNames containsObject:Name]) return;
 	[PublishedServiceNames removeObject:Name];
 	FDeviceExplorerEndpointCandidate Candidate;
 	Candidate.ProviderId = AppleBonjourProviderId;
@@ -99,41 +106,114 @@ FString DataToString(NSData* Data)
 	AsyncTask(ENamedThreads::GameThread,
 	          [CallbackCopy, Candidate = MoveTemp(Candidate)]() mutable
 	          {
-			  if (CallbackCopy)
-			  {
-				  CallbackCopy(EDeviceExplorerEndpointEvent::Removed, MoveTemp(Candidate));
-			  }
-		  });
+		          if (CallbackCopy) CallbackCopy(EDeviceExplorerEndpointEvent::Removed, MoveTemp(Candidate));
+	          });
 }
 
-- (void)removeService:(NSString*)Name
+- (void)removeResult:(NSString*)Name
 {
-	NSNetService* Service = Services[Name];
-	if (Service != nil)
-	{
-		Service.delegate = nil;
-		[Service stop];
-		[Services removeObjectForKey:Name];
-	}
+	[self cancelConnection:Name];
+	[Fingerprints removeObjectForKey:Name];
 	[self emitRemoval:Name];
 }
 
-- (void)resolveService:(NSString*)Name type:(NSString*)Type domain:(NSString*)Domain
+- (void)publishResult:(NSString*)Name connection:(nw_connection_t)Connection
 {
-	NSNetService* Previous = Services[Name];
-	if (Previous != nil)
+	nw_path_t Path = nw_connection_copy_current_path(Connection);
+	nw_endpoint_t Endpoint = Path == nullptr ? nullptr : nw_path_copy_effective_remote_endpoint(Path);
+	if (Path != nullptr) nw_release(Path);
+	if (Endpoint == nullptr || nw_endpoint_get_type(Endpoint) != nw_endpoint_type_host)
 	{
-		Previous.delegate = nil;
-		[Previous stop];
+		if (Endpoint != nullptr) nw_release(Endpoint);
+		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable host endpoint"),
+		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		return;
+	}
+	const char* RawHost = nw_endpoint_get_hostname(Endpoint);
+	const uint16 Port = nw_endpoint_get_port(Endpoint);
+	if (RawHost == nullptr || *RawHost == '\0' || Port == 0)
+	{
+		nw_release(Endpoint);
+		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable address/port"),
+		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		return;
+	}
+	const FString Host(UTF8_TO_TCHAR(RawHost));
+	const EDeviceExplorerAddressFamily Family = FCStringAnsi::Strchr(RawHost, ':') == nullptr
+		? EDeviceExplorerAddressFamily::IPv4
+		: EDeviceExplorerAddressFamily::IPv6;
+	nw_release(Endpoint);
+
+	const bool bWasPublished = [PublishedServiceNames containsObject:Name];
+	[PublishedServiceNames addObject:Name];
+	NSString* FingerprintValue = Fingerprints[Name];
+	const FString Fingerprint = FingerprintValue == nil ? FString() : FString(UTF8_TO_TCHAR(FingerprintValue.UTF8String));
+	const FString Instance(UTF8_TO_TCHAR(Name.UTF8String));
+	const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
+	AsyncTask(ENamedThreads::GameThread,
+	          [CallbackCopy, Event = bWasPublished ? EDeviceExplorerEndpointEvent::Updated : EDeviceExplorerEndpointEvent::Added,
+	           Host, Fingerprint, Instance, Port, Family]() mutable
+	          {
+		          if (!CallbackCopy) return;
+		          FDeviceExplorerEndpointCandidate Candidate;
+		          Candidate.ProviderId = AppleBonjourProviderId;
+		          Candidate.CandidateId = Instance;
+		          Candidate.Endpoint.Serialized.Address = MoveTemp(Host);
+		          Candidate.Endpoint.Serialized.Port = Port;
+		          Candidate.Endpoint.Serialized.Family = Family;
+		          Candidate.HostFingerprint = MoveTemp(Fingerprint);
+		          Candidate.Instance = Instance;
+		          CallbackCopy(Event, MoveTemp(Candidate));
+	          });
+}
+
+- (void)resolveResult:(nw_browse_result_t)Result endpoint:(nw_endpoint_t)Endpoint name:(NSString*)Name
+{
+	[self cancelConnection:Name];
+	NSString* Fingerprint = CopyFingerprint(Result);
+	if (Fingerprint != nil)
+	{
+		Fingerprints[Name] = Fingerprint;
+#if !__has_feature(objc_arc)
+		[Fingerprint release];
+#endif
+	}
+	else
+	{
+		[Fingerprints removeObjectForKey:Name];
 	}
 
-	NSNetService* Service = [[NSNetService alloc] initWithDomain:Domain type:Type name:Name];
-	Service.delegate = self;
-	Services[Name] = Service;
-	[Service resolveWithTimeout:5.0];
-#if !__has_feature(objc_arc)
-	[Service release];
-#endif
+	nw_parameters_t Parameters = nw_parameters_create_secure_tcp(NW_PARAMETERS_DISABLE_PROTOCOL, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+	nw_connection_t Connection = nw_connection_create(Endpoint, Parameters);
+	nw_release(Parameters);
+	if (Connection == nullptr)
+	{
+		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Cannot resolve Bonjour service %s through Network.framework"),
+		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		return;
+	}
+	Connections[Name] = [NSValue valueWithPointer:Connection];
+	const uint64 Generation = SearchGeneration;
+	const std::string NameUtf8(Name.UTF8String == nullptr ? "" : Name.UTF8String);
+	nw_connection_set_state_changed_handler(Connection, ^(nw_connection_state_t State, nw_error_t Error) {
+	  if (self->SearchGeneration != Generation) return;
+	  NSString* CurrentName = [NSString stringWithUTF8String:NameUtf8.c_str()];
+	  NSValue* Current = CurrentName == nil ? nil : self->Connections[CurrentName];
+	  if (Current == nil || Current.pointerValue != Connection) return;
+	  if (State == nw_connection_state_ready)
+	  {
+		  [self publishResult:CurrentName connection:Connection];
+		  [self cancelConnection:CurrentName];
+	  }
+	  else if (State == nw_connection_state_failed)
+	  {
+		  UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Bonjour resolve failed for %s (%d)"),
+		         *FString(UTF8_TO_TCHAR(NameUtf8.c_str())), Error == nullptr ? 0 : nw_error_get_error_code(Error));
+		  [self cancelConnection:CurrentName];
+	  }
+	});
+	nw_connection_set_queue(Connection, dispatch_get_main_queue());
+	nw_connection_start(Connection);
 }
 
 - (void)scheduleRetry:(uint64)Generation
@@ -141,17 +221,14 @@ FString DataToString(NSData* Data)
 	const NSTimeInterval Delay = RetryDelay;
 	RetryDelay = FMath::Min(RetryDelay * 2.0, MaxRetryDelay);
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(Delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-	  if (self->SearchGeneration == Generation && self->Callback)
-	  {
-		  [self beginSearch];
-	  }
+	  if (self->SearchGeneration == Generation && self->Callback) [self beginSearch];
 	});
 }
 
 - (void)beginSearch
 {
 	[self cancelBrowser];
-	if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *))
+	if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, *))
 	{
 		nw_browse_descriptor_t Descriptor = nw_browse_descriptor_create_bonjour_service("_deviceexplorer._tcp", "local.");
 		nw_parameters_t Parameters = nw_parameters_create_secure_tcp(NW_PARAMETERS_DISABLE_PROTOCOL, NW_PARAMETERS_DEFAULT_CONFIGURATION);
@@ -167,10 +244,7 @@ FString DataToString(NSData* Data)
 
 		const uint64 Generation = SearchGeneration;
 		nw_browser_set_state_changed_handler(Browser, ^(nw_browser_state_t State, nw_error_t Error) {
-		  if (self->SearchGeneration != Generation)
-		  {
-			  return;
-		  }
+		  if (self->SearchGeneration != Generation) return;
 		  if (State == nw_browser_state_ready)
 		  {
 			  self->RetryDelay = MinRetryDelay;
@@ -194,15 +268,9 @@ FString DataToString(NSData* Data)
 			Browser,
 			^(nw_browse_result_t OldResult, nw_browse_result_t NewResult, bool BatchComplete) {
 			  (void) BatchComplete;
-			  if (self->SearchGeneration != Generation)
-			  {
-				  return;
-			  }
+			  if (self->SearchGeneration != Generation) return;
 			  nw_browse_result_t Result = NewResult != nullptr ? NewResult : OldResult;
-			  if (Result == nullptr)
-			  {
-				  return;
-			  }
+			  if (Result == nullptr) return;
 			  nw_endpoint_t Endpoint = nw_browse_result_copy_endpoint(Result);
 			  if (Endpoint == nullptr || nw_endpoint_get_type(Endpoint) != nw_endpoint_type_bonjour_service)
 			  {
@@ -210,31 +278,21 @@ FString DataToString(NSData* Data)
 				  return;
 			  }
 			  const char* RawName = nw_endpoint_get_bonjour_service_name(Endpoint);
-			  const char* RawType = nw_endpoint_get_bonjour_service_type(Endpoint);
-			  const char* RawDomain = nw_endpoint_get_bonjour_service_domain(Endpoint);
 			  NSString* Name = RawName == nullptr ? nil : [NSString stringWithUTF8String:RawName];
-			  NSString* Type = RawType == nullptr ? @"_deviceexplorer._tcp." : [NSString stringWithUTF8String:RawType];
-			  NSString* Domain = RawDomain == nullptr ? @"local." : [NSString stringWithUTF8String:RawDomain];
-			  nw_release(Endpoint);
 			  if (Name == nil)
 			  {
+				  nw_release(Endpoint);
 				  return;
 			  }
-			  if (NewResult == nullptr)
-			  {
-				  [self removeService:Name];
-			  }
-			  else
-			  {
-				  [self resolveService:Name type:Type domain:Domain];
-			  }
+			  if (NewResult == nullptr) [self removeResult:Name];
+			  else [self resolveResult:Result endpoint:Endpoint name:Name];
+			  nw_release(Endpoint);
 			});
 		nw_browser_set_queue(Browser, dispatch_get_main_queue());
 		nw_browser_start(Browser);
 		return;
 	}
-
-	UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Network.framework Bonjour browsing is unavailable on this OS version"));
+	UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Network.framework Bonjour browsing requires macOS 10.15 or iOS/tvOS 13"));
 }
 
 - (void)start:(const FDeviceExplorerEndpointEventCallback&)InCallback
@@ -249,77 +307,10 @@ FString DataToString(NSData* Data)
 {
 	++SearchGeneration;
 	[self cancelBrowser];
-	for (NSNetService* Service in Services.allValues)
-	{
-		Service.delegate = nil;
-		[Service stop];
-	}
-	[Services removeAllObjects];
+	for (NSString* Name in Connections.allKeys) [self cancelConnection:Name];
+	[Fingerprints removeAllObjects];
 	[PublishedServiceNames removeAllObjects];
 	Callback = nullptr;
-}
-
-- (void)netService:(NSNetService*)Sender didNotResolve:(NSDictionary*)ErrorDict
-{
-	UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Bonjour resolve failed for %s: %s"),
-	       *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)),
-	       *FString(UTF8_TO_TCHAR(ErrorDict.description.UTF8String)));
-}
-
-- (void)netServiceDidResolveAddress:(NSNetService*)Sender
-{
-	FString Host;
-	for (NSData* AddressData in Sender.addresses)
-	{
-		const sockaddr* Address = static_cast<const sockaddr*>(AddressData.bytes);
-		if (Address == nullptr || Address->sa_family != AF_INET)
-		{
-			continue;
-		}
-
-		char HostBuffer[NI_MAXHOST] = {};
-		if (getnameinfo(Address, static_cast<socklen_t>(AddressData.length), HostBuffer, sizeof(HostBuffer), nullptr, 0, NI_NUMERICHOST) == 0)
-		{
-			Host = UTF8_TO_TCHAR(HostBuffer);
-			break;
-		}
-	}
-	if (Host.IsEmpty() || Sender.port <= 0)
-	{
-		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable IPv4 address/port"),
-		       *FString(UTF8_TO_TCHAR(Sender.name.UTF8String)));
-		return;
-	}
-
-	FString Fingerprint;
-	if (Sender.TXTRecordData != nil)
-	{
-		NSDictionary<NSString*, NSData*>* Values = [NSNetService dictionaryFromTXTRecordData:Sender.TXTRecordData];
-		Fingerprint = DataToString(Values[@"fp"]);
-	}
-
-	const bool bWasPublished = [PublishedServiceNames containsObject:Sender.name];
-	[PublishedServiceNames addObject:Sender.name];
-	const FString Instance(UTF8_TO_TCHAR(Sender.name.UTF8String));
-	const int32 Port = static_cast<int32>(Sender.port);
-	const FDeviceExplorerEndpointEventCallback CallbackCopy = Callback;
-	AsyncTask(ENamedThreads::GameThread,
-	          [CallbackCopy, Event = bWasPublished ? EDeviceExplorerEndpointEvent::Updated : EDeviceExplorerEndpointEvent::Added,
-	           Host = MoveTemp(Host), Fingerprint = MoveTemp(Fingerprint), Instance, Port]() mutable
-	          {
-			  if (CallbackCopy)
-			  {
-				  FDeviceExplorerEndpointCandidate Candidate;
-				  Candidate.ProviderId = AppleBonjourProviderId;
-				  Candidate.CandidateId = Instance;
-				  Candidate.Endpoint.Serialized.Address = MoveTemp(Host);
-				  Candidate.Endpoint.Serialized.Port = Port;
-				  Candidate.Endpoint.Serialized.Family = EDeviceExplorerAddressFamily::IPv4;
-				  Candidate.HostFingerprint = MoveTemp(Fingerprint);
-				  Candidate.Instance = Instance;
-				  CallbackCopy(Event, MoveTemp(Candidate));
-			  }
-		  });
 }
 
 @end
@@ -328,18 +319,23 @@ class FAppleDeviceExplorerEndpointSource final : public IDeviceExplorerEndpointS
 {
 public:
 	virtual ~FAppleDeviceExplorerEndpointSource() override { Stop(); }
-
 	virtual FName GetProviderId() const override { return AppleBonjourProviderId; }
 
 	virtual void Start(FDeviceExplorerEndpointEventCallback Callback) override
 	{
+		FDeviceExplorerNetworkBrowserDelegate* DelegateToStart = [[FDeviceExplorerNetworkBrowserDelegate alloc] init];
+		FDeviceExplorerNetworkBrowserDelegate* Previous = Delegate;
+		Delegate = DelegateToStart;
 		const FDeviceExplorerEndpointEventCallback CallbackCopy = MoveTemp(Callback);
 		dispatch_async(dispatch_get_main_queue(), ^{
-		  if (Delegate == nil)
+		  if (Previous != nil)
 		  {
-			  Delegate = [[FDeviceExplorerNetworkBrowserDelegate alloc] init];
+			  [Previous stop];
+#if !__has_feature(objc_arc)
+			  [Previous release];
+#endif
 		  }
-		  [Delegate start:CallbackCopy];
+		  [DelegateToStart start:CallbackCopy];
 		});
 	}
 
@@ -347,10 +343,7 @@ public:
 	{
 		FDeviceExplorerNetworkBrowserDelegate* DelegateToStop = Delegate;
 		Delegate = nil;
-		if (DelegateToStop == nil)
-		{
-			return;
-		}
+		if (DelegateToStop == nil) return;
 		dispatch_async(dispatch_get_main_queue(), ^{
 		  [DelegateToStop stop];
 #if !__has_feature(objc_arc)
@@ -367,5 +360,3 @@ TUniquePtr<IDeviceExplorerEndpointSource> CreateAppleDeviceExplorerEndpointSourc
 {
 	return MakeUnique<FAppleDeviceExplorerEndpointSource>();
 }
-
-#pragma clang diagnostic pop

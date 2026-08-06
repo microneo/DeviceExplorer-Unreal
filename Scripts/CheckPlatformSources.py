@@ -26,8 +26,15 @@ require("UnrealPlatformGroup.Apple" in build_sources, "Apple frameworks must be 
 
 discovery = (ROOT / "Source/DeviceExplorer/Private/DeviceExplorerDiscovery.cpp").read_text(encoding="utf-8")
 apple = (ROOT / "Source/DeviceExplorer/Private/Apple/DeviceExplorerDiscoveryApple.mm").read_text(encoding="utf-8")
-require(discovery.count("#if PLATFORM_APPLE") == 2, "all Apple runtime targets must select the Apple discovery provider")
+require("#if PLATFORM_APPLE" in discovery and "CreateAppleDeviceExplorerEndpointSource" in discovery,
+        "Apple runtime targets must select the Apple discovery provider")
 require("nw_browser_create" in apple and "Network/Network.h" in apple, "Apple discovery must use Network.framework browsing")
+require("nw_connection_create" in apple and "nw_path_copy_effective_remote_endpoint" in apple,
+        "Apple Bonjour resolution must stay on Network.framework")
+require("NSNetService" not in apple and "-Wdeprecated-declarations" not in apple,
+        "Apple discovery must not fall back to deprecated NSNetService resolution")
+require("@available(macOS 10.15, iOS 13.0, tvOS 13.0, *)" in apple,
+        "Network.framework Bonjour availability must match the SDK declarations")
 
 workflow = (ROOT / ".github/workflows/native-wire.yml").read_text(encoding="utf-8")
 require("ubuntu-latest" in workflow and "windows-latest" in workflow and "macos-latest" in workflow,
