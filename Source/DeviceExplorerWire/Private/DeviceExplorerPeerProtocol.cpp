@@ -55,21 +55,21 @@ bool IntegerMember(const JsonValue& Object, const std::string_view Name, Integer
 	return true;
 }
 
-void AddString(JsonValue& Object, std::string Name, std::string Value)
+void WriteString(JsonValue& Object, std::string Name, std::string Value)
 {
 	JsonValue Field;
 	(void) Field.SetString(std::move(Value));
 	(void) Object.InsertMember(std::move(Name), std::move(Field));
 }
 
-void AddSigned(JsonValue& Object, std::string Name, const std::int64_t Value)
+void WriteSigned(JsonValue& Object, std::string Name, const std::int64_t Value)
 {
 	JsonValue Field;
 	Field.SetSignedInteger(Value);
 	(void) Object.InsertMember(std::move(Name), std::move(Field));
 }
 
-void AddUnsigned(JsonValue& Object, std::string Name, const std::uint64_t Value)
+void WriteUnsigned(JsonValue& Object, std::string Name, const std::uint64_t Value)
 {
 	JsonValue Field;
 	Field.SetUnsignedInteger(Value);
@@ -206,14 +206,14 @@ bool SerializePeerHello(const PeerHello& Hello, std::string& OutJson, PeerProtoc
 	}
 	JsonValue Root;
 	Root.SetObject();
-	AddString(Root, "type", "peer_hello");
-	AddString(Root, "cluster_id", Hello.ClusterId);
-	AddString(Root, "node_id", Hello.NodeId);
-	AddUnsigned(Root, "host_session", Hello.HostSession);
-	AddString(Root, "instance_id", Hello.InstanceId);
-	AddSigned(Root, "protocol_min", Hello.ProtocolMin);
-	AddSigned(Root, "protocol_max", Hello.ProtocolMax);
-	AddString(Root, "connection_nonce", Hello.ConnectionNonce);
+	WriteString(Root, "type", "peer_hello");
+	WriteString(Root, "cluster_id", Hello.ClusterId);
+	WriteString(Root, "node_id", Hello.NodeId);
+	WriteUnsigned(Root, "host_session", Hello.HostSession);
+	WriteString(Root, "instance_id", Hello.InstanceId);
+	WriteSigned(Root, "protocol_min", Hello.ProtocolMin);
+	WriteSigned(Root, "protocol_max", Hello.ProtocolMax);
+	WriteString(Root, "connection_nonce", Hello.ConnectionNonce);
 	if (!SerializeJson(Root, OutJson))
 	{
 		SetError(OutError, PeerProtocolError::MalformedJson);
@@ -263,11 +263,11 @@ bool SerializePeerHelloAck(const PeerHelloAck& Ack, std::string& OutJson, PeerPr
 	}
 	JsonValue Root;
 	Root.SetObject();
-	AddString(Root, "type", "peer_hello_ack");
-	AddSigned(Root, "negotiated_version", Ack.NegotiatedVersion);
-	AddUnsigned(Root, "known_host_session", Ack.KnownHostSession);
-	AddString(Root, "result", ResultText(Ack.Result));
-	if (!Ack.Reason.empty()) AddString(Root, "reason", Ack.Reason);
+	WriteString(Root, "type", "peer_hello_ack");
+	WriteSigned(Root, "negotiated_version", Ack.NegotiatedVersion);
+	WriteUnsigned(Root, "known_host_session", Ack.KnownHostSession);
+	WriteString(Root, "result", ResultText(Ack.Result));
+	if (!Ack.Reason.empty()) WriteString(Root, "reason", Ack.Reason);
 	if (!SerializeJson(Root, OutJson))
 	{
 		SetError(OutError, PeerProtocolError::MalformedJson);
