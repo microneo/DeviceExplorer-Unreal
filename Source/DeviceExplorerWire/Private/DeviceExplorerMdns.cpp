@@ -326,6 +326,21 @@ bool ParseDecimal(const std::string_view Text, const std::uint32_t Maximum, std:
 	return true;
 }
 
+bool ParseDecimal64(const std::string_view Text, std::uint64_t& OutValue)
+{
+	if (Text.empty()) return false;
+	std::uint64_t Value = 0;
+	for (const char Character : Text)
+	{
+		if (Character < '0' || Character > '9') return false;
+		const std::uint64_t Digit = static_cast<std::uint64_t>(Character - '0');
+		if (Value > (std::numeric_limits<std::uint64_t>::max() - Digit) / 10) return false;
+		Value = Value * 10 + Digit;
+	}
+	OutValue = Value;
+	return true;
+}
+
 MdnsAnnouncementParseResult AnnouncementError(const MdnsError Error)
 {
 	return { MdnsStatus::Error, Error, {} };
@@ -453,9 +468,33 @@ bool EncodeMdnsAnnouncement(const MdnsServiceAnnouncement& Announcement,
 	const std::string Version = "version=" + std::to_string(Announcement.ProtocolVersion);
 	const std::string Fingerprint = "fp=" + Announcement.TokenFingerprint;
 	const std::string DashboardPort = "ui_port=" + std::to_string(Announcement.DashboardPort);
-	if (!AddTxtString(TxtData, Version) || !AddTxtString(TxtData, Fingerprint) ||
-	    !AddTxtString(TxtData, DashboardPort) ||
-	    !AddRecord(Records, Announcement.InstanceName, DnsTypeTxt, 0x8001,
+	if (!AddTxtString(TxtData, Version) || !AddTxtString(TxtData, Fingerprint) || !AddTxtString(TxtData, DashboardPort))
+	{
+		SetError(OutError, MdnsError::InvalidAnnouncement);
+		return false;
+	}
+	if (Announcement.PeerPort != 0)
+	{
+		if (Announcement.ClusterId.empty() || Announcement.NodeId.empty() || Announcement.HostSession == 0 ||
+		    Announcement.InstanceId.empty() || Announcement.PeerProtocolMinimum <= 0 ||
+		    Announcement.PeerProtocolMaximum < Announcement.PeerProtocolMinimum)
+		{
+			SetError(OutError, MdnsError::InvalidAnnouncement);
+			return false;
+		}
+		if (!AddTxtString(TxtData, "cluster_id=" + Announcement.ClusterId) ||
+		    !AddTxtString(TxtData, "node_id=" + Announcement.NodeId) ||
+		    !AddTxtString(TxtData, "host_session=" + std::to_string(Announcement.HostSession)) ||
+		    !AddTxtString(TxtData, "instance_id=" + Announcement.InstanceId) ||
+		    !AddTxtString(TxtData, "peer_port=" + std::to_string(Announcement.PeerPort)) ||
+		    !AddTxtString(TxtData, "peer_protocol_min=" + std::to_string(Announcement.PeerProtocolMinimum)) ||
+		    !AddTxtString(TxtData, "peer_protocol_max=" + std::to_string(Announcement.PeerProtocolMaximum)))
+		{
+			SetError(OutError, MdnsError::InvalidAnnouncement);
+			return false;
+		}
+	}
+	if (!AddRecord(Records, Announcement.InstanceName, DnsTypeTxt, 0x8001,
 	               Announcement.TimeToLive, TxtData))
 	{
 		SetError(OutError, MdnsError::InvalidAnnouncement);
@@ -626,6 +665,27 @@ MdnsAnnouncementParseResult ParseMdnsAnnouncement(const ByteView Packet,
 				else if (NamesEqual(Key, "ui_port") && ParseDecimal(Value, 65535, ParsedNumber))
 				{
 					Announcement.DashboardPort = static_cast<std::uint16_t>(ParsedNumber);
+				}
+				else if (NamesEqual(Key, "cluster_id")) Announcement.ClusterId = std::string(Value);
+				else if (NamesEqual(Key, "node_id")) Announcement.NodeId = std::string(Value);
+				else if (NamesEqual(Key, "instance_id")) Announcement.InstanceId = std::string(Value);
+				else if (NamesEqual(Key, "host_session"))
+				{
+					(void) ParseDecimal64(Value, Announcement.HostSession);
+				}
+				else if (NamesEqual(Key, "peer_port") && ParseDecimal(Value, 65535, ParsedNumber))
+				{
+					Announcement.PeerPort = static_cast<std::uint16_t>(ParsedNumber);
+				}
+				else if (NamesEqual(Key, "peer_protocol_min") &&
+				         ParseDecimal(Value, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), ParsedNumber))
+				{
+					Announcement.PeerProtocolMinimum = static_cast<std::int32_t>(ParsedNumber);
+				}
+				else if (NamesEqual(Key, "peer_protocol_max") &&
+				         ParseDecimal(Value, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()), ParsedNumber))
+				{
+					Announcement.PeerProtocolMaximum = static_cast<std::int32_t>(ParsedNumber);
 				}
 			}
 			TxtOffset += Length;

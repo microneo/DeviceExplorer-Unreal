@@ -3,6 +3,7 @@
 #include "DeviceExplorerHostManifest.h"
 #include "DeviceExplorerJson.h"
 #include "DeviceExplorerMdns.h"
+#include "DeviceExplorerPeerProtocol.h"
 #include "DeviceExplorerProtocol.h"
 #include "DeviceExplorerWebSocket.h"
 
@@ -212,7 +213,7 @@ void TestHostManifest()
 	CHECK(Parsed.DeviceProtocol.Minimum == DeviceExplorer::DeviceProtocolVersion);
 	CHECK(Parsed.DeviceProtocol.Maximum == DeviceExplorer::DeviceProtocolVersion);
 	CHECK(Parsed.WebApi.Minimum == DeviceExplorer::WebApiVersion);
-	CHECK(Parsed.PeerProtocol.Minimum == 0);
+	CHECK(Parsed.PeerProtocol.Minimum == DeviceExplorer::PeerProtocolVersion);
 
 	Source.DeviceProtocol.Maximum = Source.DeviceProtocol.Minimum - 1;
 	CHECK(!SerializeHostManifest(Source, Json, &Error));
@@ -221,7 +222,7 @@ void TestHostManifest()
 	const std::string Invalid =
 		"{\"manifest_version\":1,\"host_version\":\"0.5.0\",\"build_id\":\"x\","
 		"\"device_protocol_min\":10,\"device_protocol_max\":10,\"web_api_min\":1,"
-		"\"web_api_max\":1,\"peer_protocol_min\":0,\"peer_protocol_max\":1}";
+		"\"web_api_max\":1,\"peer_protocol_min\":2,\"peer_protocol_max\":1}";
 	CHECK(!ParseHostManifest(
 		{ reinterpret_cast<const std::uint8_t*>(Invalid.data()), Invalid.size() }, Parsed, &Error));
 	CHECK(Error == JsonError::InvalidInput);
@@ -282,6 +283,13 @@ void TestMdnsCodec()
 	Source.DevicePort = 18081;
 	Source.DashboardPort = 18080;
 	Source.ProtocolVersion = DeviceExplorer::DeviceProtocolVersion;
+	Source.ClusterId = "studio";
+	Source.NodeId = "11111111-1111-4111-8111-111111111111";
+	Source.HostSession = 9;
+	Source.InstanceId = "22222222-2222-4222-8222-222222222222";
+	Source.PeerPort = 18082;
+	Source.PeerProtocolMinimum = DeviceExplorer::PeerProtocolVersion;
+	Source.PeerProtocolMaximum = DeviceExplorer::PeerProtocolVersion;
 	Source.TimeToLive = 120;
 	Source.IPv4Addresses = { { 192, 168, 31, 134 }, { 10, 20, 30, 40 } };
 
@@ -297,6 +305,12 @@ void TestMdnsCodec()
 	CHECK(Parsed.Announcement.DevicePort == Source.DevicePort);
 	CHECK(Parsed.Announcement.DashboardPort == Source.DashboardPort);
 	CHECK(Parsed.Announcement.ProtocolVersion == Source.ProtocolVersion);
+	CHECK(Parsed.Announcement.ClusterId == Source.ClusterId);
+	CHECK(Parsed.Announcement.NodeId == Source.NodeId);
+	CHECK(Parsed.Announcement.HostSession == Source.HostSession);
+	CHECK(Parsed.Announcement.InstanceId == Source.InstanceId);
+	CHECK(Parsed.Announcement.PeerPort == Source.PeerPort);
+	CHECK(Parsed.Announcement.PeerProtocolMinimum == DeviceExplorer::PeerProtocolVersion);
 	CHECK(Parsed.Announcement.TimeToLive == Source.TimeToLive);
 	CHECK(Parsed.Announcement.IPv4Addresses == Source.IPv4Addresses);
 
@@ -751,6 +765,60 @@ void TestRegisteredCloseCodes()
 	CHECK(!IsValidWebSocketCloseCode(1006));
 	CHECK(!IsValidWebSocketCloseCode(1015));
 }
+
+void TestPeerProtocol()
+{
+	PeerHello Hello;
+	Hello.ClusterId = "studio";
+	Hello.NodeId = "11111111-1111-4111-8111-111111111111";
+	Hello.HostSession = 42;
+	Hello.InstanceId = "22222222-2222-4222-8222-222222222222";
+	Hello.ProtocolMin = DeviceExplorer::PeerProtocolVersion;
+	Hello.ProtocolMax = DeviceExplorer::PeerProtocolVersion;
+	Hello.ConnectionNonce = "0123456789abcdef0123456789abcdef";
+	std::string Json;
+	CHECK(SerializePeerHello(Hello, Json));
+	PeerHello Parsed;
+	CHECK(ParsePeerHello({ reinterpret_cast<const std::uint8_t*>(Json.data()), Json.size() }, Parsed));
+	CHECK(Parsed.ClusterId == Hello.ClusterId);
+	CHECK(Parsed.NodeId == Hello.NodeId);
+	CHECK(Parsed.HostSession == Hello.HostSession);
+	CHECK(Parsed.InstanceId == Hello.InstanceId);
+	CHECK(Parsed.ConnectionNonce == Hello.ConnectionNonce);
+
+	PeerHelloAck Ack;
+	Ack.NegotiatedVersion = DeviceExplorer::PeerProtocolVersion;
+	Ack.KnownHostSession = 43;
+	Ack.Result = PeerHelloResult::StaleSession;
+	Ack.Reason = "a newer process is known";
+	CHECK(SerializePeerHelloAck(Ack, Json));
+	PeerHelloAck ParsedAck;
+	CHECK(ParsePeerHelloAck({ reinterpret_cast<const std::uint8_t*>(Json.data()), Json.size() }, ParsedAck));
+	CHECK(ParsedAck.Result == PeerHelloResult::StaleSession);
+	CHECK(ParsedAck.KnownHostSession == 43);
+
+	std::vector<std::uint8_t> First;
+	std::vector<std::uint8_t> Second;
+	CHECK(EncodePeerFrame("one", First));
+	CHECK(EncodePeerFrame("two", Second));
+	First.insert(First.end(), Second.begin(), Second.end());
+	PeerFrameDecoder Decoder;
+	std::vector<std::string> Messages;
+	CHECK(Decoder.Feed({ First.data(), 2 }, Messages));
+	CHECK(Messages.empty());
+	CHECK(Decoder.Feed({ First.data() + 2, First.size() - 2 }, Messages));
+	CHECK(Messages.size() == 2 && Messages[0] == "one" && Messages[1] == "two");
+
+	const std::uint8_t Oversized[] = { 0x00, 0x02, 0x00, 0x01 };
+	PeerProtocolError Error = PeerProtocolError::None;
+	CHECK(!Decoder.Feed({ Oversized, sizeof(Oversized) }, Messages, &Error));
+	CHECK(Error == PeerProtocolError::FrameTooLarge);
+	CHECK(Decoder.BufferedBytes() == 0);
+
+	const std::string Missing = "{\"type\":\"peer_hello\"}";
+	CHECK(!ParsePeerHello({ reinterpret_cast<const std::uint8_t*>(Missing.data()), Missing.size() }, Parsed, &Error));
+	CHECK(Error == PeerProtocolError::MissingField);
+}
 }    // namespace
 
 int main()
@@ -768,6 +836,7 @@ int main()
 	TestDeterministicMalformedInputs();
 	TestWebSocketBufferedLimit();
 	TestRegisteredCloseCodes();
+	TestPeerProtocol();
 	if (Failures != 0)
 	{
 		std::cerr << Failures << " test(s) failed\n";

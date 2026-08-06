@@ -48,6 +48,13 @@ struct MdnsServiceAnnouncement
 	std::uint16_t DevicePort = 0;
 	std::uint16_t DashboardPort = 0;
 	std::int32_t ProtocolVersion = 0;
+	std::string ClusterId;
+	std::string NodeId;
+	std::uint64_t HostSession = 0;
+	std::string InstanceId;
+	std::uint16_t PeerPort = 0;
+	std::int32_t PeerProtocolMinimum = 0;
+	std::int32_t PeerProtocolMaximum = 0;
 	std::uint32_t TimeToLive = 120;
 	std::vector<std::array<std::uint8_t, 4>> IPv4Addresses;
 };
