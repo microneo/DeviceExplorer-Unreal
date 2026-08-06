@@ -51,6 +51,22 @@ struct PeerHelloAck
 	std::uint64_t KnownHostSession = 0;
 	PeerHelloResult Result = PeerHelloResult::Rejected;
 	std::string Reason;
+	std::string Proof;
+};
+
+enum class PeerMessageType : std::uint8_t
+{
+	Hello,
+	HelloAck,
+	Ping,
+	Pong
+};
+
+struct PeerMessage
+{
+	PeerMessageType Type = PeerMessageType::Ping;
+	PeerHello Hello;
+	PeerHelloAck HelloAck;
 };
 
 enum class PeerProtocolError : std::uint8_t
@@ -95,5 +111,12 @@ DEVICEEXPLORERWIRE_API bool SerializePeerHelloAck(const PeerHelloAck& Ack,
 DEVICEEXPLORERWIRE_API bool ParsePeerHelloAck(ByteView Json,
 	                                           PeerHelloAck& OutAck,
 	                                           PeerProtocolError* OutError = nullptr);
+DEVICEEXPLORERWIRE_API bool ParsePeerMessage(ByteView Json,
+	                                          PeerMessage& OutMessage,
+	                                          PeerProtocolError* OutError = nullptr);
+DEVICEEXPLORERWIRE_API std::string ComputePeerHelloAckProof(std::string_view Secret,
+	                                                        const PeerHello& Prover,
+	                                                        const PeerHello& Verifier,
+	                                                        const PeerHelloAck& Ack);
 DEVICEEXPLORERWIRE_API const char* PeerProtocolErrorText(PeerProtocolError Error);
 }    // namespace DeviceExplorer::Wire

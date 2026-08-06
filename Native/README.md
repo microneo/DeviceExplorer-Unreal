@@ -104,7 +104,8 @@ The first D3 control-plane slice is opt-in. Start two hosts in the same cluster
 with:
 
 ```sh
-build/native/dexp-host --enable-distributed --cluster-id studio
+build/native/dexp-host --enable-distributed --cluster-id studio \
+  --peer-secret 64-or-more-random-hex-characters
 ```
 
 Each host binds an ephemeral peer port by default and adds `cluster_id`,
@@ -114,19 +115,22 @@ For networks without multicast, add one or more numeric IPv4 seeds:
 
 ```sh
 build/native/dexp-host --enable-distributed --cluster-id studio \
+  --peer-secret 64-or-more-random-hex-characters \
   --peer-seed 192.0.2.10:42112
 ```
 
 The peer listener uses bounded length-prefixed JSON frames, a symmetric
 `peer_hello`/`peer_hello_ack`, fixed version negotiation, a 64 KiB control
 queue, bounded handshake/peer/session caches, reconnect backoff, and
-application ping/pong. `GET /api/peers` reports live links and rejected or
-anomalous sessions. A peer that remembers a newer local `HostSession` triggers
-the persisted correction path before membership traffic is accepted.
+application ping/pong. Both sides authenticate the complete handshake decision
+with HMAC-SHA-256 over fresh nonces and both host identities. The peer secret is
+never published through DNS-SD; every host in a cluster must be configured with
+the same high-entropy value. `ClusterId` remains only a discovery boundary.
 
-Distributed mode assumes a trusted development LAN. `ClusterId` separates
-environments but is not authentication or transport integrity; this milestone
-does not expose remote reads, writes, logs, or transfers, and those capabilities
+`GET /api/peers` reports live links, authentication failures, identity
+collisions, expired discovery candidates, and anomalous sessions. A peer that
+remembers a newer local `HostSession` can trigger the persisted correction path
+only after its proof is verified. Remote reads, writes, logs, and transfers
 remain disabled until their explicit opt-in phases.
 
 Standalone Asio is pinned by commit and fetched during CMake configure. For an
