@@ -61,6 +61,10 @@ if(DEVICEEXPLORER_BUILD_HOST)
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostIdentity.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerNetwork.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerNetwork.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.h"
     )
@@ -138,6 +142,20 @@ if(DEVICEEXPLORER_BUILD_HOST)
             target_compile_options(dexp-host-identity-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
         endif()
         add_test(NAME dexp-host-identity-tests COMMAND dexp-host-identity-tests)
+        add_executable(dexp-host-peer-state-tests
+            "${CMAKE_CURRENT_LIST_DIR}/tests/DeviceExplorerHostPeerStateTests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.h"
+        )
+        target_include_directories(dexp-host-peer-state-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/host")
+        target_link_libraries(dexp-host-peer-state-tests PRIVATE dexp-wire)
+        target_compile_features(dexp-host-peer-state-tests PRIVATE cxx_std_17)
+        if(MSVC)
+            target_compile_options(dexp-host-peer-state-tests PRIVATE /W4 /WX)
+        else()
+            target_compile_options(dexp-host-peer-state-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME dexp-host-peer-state-tests COMMAND dexp-host-peer-state-tests)
         add_test(NAME dexp-host-version-json COMMAND dexp-host --version-json)
         set_tests_properties(dexp-host-version-json PROPERTIES
             PASS_REGULAR_EXPRESSION "\"manifest_version\":1"

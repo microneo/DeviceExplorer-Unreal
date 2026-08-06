@@ -98,7 +98,7 @@ void EnumerateInterfaceAddresses(std::set<std::uint32_t>& Addresses)
 struct MdnsAdvertiser::Implementation
 {
 	Implementation(asio::io_context& InIo, const HostConfig& InConfig, BoundEndpoints InEndpoints)
-		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Socket(Io), Timer(Io),
+		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Socket(Io), Timer(Io), QueryTimer(Io),
 		  Multicast(asio::ip::make_address_v4("224.0.0.251"), MdnsPort)
 	{
 		const std::string Machine = SafeLabel(asio::ip::host_name());
@@ -108,6 +108,16 @@ struct MdnsAdvertiser::Implementation
 		Announcement.DevicePort = Endpoints.DevicePort;
 		Announcement.DashboardPort = Endpoints.DashboardPort;
 		Announcement.ProtocolVersion = DeviceProtocolVersion;
+		if (Config.EnableDistributedMode && Endpoints.PeerPort != 0)
+		{
+			Announcement.ClusterId = Config.ClusterId;
+			Announcement.NodeId = Config.NodeId;
+			Announcement.HostSession = Config.HostSession;
+			Announcement.InstanceId = Config.InstanceId;
+			Announcement.PeerPort = Endpoints.PeerPort;
+			Announcement.PeerProtocolMinimum = PeerProtocolVersion;
+			Announcement.PeerProtocolMaximum = PeerProtocolVersion;
+		}
 	}
 
 	void Log(const LogLevel Level, const std::string& Message) const
@@ -160,6 +170,7 @@ struct MdnsAdvertiser::Implementation
 		Receive();
 		Announce(120);
 		Schedule();
+		if (Config.EnableDistributedMode) ScheduleStartupQuery();
 		return true;
 	}
 
@@ -176,6 +187,26 @@ struct MdnsAdvertiser::Implementation
 					if (Sender.port() == MdnsPort) Announce(120);
 					else Send(Sender, 120);
 				}
+				else if (Config.EnableDistributedMode && Config.PeerDiscovered)
+				{
+					const Wire::MdnsAnnouncementParseResult Parsed = Wire::ParseMdnsAnnouncement({ Buffer.data(), Bytes });
+					const Wire::MdnsServiceAnnouncement& Remote = Parsed.Announcement;
+					if (Parsed.Status == Wire::MdnsStatus::Complete && Remote.PeerPort != 0 &&
+					    !(Remote.NodeId == Config.NodeId && Remote.HostSession == Config.HostSession &&
+					      Remote.InstanceId == Config.InstanceId))
+					{
+						PeerCandidate Candidate;
+						Candidate.ClusterId = Remote.ClusterId;
+						Candidate.NodeId = Remote.NodeId;
+						Candidate.HostSession = Remote.HostSession;
+						Candidate.InstanceId = Remote.InstanceId;
+						Candidate.Address = Sender.address().to_string();
+						Candidate.Port = Remote.PeerPort;
+						Candidate.ProtocolMinimum = Remote.PeerProtocolMinimum;
+						Candidate.ProtocolMaximum = Remote.PeerProtocolMaximum;
+						Config.PeerDiscovered(std::move(Candidate));
+					}
+				}
 			}
 			if (Running && Error != asio::error::operation_aborted) Receive();
 		});
@@ -183,7 +214,8 @@ struct MdnsAdvertiser::Implementation
 
 	void Schedule()
 	{
-		Timer.expires_after(std::chrono::seconds(30));
+		std::uniform_int_distribution<int> Delay(20, 30);
+		Timer.expires_after(std::chrono::seconds(Delay(Random)));
 		Timer.async_wait([this](const asio::error_code& Error)
 		{
 			if (!Error && Running)
@@ -194,8 +226,31 @@ struct MdnsAdvertiser::Implementation
 		});
 	}
 
+	void ScheduleStartupQuery()
+	{
+		std::uniform_int_distribution<int> Delay(50, 1000);
+		QueryTimer.expires_after(std::chrono::milliseconds(Delay(Random)));
+		QueryTimer.async_wait([this](const asio::error_code& Error)
+		{
+			if (!Error && Running) SendQuery();
+		});
+	}
+
+	void SendQuery()
+	{
+		std::vector<std::uint8_t> Packet;
+		if (!Wire::EncodeMdnsQuery(Announcement.ServiceName, Packet)) return;
+		for (const asio::ip::address_v4& Interface : Interfaces)
+		{
+			asio::error_code Ignored;
+			Socket.set_option(asio::ip::multicast::outbound_interface(Interface), Ignored);
+			Socket.send_to(asio::buffer(Packet), Multicast, 0, Ignored);
+		}
+	}
+
 	void Announce(const std::uint32_t Ttl)
 	{
+		if (Config.LiveHostSession) Announcement.HostSession = Config.LiveHostSession->load();
 		for (const std::array<std::uint8_t, 4>& Bytes : Announcement.IPv4Addresses)
 		{
 			const asio::ip::address_v4 Address(Bytes);
@@ -222,6 +277,7 @@ struct MdnsAdvertiser::Implementation
 		Running = false;
 		asio::error_code Ignored;
 		Timer.cancel();
+		QueryTimer.cancel();
 		Socket.cancel(Ignored);
 		for (const asio::ip::address_v4& Interface : JoinedInterfaces)
 		{
@@ -235,12 +291,14 @@ struct MdnsAdvertiser::Implementation
 	BoundEndpoints Endpoints;
 	Udp::socket Socket;
 	asio::steady_timer Timer;
+	asio::steady_timer QueryTimer;
 	Udp::endpoint Multicast;
 	Udp::endpoint Sender;
 	std::array<std::uint8_t, MaximumDatagramBytes> Buffer{};
 	Wire::MdnsServiceAnnouncement Announcement;
 	std::vector<asio::ip::address_v4> Interfaces;
 	std::vector<asio::ip::address_v4> JoinedInterfaces;
+	std::mt19937 Random{ std::random_device{}() };
 	bool Running = false;
 };
 
@@ -257,6 +315,11 @@ MdnsAdvertiser::~MdnsAdvertiser()
 bool MdnsAdvertiser::Start()
 {
 	return Impl->Start();
+}
+
+void MdnsAdvertiser::Reannounce()
+{
+	if (Impl->Running) Impl->Announce(120);
 }
 
 void MdnsAdvertiser::Stop()

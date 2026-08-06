@@ -16,6 +16,7 @@ public:
 
 	bool Start();
 	void Stop();
+	void Reannounce();
 
 private:
 	struct Implementation;

@@ -1,6 +1,7 @@
 #include "DeviceExplorerHostCore.h"
 
 #include "DeviceExplorerHostManifest.h"
+#include "DeviceExplorerHostPeerNetwork.h"
 #include "DeviceExplorerHostRuntime.h"
 
 #include <asio.hpp>
@@ -90,6 +91,7 @@ struct HostCore::Implementation
 	BoundEndpoints Endpoints;
 	std::string ManifestJson;
 	std::shared_ptr<HostRuntime> Runtime;
+	std::shared_ptr<HostPeerNetwork> PeerNetwork;
 	bool Running = false;
 };
 
@@ -120,6 +122,14 @@ bool HostCore::Start(std::string& OutError)
 		OutError = "persisted host identity is required";
 		return false;
 	}
+	if (!Impl->Config.LiveHostSession)
+	{
+		Impl->Config.LiveHostSession = std::make_shared<std::atomic<std::uint64_t>>(Impl->Config.HostSession);
+	}
+	if (!Impl->Config.RequestMdnsReannounce)
+	{
+		Impl->Config.RequestMdnsReannounce = std::make_shared<std::function<void()>>();
+	}
 	Wire::HostManifest Manifest;
 	Manifest.BuildId = Impl->Config.BuildId.empty() ? "unknown" : Impl->Config.BuildId;
 	if (!Wire::SerializeHostManifest(Manifest, Impl->ManifestJson))
@@ -149,14 +159,52 @@ bool HostCore::Start(std::string& OutError)
 		Stop();
 		return false;
 	}
-	Impl->Endpoints = { Dashboard.address().to_string(), Dashboard.port(), Device.address().to_string(), Device.port() };
+	Impl->Endpoints.DashboardAddress = Dashboard.address().to_string();
+	Impl->Endpoints.DashboardPort = Dashboard.port();
+	Impl->Endpoints.DeviceAddress = Device.address().to_string();
+	Impl->Endpoints.DevicePort = Device.port();
+	if (Impl->Config.EnableDistributedMode)
+	{
+		Impl->PeerNetwork = std::make_shared<HostPeerNetwork>(Impl->Io, Impl->Config);
+		if (!Impl->PeerNetwork->Start(OutError))
+		{
+			Stop();
+			return false;
+		}
+		Impl->Endpoints.PeerAddress = Impl->PeerNetwork->BoundAddress();
+		Impl->Endpoints.PeerPort = Impl->PeerNetwork->BoundPort();
+		const std::weak_ptr<HostPeerNetwork> WeakPeerNetwork = Impl->PeerNetwork;
+		Impl->Config.PeerDiagnostics = [WeakPeerNetwork]
+		{
+			const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock();
+			return Network ? Network->DiagnosticsJson() : "{\"enabled\":false,\"peers\":[],\"peer_count\":0}";
+		};
+		Impl->Config.PeerDiscovered = [WeakPeerNetwork](PeerCandidate Candidate)
+		{
+			if (const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock())
+			{
+				Network->Discover(std::move(Candidate));
+			}
+		};
+	}
 	Impl->Runtime = std::make_shared<HostRuntime>(Impl->Io, Impl->Config, Impl->Endpoints, Impl->ManifestJson);
+	const std::weak_ptr<HostRuntime> WeakRuntime = Impl->Runtime;
+	*Impl->Config.RequestMdnsReannounce = [WeakRuntime]
+	{
+		if (const std::shared_ptr<HostRuntime> Runtime = WeakRuntime.lock()) Runtime->Reannounce();
+	};
 	Impl->Running = true;
 	Impl->Accept(Impl->DashboardAcceptor, ListenerKind::Dashboard);
 	Impl->Accept(Impl->DeviceAcceptor, ListenerKind::Device);
 	Impl->Log(LogLevel::Information, "dashboard listening on " + Impl->Endpoints.DashboardAddress + ':' + std::to_string(Impl->Endpoints.DashboardPort));
 	Impl->Log(LogLevel::Information, "device listener on " + Impl->Endpoints.DeviceAddress + ':' + std::to_string(Impl->Endpoints.DevicePort));
-	Impl->Log(LogLevel::Information, "host identity " + Impl->Config.NodeId + " session " + std::to_string(Impl->Config.HostSession));
+	Impl->Log(LogLevel::Information, "host identity " + Impl->Config.NodeId + " session " +
+	          std::to_string(Impl->Config.LiveHostSession->load()));
+	if (Impl->PeerNetwork)
+	{
+		Impl->Log(LogLevel::Information, "peer listener on " + Impl->Endpoints.PeerAddress + ':' +
+		          std::to_string(Impl->Endpoints.PeerPort));
+	}
 	OutError.clear();
 	return true;
 }
@@ -172,17 +220,23 @@ void HostCore::Stop()
 {
 	if (!Impl) return;
 	Impl->Running = false;
-	if (Impl->Runtime)
-	{
-		Impl->Runtime->Stop();
-		Impl->Runtime.reset();
-	}
+	if (Impl->PeerNetwork) Impl->PeerNetwork->Stop();
+	if (Impl->Runtime) Impl->Runtime->Stop();
 	asio::error_code Ignored;
 	Impl->DashboardAcceptor.cancel(Ignored);
 	Impl->DashboardAcceptor.close(Ignored);
 	Impl->DeviceAcceptor.cancel(Ignored);
 	Impl->DeviceAcceptor.close(Ignored);
+	// Drain cancellation handlers while their owners are still alive. HostCore can
+	// be started again, so leaving stale handlers in the reusable io_context would
+	// otherwise let them observe destroyed peer/runtime state after restart.
+	Impl->Io.restart();
+	while (Impl->Io.poll() != 0)
+	{
+	}
 	Impl->Io.stop();
+	Impl->PeerNetwork.reset();
+	Impl->Runtime.reset();
 }
 
 bool HostCore::IsRunning() const
@@ -193,5 +247,10 @@ bool HostCore::IsRunning() const
 BoundEndpoints HostCore::GetBoundEndpoints() const
 {
 	return Impl->Endpoints;
+}
+
+std::string HostCore::GetPeerDiagnosticsJson() const
+{
+	return Impl->PeerNetwork ? Impl->PeerNetwork->DiagnosticsJson() : "{\"enabled\":false,\"peers\":[],\"peer_count\":0}";
 }
 }    // namespace DeviceExplorer::Host
