@@ -348,7 +348,12 @@ struct HostPeerNetwork::Implementation
 				Self->Writes.pop_front();
 				if (Self->CloseAfterWrite && Self->Writes.empty())
 				{
-					Self->Close("handshake rejected");
+					// The peer answers our hello while we are already rejecting theirs, so
+					// closing now would reset a connection with unread bytes on it and the
+					// reset would discard the rejection the peer still has to read. Half
+					// close instead and let their disconnect, or the handshake timer, end it.
+					asio::error_code Ignored;
+					Self->Socket.shutdown(Tcp::socket::shutdown_send, Ignored);
 					return;
 				}
 				Self->Write();
