@@ -2,6 +2,7 @@
 
 #include "DeviceExplorerHostPeerState.h"
 
+#include "DeviceExplorerAuthPrimitives.h"
 #include "DeviceExplorerJson.h"
 #include "DeviceExplorerPeerProtocol.h"
 #include "DeviceExplorerProtocol.h"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -34,14 +36,6 @@ std::string MakeNonce()
 	std::string Result(32, '\0');
 	for (char& Character : Result) Character = Hex[Random() & 0x0F];
 	return Result;
-}
-
-std::string MessageType(const std::string& Text)
-{
-	Wire::DeviceExplorerMessage Message;
-	if (!Wire::ParseDeviceExplorerMessage(
-		    { reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message)) return {};
-	return Message.Type;
 }
 
 void AddString(Wire::JsonValue& Object, std::string Name, std::string Value)
@@ -79,15 +73,17 @@ struct HostPeerNetwork::Implementation
 
 		void Schedule(const bool Immediate)
 		{
-			if (!Owner.Running || Dialing) return;
+			if (!Owner.Running.load() || Dialing || Scheduled) return;
 			const std::chrono::milliseconds RateDelay = Owner.ReserveDialDelay();
 			const std::chrono::milliseconds RetryDelay = Immediate
 				? std::chrono::milliseconds(0)
 				: std::chrono::duration_cast<std::chrono::milliseconds>(Backoff);
 			Timer.expires_after(std::max(RateDelay, RetryDelay));
+			Scheduled = true;
 			auto Self = shared_from_this();
 			Timer.async_wait([Self](const asio::error_code& Error)
 			{
+				Self->Scheduled = false;
 				if (!Error) Self->Dial();
 			});
 		}
@@ -97,6 +93,11 @@ struct HostPeerNetwork::Implementation
 		void OnClosed()
 		{
 			Dialing = false;
+			if (!Persistent && std::chrono::steady_clock::now() - LastDiscovered > Owner.Config.PeerCandidateTtl)
+			{
+				Owner.ExpireCandidate(shared_from_this());
+				return;
+			}
 			Backoff = std::min(Backoff * 2, std::chrono::seconds(30));
 			Schedule(false);
 		}
@@ -105,7 +106,11 @@ struct HostPeerNetwork::Implementation
 		PeerSeed Seed;
 		asio::steady_timer Timer;
 		std::chrono::seconds Backoff{ 1 };
+		std::string NodeId;
+		std::chrono::steady_clock::time_point LastDiscovered = std::chrono::steady_clock::now();
 		bool Dialing = false;
+		bool Scheduled = false;
+		bool Persistent = false;
 	};
 
 	struct Session : public std::enable_shared_from_this<Session>
@@ -135,18 +140,17 @@ struct HostPeerNetwork::Implementation
 
 		void SendHello()
 		{
-			Wire::PeerHello Hello;
-			Hello.ClusterId = Owner.Config.ClusterId;
-			Hello.NodeId = Owner.Config.NodeId;
-			Hello.HostSession = Owner.Config.LiveHostSession
+			LocalHello.ClusterId = Owner.Config.ClusterId;
+			LocalHello.NodeId = Owner.Config.NodeId;
+			LocalHello.HostSession = Owner.Config.LiveHostSession
 				? Owner.Config.LiveHostSession->load()
 				: Owner.Config.HostSession;
-			Hello.InstanceId = Owner.Config.InstanceId;
-			Hello.ProtocolMin = PeerProtocolVersion;
-			Hello.ProtocolMax = PeerProtocolVersion;
-			Hello.ConnectionNonce = LocalNonce;
+			LocalHello.InstanceId = Owner.Config.InstanceId;
+			LocalHello.ProtocolMin = PeerProtocolVersion;
+			LocalHello.ProtocolMax = PeerProtocolVersion;
+			LocalHello.ConnectionNonce = LocalNonce;
 			std::string Json;
-			if (!Wire::SerializePeerHello(Hello, Json))
+			if (!Wire::SerializePeerHello(LocalHello, Json))
 			{
 				Close("cannot serialize peer hello");
 				return;
@@ -182,47 +186,51 @@ struct HostPeerNetwork::Implementation
 
 		bool Handle(const std::string& Text)
 		{
-			const std::string Type = MessageType(Text);
-			if (Type == "peer_hello") return HandleHello(Text);
-			if (Type == "peer_hello_ack") return HandleAck(Text);
+			Wire::PeerMessage Message;
+			Wire::PeerProtocolError Error = Wire::PeerProtocolError::None;
+			if (!Wire::ParsePeerMessage(
+				    { reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message, &Error))
+			{
+				Close(Wire::PeerProtocolErrorText(Error));
+				return false;
+			}
+			if (Message.Type == Wire::PeerMessageType::Hello) return HandleHello(std::move(Message.Hello));
+			if (Message.Type == Wire::PeerMessageType::HelloAck) return HandleAck(std::move(Message.HelloAck));
 			if (!Established)
 			{
 				Close("message before peer handshake");
 				return false;
 			}
-			if (Type == "peer_ping")
+			if (Message.Type == Wire::PeerMessageType::Ping)
 			{
 				Send("{\"type\":\"peer_pong\"}");
 				return true;
 			}
-			if (Type == "peer_pong") return true;
+			if (Message.Type == Wire::PeerMessageType::Pong) return true;
 			Close("unsupported peer message");
 			return false;
 		}
 
-		bool HandleHello(const std::string& Text)
+		bool HandleHello(Wire::PeerHello Hello)
 		{
 			if (ReceivedHello)
 			{
 				Close("duplicate peer hello");
 				return false;
 			}
-			Wire::PeerProtocolError Error = Wire::PeerProtocolError::None;
-			if (!Wire::ParsePeerHello({ reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, RemoteHello, &Error))
-			{
-				Close(Wire::PeerProtocolErrorText(Error));
-				return false;
-			}
+			RemoteHello = std::move(Hello);
 			ReceivedHello = true;
 			const auto Now = std::chrono::steady_clock::now();
-			const std::uint64_t Known = Owner.KnownSessions.Get(RemoteHello.NodeId, Now);
+			const std::uint64_t Known = Owner.KnownSession(RemoteHello.NodeId, Now);
 			const std::uint64_t LocalSession = Owner.Config.LiveHostSession
 				? Owner.Config.LiveHostSession->load()
 				: Owner.Config.HostSession;
 			const PeerIdentity Local{ Owner.Config.ClusterId, Owner.Config.NodeId,
 			                          LocalSession, Owner.Config.InstanceId };
-			const PeerHandshakeDecision Decision = EvaluatePeerHello(
+			PeerHandshakeDecision Decision = EvaluatePeerHello(
 				Local, RemoteHello, Known, PeerProtocolVersion, PeerProtocolVersion);
+			Decision.Ack.Proof = Wire::ComputePeerHelloAckProof(
+				Owner.Config.PeerSecret, LocalHello, RemoteHello, Decision.Ack);
 			std::string Ack;
 			if (!Wire::SerializePeerHelloAck(Decision.Ack, Ack))
 			{
@@ -230,28 +238,40 @@ struct HostPeerNetwork::Implementation
 				return false;
 			}
 			RemoteAccepted = Decision.Establish;
-			if (Decision.Establish) Owner.KnownSessions.Remember(RemoteHello.NodeId, RemoteHello.HostSession, Now);
-			else CloseAfterWrite = true;
+			RemoteDecisionResult = Decision.Ack.Result;
+			if (!Decision.Establish) CloseAfterWrite = true;
 			Send(std::move(Ack));
 			TryEstablish();
 			return true;
 		}
 
-		bool HandleAck(const std::string& Text)
+		bool HandleAck(Wire::PeerHelloAck Ack)
 		{
 			if (ReceivedAck)
 			{
 				Close("duplicate peer hello ack");
 				return false;
 			}
-			Wire::PeerHelloAck Ack;
-			Wire::PeerProtocolError Error = Wire::PeerProtocolError::None;
-			if (!Wire::ParsePeerHelloAck({ reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Ack, &Error))
+			if (!ReceivedHello)
 			{
-				Close(Wire::PeerProtocolErrorText(Error));
+				Close("peer hello ack arrived before peer hello");
 				return false;
 			}
 			ReceivedAck = true;
+			const std::string ExpectedProof = Wire::ComputePeerHelloAckProof(
+				Owner.Config.PeerSecret, RemoteHello, LocalHello, Ack);
+			if (!Wire::Auth::ConstantTimeEquals(Ack.Proof, ExpectedProof))
+			{
+				++Owner.RefusedAuthentications;
+				Close("invalid peer authentication proof");
+				return false;
+			}
+			Authenticated = true;
+			if (Ack.Result == Wire::PeerHelloResult::IdentityCollision ||
+			    RemoteDecisionResult == Wire::PeerHelloResult::IdentityCollision)
+			{
+				++Owner.IdentityCollisions;
+			}
 			std::uint64_t Corrected = 0;
 			const std::uint64_t LocalSession = Owner.Config.LiveHostSession
 				? Owner.Config.LiveHostSession->load()
@@ -381,10 +401,13 @@ struct HostPeerNetwork::Implementation
 		std::deque<std::vector<std::uint8_t>> Writes;
 		std::size_t QueuedBytes = 0;
 		std::string LocalNonce;
+		Wire::PeerHello LocalHello;
 		Wire::PeerHello RemoteHello;
 		std::chrono::steady_clock::time_point LastReceive;
 		bool ReceivedHello = false;
 		bool ReceivedAck = false;
+		bool Authenticated = false;
+		Wire::PeerHelloResult RemoteDecisionResult = Wire::PeerHelloResult::Rejected;
 		bool RemoteAccepted = false;
 		bool LocalAccepted = false;
 		bool Established = false;
@@ -409,6 +432,11 @@ struct HostPeerNetwork::Implementation
 		if (Config.ClusterId.empty() || Config.ClusterId.size() > 128)
 		{
 			OutError = "distributed mode requires a cluster id of at most 128 bytes";
+			return false;
+		}
+		if (Config.PeerSecret.size() < 32 || Config.PeerSecret.size() > 1024)
+		{
+			OutError = "distributed mode requires a peer secret between 32 and 1024 bytes";
 			return false;
 		}
 		if (Config.MaximumPeers == 0 || Config.MaximumInboundHandshakes == 0 ||
@@ -442,7 +470,7 @@ struct HostPeerNetwork::Implementation
 			OutError = "cannot read peer endpoint: " + Error.message();
 			return false;
 		}
-		Running = true;
+		Running.store(true);
 		Accept();
 		for (const PeerSeed& Seed : Config.PeerSeeds)
 		{
@@ -453,7 +481,9 @@ struct HostPeerNetwork::Implementation
 				break;
 			}
 			auto Item = std::make_shared<Candidate>(*this, Seed);
+			Item->Persistent = true;
 			Candidates.push_back(Item);
+			CandidateCount.store(Candidates.size());
 			Item->Schedule(true);
 		}
 		OutError.clear();
@@ -478,7 +508,7 @@ struct HostPeerNetwork::Implementation
 					StartSession(std::make_shared<Session>(*this, std::move(Socket), nullptr, true));
 				}
 			}
-			if (Running && Acceptor.is_open()) Accept();
+			if (Running.load() && Acceptor.is_open()) Accept();
 		});
 	}
 
@@ -496,6 +526,7 @@ struct HostPeerNetwork::Implementation
 
 	bool Register(const std::shared_ptr<Session>& SessionValue)
 	{
+		if (!SessionValue->Authenticated) return false;
 		std::shared_ptr<Session> Duplicate;
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
@@ -518,6 +549,8 @@ struct HostPeerNetwork::Implementation
 			Peers[SessionValue->RemoteHello.NodeId] = SessionValue;
 		}
 		if (Duplicate) Duplicate->Close("duplicate connection replaced");
+		RememberKnownSession(SessionValue->RemoteHello.NodeId, SessionValue->RemoteHello.HostSession,
+		                     std::chrono::steady_clock::now());
 		if (SessionValue->CountsInboundHandshake && PendingHandshakes != 0)
 		{
 			--PendingHandshakes;
@@ -596,40 +629,77 @@ struct HostPeerNetwork::Implementation
 		Log(LogLevel::Warning, "peer reported an implausible known host session " + std::to_string(Session));
 	}
 
+	std::uint64_t KnownSession(const std::string& NodeId, const std::chrono::steady_clock::time_point Now)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return KnownSessions.Get(NodeId, Now);
+	}
+
+	void RememberKnownSession(const std::string& NodeId,
+	                         const std::uint64_t Session,
+	                         const std::chrono::steady_clock::time_point Now)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		KnownSessions.Remember(NodeId, Session, Now);
+	}
+
 	void Discover(PeerCandidate CandidateValue)
 	{
+		const auto Now = std::chrono::steady_clock::now();
 		const bool ExactSelf = CandidateValue.NodeId == Config.NodeId &&
 		                       CandidateValue.HostSession == Config.HostSession &&
 		                       CandidateValue.InstanceId == Config.InstanceId;
 		const bool ShouldInitiate = CandidateValue.NodeId == Config.NodeId
 			? Config.InstanceId < CandidateValue.InstanceId
 			: Config.NodeId < CandidateValue.NodeId;
-		if (!Running || CandidateValue.ClusterId != Config.ClusterId || CandidateValue.NodeId.empty() || ExactSelf ||
+		if (!Running.load() || CandidateValue.ClusterId != Config.ClusterId || CandidateValue.NodeId.empty() || ExactSelf ||
 		    CandidateValue.Address.empty() || CandidateValue.Port == 0 ||
 		    CandidateValue.ProtocolMinimum > PeerProtocolVersion || CandidateValue.ProtocolMaximum < PeerProtocolVersion ||
 		    !ShouldInitiate)
 		{
 			return;
 		}
-		const auto ExistingPeer = Peers.find(CandidateValue.NodeId);
-		if (ExistingPeer != Peers.end() && !ExistingPeer->second.expired()) return;
 		const auto Existing = DiscoveredCandidates.find(CandidateValue.NodeId);
 		if (Existing != DiscoveredCandidates.end())
 		{
+			Existing->second->LastDiscovered = Now;
 			Existing->second->Seed = { std::move(CandidateValue.Address), CandidateValue.Port };
+			Existing->second->Backoff = std::chrono::seconds(1);
+			const auto ExistingPeer = Peers.find(CandidateValue.NodeId);
+			if (ExistingPeer != Peers.end() && !ExistingPeer->second.expired()) return;
 			Existing->second->Schedule(true);
 			return;
 		}
-		if (DiscoveredCandidates.size() >= Config.MaximumCandidateMembers)
+		const auto ExistingPeer = Peers.find(CandidateValue.NodeId);
+		if (ExistingPeer != Peers.end() && !ExistingPeer->second.expired()) return;
+		if (Candidates.size() >= Config.MaximumCandidateMembers)
 		{
 			++RefusedCandidates;
 			return;
 		}
 		auto Item = std::make_shared<Candidate>(*this,
 			PeerSeed{ std::move(CandidateValue.Address), CandidateValue.Port });
+		Item->NodeId = CandidateValue.NodeId;
+		Item->LastDiscovered = Now;
 		DiscoveredCandidates.emplace(std::move(CandidateValue.NodeId), Item);
 		Candidates.push_back(Item);
+		CandidateCount.store(Candidates.size());
+		DiscoveredCandidateCount.store(DiscoveredCandidates.size());
 		Item->Schedule(true);
+	}
+
+	void ExpireCandidate(const std::shared_ptr<Candidate>& CandidateValue)
+	{
+		if (!CandidateValue || CandidateValue->Persistent) return;
+		const auto Found = DiscoveredCandidates.find(CandidateValue->NodeId);
+		if (Found != DiscoveredCandidates.end() && Found->second == CandidateValue)
+		{
+			DiscoveredCandidates.erase(Found);
+		}
+		Candidates.erase(std::remove(Candidates.begin(), Candidates.end(), CandidateValue), Candidates.end());
+		CandidateCount.store(Candidates.size());
+		DiscoveredCandidateCount.store(DiscoveredCandidates.size());
+		++ExpiredCandidates;
 	}
 
 	std::chrono::milliseconds ReserveDialDelay()
@@ -645,8 +715,7 @@ struct HostPeerNetwork::Implementation
 
 	void Stop()
 	{
-		if (!Running) return;
-		Running = false;
+		if (!Running.exchange(false)) return;
 		asio::error_code Ignored;
 		Acceptor.cancel(Ignored);
 		Acceptor.close(Ignored);
@@ -693,6 +762,11 @@ struct HostPeerNetwork::Implementation
 		AddUnsigned(Root, "refused_handshakes", RefusedHandshakes);
 		AddUnsigned(Root, "refused_peers", RefusedPeers);
 		AddUnsigned(Root, "refused_candidates", RefusedCandidates);
+		AddUnsigned(Root, "refused_authentications", RefusedAuthentications);
+		AddUnsigned(Root, "candidate_count", CandidateCount);
+		AddUnsigned(Root, "discovered_candidate_count", DiscoveredCandidateCount);
+		AddUnsigned(Root, "expired_candidates", ExpiredCandidates);
+		AddUnsigned(Root, "identity_collisions", IdentityCollisions);
 		AddUnsigned(Root, "known_session_cache", KnownSessions.Size());
 		AddUnsigned(Root, "required_host_session", RequiredHostSession);
 		AddUnsigned(Root, "anomalous_known_session", AnomalousKnownSession);
@@ -710,19 +784,24 @@ struct HostPeerNetwork::Implementation
 	mutable std::mutex Mutex;
 	std::map<Session*, std::shared_ptr<Session>> Sessions;
 	std::map<std::string, std::weak_ptr<Session>> Peers;
-	std::size_t PendingHandshakes = 0;
-	std::uint64_t RefusedHandshakes = 0;
-	std::uint64_t RefusedPeers = 0;
-	std::uint64_t RefusedCandidates = 0;
+	std::atomic<std::size_t> PendingHandshakes{ 0 };
+	std::atomic<std::uint64_t> RefusedHandshakes{ 0 };
+	std::atomic<std::uint64_t> RefusedPeers{ 0 };
+	std::atomic<std::uint64_t> RefusedCandidates{ 0 };
+	std::atomic<std::uint64_t> RefusedAuthentications{ 0 };
+	std::atomic<std::uint64_t> ExpiredCandidates{ 0 };
+	std::atomic<std::uint64_t> IdentityCollisions{ 0 };
+	std::atomic<std::size_t> CandidateCount{ 0 };
+	std::atomic<std::size_t> DiscoveredCandidateCount{ 0 };
 	std::uint64_t RequiredHostSession = 0;
 	std::uint64_t AnomalousKnownSession = 0;
-	bool Running = false;
+	std::atomic<bool> Running{ false };
 	std::chrono::steady_clock::time_point NextDial{};
 };
 
 void HostPeerNetwork::Implementation::Candidate::Dial()
 {
-	if (!Owner.Running || Dialing) return;
+	if (!Owner.Running.load() || Dialing) return;
 	Dialing = true;
 	asio::error_code Error;
 	const asio::ip::address Address = asio::ip::make_address(Seed.Address, Error);

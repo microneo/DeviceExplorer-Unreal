@@ -1,5 +1,7 @@
 #include "DeviceExplorerPeerProtocol.h"
 
+#include "DeviceExplorerAuthPrimitives.h"
+
 #include <charconv>
 #include <limits>
 #include <utility>
@@ -21,6 +23,16 @@ bool IsBoundedIdentity(const std::string& Value)
 bool IsNonce(const std::string& Value)
 {
 	if (Value.size() != 32) return false;
+	for (const char Character : Value)
+	{
+		if (!((Character >= '0' && Character <= '9') || (Character >= 'a' && Character <= 'f'))) return false;
+	}
+	return true;
+}
+
+bool IsProof(const std::string& Value)
+{
+	if (Value.size() != 64) return false;
 	for (const char Character : Value)
 	{
 		if (!((Character >= '0' && Character <= '9') || (Character >= 'a' && Character <= 'f'))) return false;
@@ -111,6 +123,87 @@ bool ParseObject(const ByteView Bytes, JsonValue& OutRoot, PeerProtocolError* Ou
 		return false;
 	}
 	return true;
+}
+
+bool ParseHelloObject(const JsonValue& Root, PeerHello& OutHello, PeerProtocolError* OutError)
+{
+	std::string Type;
+	PeerHello Parsed;
+	if (!StringMember(Root, "type", Type) || Type != "peer_hello")
+	{
+		SetError(OutError, PeerProtocolError::WrongMessageType);
+		return false;
+	}
+	if (!StringMember(Root, "cluster_id", Parsed.ClusterId) || !StringMember(Root, "node_id", Parsed.NodeId) ||
+	    !IntegerMember(Root, "host_session", Parsed.HostSession) || !StringMember(Root, "instance_id", Parsed.InstanceId) ||
+	    !IntegerMember(Root, "protocol_min", Parsed.ProtocolMin) || !IntegerMember(Root, "protocol_max", Parsed.ProtocolMax) ||
+	    !StringMember(Root, "connection_nonce", Parsed.ConnectionNonce))
+	{
+		SetError(OutError, PeerProtocolError::MissingField);
+		return false;
+	}
+	if (!IsBoundedIdentity(Parsed.ClusterId) || !IsBoundedIdentity(Parsed.NodeId) || Parsed.HostSession == 0 ||
+	    !IsBoundedIdentity(Parsed.InstanceId) || Parsed.ProtocolMin <= 0 || Parsed.ProtocolMax < Parsed.ProtocolMin ||
+	    !IsNonce(Parsed.ConnectionNonce))
+	{
+		SetError(OutError, PeerProtocolError::InvalidField);
+		return false;
+	}
+	OutHello = std::move(Parsed);
+	SetError(OutError, PeerProtocolError::None);
+	return true;
+}
+
+bool ParseAckObject(const JsonValue& Root, PeerHelloAck& OutAck, PeerProtocolError* OutError)
+{
+	std::string Type;
+	std::string Result;
+	PeerHelloAck Parsed;
+	if (!StringMember(Root, "type", Type) || Type != "peer_hello_ack")
+	{
+		SetError(OutError, PeerProtocolError::WrongMessageType);
+		return false;
+	}
+	if (!IntegerMember(Root, "negotiated_version", Parsed.NegotiatedVersion) ||
+	    !IntegerMember(Root, "known_host_session", Parsed.KnownHostSession) || !StringMember(Root, "result", Result) ||
+	    !StringMember(Root, "proof", Parsed.Proof))
+	{
+		SetError(OutError, PeerProtocolError::MissingField);
+		return false;
+	}
+	if (!ParseResult(Result, Parsed.Result))
+	{
+		SetError(OutError, PeerProtocolError::UnsupportedResult);
+		return false;
+	}
+	const JsonValue* ReasonValue = Member(Root, "reason");
+	if (ReasonValue != nullptr)
+	{
+		const std::string* Reason = ReasonValue->TryGetString();
+		if (Reason == nullptr)
+		{
+			SetError(OutError, PeerProtocolError::InvalidField);
+			return false;
+		}
+		Parsed.Reason = *Reason;
+	}
+	if ((Parsed.Result == PeerHelloResult::Accepted && Parsed.NegotiatedVersion <= 0) ||
+	    Parsed.Reason.size() > 512 || !IsProof(Parsed.Proof))
+	{
+		SetError(OutError, PeerProtocolError::InvalidField);
+		return false;
+	}
+	OutAck = std::move(Parsed);
+	SetError(OutError, PeerProtocolError::None);
+	return true;
+}
+
+void AppendTranscriptField(std::string& Transcript, const std::string_view Value)
+{
+	Transcript.append(std::to_string(Value.size()));
+	Transcript.push_back(':');
+	Transcript.append(Value.data(), Value.size());
+	Transcript.push_back('\n');
 }
 }    // namespace
 
@@ -227,36 +320,13 @@ bool ParsePeerHello(const ByteView Json, PeerHello& OutHello, PeerProtocolError*
 {
 	JsonValue Root;
 	if (!ParseObject(Json, Root, OutError)) return false;
-	std::string Type;
-	PeerHello Parsed;
-	if (!StringMember(Root, "type", Type) || Type != "peer_hello")
-	{
-		SetError(OutError, PeerProtocolError::WrongMessageType);
-		return false;
-	}
-	if (!StringMember(Root, "cluster_id", Parsed.ClusterId) || !StringMember(Root, "node_id", Parsed.NodeId) ||
-	    !IntegerMember(Root, "host_session", Parsed.HostSession) || !StringMember(Root, "instance_id", Parsed.InstanceId) ||
-	    !IntegerMember(Root, "protocol_min", Parsed.ProtocolMin) || !IntegerMember(Root, "protocol_max", Parsed.ProtocolMax) ||
-	    !StringMember(Root, "connection_nonce", Parsed.ConnectionNonce))
-	{
-		SetError(OutError, PeerProtocolError::MissingField);
-		return false;
-	}
-	if (!IsBoundedIdentity(Parsed.ClusterId) || !IsBoundedIdentity(Parsed.NodeId) || Parsed.HostSession == 0 ||
-	    !IsBoundedIdentity(Parsed.InstanceId) || Parsed.ProtocolMin <= 0 || Parsed.ProtocolMax < Parsed.ProtocolMin ||
-	    !IsNonce(Parsed.ConnectionNonce))
-	{
-		SetError(OutError, PeerProtocolError::InvalidField);
-		return false;
-	}
-	OutHello = std::move(Parsed);
-	SetError(OutError, PeerProtocolError::None);
-	return true;
+	return ParseHelloObject(Root, OutHello, OutError);
 }
 
 bool SerializePeerHelloAck(const PeerHelloAck& Ack, std::string& OutJson, PeerProtocolError* OutError)
 {
-	if ((Ack.Result == PeerHelloResult::Accepted && Ack.NegotiatedVersion <= 0) || Ack.Reason.size() > 512)
+	if ((Ack.Result == PeerHelloResult::Accepted && Ack.NegotiatedVersion <= 0) ||
+	    Ack.Reason.size() > 512 || !IsProof(Ack.Proof))
 	{
 		SetError(OutError, PeerProtocolError::InvalidField);
 		return false;
@@ -268,6 +338,7 @@ bool SerializePeerHelloAck(const PeerHelloAck& Ack, std::string& OutJson, PeerPr
 	WriteUnsigned(Root, "known_host_session", Ack.KnownHostSession);
 	WriteString(Root, "result", ResultText(Ack.Result));
 	if (!Ack.Reason.empty()) WriteString(Root, "reason", Ack.Reason);
+	WriteString(Root, "proof", Ack.Proof);
 	if (!SerializeJson(Root, OutJson))
 	{
 		SetError(OutError, PeerProtocolError::MalformedJson);
@@ -281,44 +352,65 @@ bool ParsePeerHelloAck(const ByteView Json, PeerHelloAck& OutAck, PeerProtocolEr
 {
 	JsonValue Root;
 	if (!ParseObject(Json, Root, OutError)) return false;
+	return ParseAckObject(Root, OutAck, OutError);
+}
+
+bool ParsePeerMessage(const ByteView Json, PeerMessage& OutMessage, PeerProtocolError* OutError)
+{
+	JsonValue Root;
+	if (!ParseObject(Json, Root, OutError)) return false;
 	std::string Type;
-	std::string Result;
-	PeerHelloAck Parsed;
-	if (!StringMember(Root, "type", Type) || Type != "peer_hello_ack")
-	{
-		SetError(OutError, PeerProtocolError::WrongMessageType);
-		return false;
-	}
-	if (!IntegerMember(Root, "negotiated_version", Parsed.NegotiatedVersion) ||
-	    !IntegerMember(Root, "known_host_session", Parsed.KnownHostSession) || !StringMember(Root, "result", Result))
+	if (!StringMember(Root, "type", Type))
 	{
 		SetError(OutError, PeerProtocolError::MissingField);
 		return false;
 	}
-	if (!ParseResult(Result, Parsed.Result))
+	PeerMessage Parsed;
+	if (Type == "peer_hello")
 	{
-		SetError(OutError, PeerProtocolError::UnsupportedResult);
+		Parsed.Type = PeerMessageType::Hello;
+		if (!ParseHelloObject(Root, Parsed.Hello, OutError)) return false;
+	}
+	else if (Type == "peer_hello_ack")
+	{
+		Parsed.Type = PeerMessageType::HelloAck;
+		if (!ParseAckObject(Root, Parsed.HelloAck, OutError)) return false;
+	}
+	else if (Type == "peer_ping") Parsed.Type = PeerMessageType::Ping;
+	else if (Type == "peer_pong") Parsed.Type = PeerMessageType::Pong;
+	else
+	{
+		SetError(OutError, PeerProtocolError::WrongMessageType);
 		return false;
 	}
-	const JsonValue* ReasonValue = Member(Root, "reason");
-	if (ReasonValue != nullptr)
-	{
-		const std::string* Reason = ReasonValue->TryGetString();
-		if (Reason == nullptr)
-		{
-			SetError(OutError, PeerProtocolError::InvalidField);
-			return false;
-		}
-		Parsed.Reason = *Reason;
-	}
-	if ((Parsed.Result == PeerHelloResult::Accepted && Parsed.NegotiatedVersion <= 0) || Parsed.Reason.size() > 512)
-	{
-		SetError(OutError, PeerProtocolError::InvalidField);
-		return false;
-	}
-	OutAck = std::move(Parsed);
+	OutMessage = std::move(Parsed);
 	SetError(OutError, PeerProtocolError::None);
 	return true;
+}
+
+std::string ComputePeerHelloAckProof(const std::string_view Secret,
+	                                  const PeerHello& Prover,
+	                                  const PeerHello& Verifier,
+	                                  const PeerHelloAck& Ack)
+{
+	std::string Transcript = "deviceexplorer-peer-ack-v2\n";
+	AppendTranscriptField(Transcript, Prover.ClusterId);
+	AppendTranscriptField(Transcript, Prover.NodeId);
+	AppendTranscriptField(Transcript, std::to_string(Prover.HostSession));
+	AppendTranscriptField(Transcript, Prover.InstanceId);
+	AppendTranscriptField(Transcript, std::to_string(Prover.ProtocolMin));
+	AppendTranscriptField(Transcript, std::to_string(Prover.ProtocolMax));
+	AppendTranscriptField(Transcript, Verifier.ClusterId);
+	AppendTranscriptField(Transcript, Verifier.NodeId);
+	AppendTranscriptField(Transcript, std::to_string(Verifier.HostSession));
+	AppendTranscriptField(Transcript, Verifier.InstanceId);
+	AppendTranscriptField(Transcript, std::to_string(Verifier.ProtocolMin));
+	AppendTranscriptField(Transcript, std::to_string(Verifier.ProtocolMax));
+	AppendTranscriptField(Transcript, std::to_string(Ack.NegotiatedVersion));
+	AppendTranscriptField(Transcript, std::to_string(Ack.KnownHostSession));
+	AppendTranscriptField(Transcript, ResultText(Ack.Result));
+	AppendTranscriptField(Transcript, Ack.Reason);
+	return Auth::ComputeProof(Secret, Transcript, Prover.ConnectionNonce, Verifier.ConnectionNonce);
 }
 
 const char* PeerProtocolErrorText(const PeerProtocolError Error)

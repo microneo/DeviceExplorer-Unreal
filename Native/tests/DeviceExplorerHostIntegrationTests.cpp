@@ -1,4 +1,5 @@
 #include "DeviceExplorerHostCore.h"
+#include "DeviceExplorerHostPeerNetwork.h"
 
 #include "DeviceExplorerHostManifest.h"
 
@@ -72,6 +73,7 @@ int main()
 	Config.InstanceId = "22222222-2222-4222-8222-222222222222";
 	Config.EnableDistributedMode = true;
 	Config.ClusterId = "integration-cluster";
+	Config.PeerSecret = "integration-peer-secret-shared-by-all-hosts";
 	Config.PeerAddress = "127.0.0.1";
 	Config.PeerPort = 0;
 	DeviceExplorer::Host::HostCore Host(std::move(Config));
@@ -94,6 +96,7 @@ int main()
 	PeerConfig.InstanceId = "44444444-4444-4444-8444-444444444444";
 	PeerConfig.EnableDistributedMode = true;
 	PeerConfig.ClusterId = "integration-cluster";
+	PeerConfig.PeerSecret = "integration-peer-secret-shared-by-all-hosts";
 	PeerConfig.PeerAddress = "127.0.0.1";
 	PeerConfig.PeerPort = 0;
 	PeerConfig.PeerPingInterval = std::chrono::seconds(1);
@@ -117,6 +120,8 @@ int main()
 	const DeviceExplorer::Host::BoundEndpoints PeerEndpoints = PeerHost.GetBoundEndpoints();
 	for (int Attempt = 0; Attempt < 200; ++Attempt)
 	{
+		const std::string DirectDiagnostics = Host.GetPeerDiagnosticsJson();
+		CHECK(!DirectDiagnostics.empty());
 		if (Body(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/peers")).find("\"peer_count\":1") != std::string::npos &&
 		    Body(Get(PeerEndpoints.DashboardAddress, PeerEndpoints.DashboardPort, "/api/peers")).find("\"peer_count\":1") != std::string::npos)
 		{
@@ -146,7 +151,7 @@ int main()
 	CHECK(ConfigResponse.find("HTTP/1.1 200 OK") == 0);
 	CHECK(Body(ConfigResponse).find("\"device_port\":" + std::to_string(Endpoints.DevicePort)) != std::string::npos);
 	CHECK(Body(ConfigResponse).find("\"instance_id\":\"22222222-2222-4222-8222-222222222222\"") != std::string::npos);
-	CHECK(Body(ConfigResponse).find("\"peer_protocol_version\":1") != std::string::npos);
+	CHECK(Body(ConfigResponse).find("\"peer_protocol_version\":2") != std::string::npos);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/peers").find("HTTP/1.1 200 OK") == 0);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/missing").find("HTTP/1.1 404 Not Found") == 0);
 	CHECK(Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/device/connect").find("HTTP/1.1 400 Bad Request") == 0);
@@ -165,6 +170,7 @@ int main()
 	RollbackConfig.InstanceId = "55555555-5555-4555-8555-555555555555";
 	RollbackConfig.EnableDistributedMode = true;
 	RollbackConfig.ClusterId = "integration-cluster";
+	RollbackConfig.PeerSecret = "integration-peer-secret-shared-by-all-hosts";
 	RollbackConfig.PeerAddress = "127.0.0.1";
 	RollbackConfig.PeerPort = 0;
 	RollbackConfig.PeerSeeds.push_back({ "127.0.0.1", Endpoints.PeerPort });
@@ -209,6 +215,43 @@ int main()
 	CorrectionLoop.join();
 	RollbackHost.Stop();
 
+	DeviceExplorer::Host::HostConfig AttackerConfig;
+	AttackerConfig.DashboardPort = 0;
+	AttackerConfig.DeviceAddress = "127.0.0.1";
+	AttackerConfig.DevicePort = 0;
+	AttackerConfig.Token = "attacker-device-token-that-is-long-enough";
+	AttackerConfig.NodeId = "77777777-7777-4777-8777-777777777777";
+	AttackerConfig.HostSession = 1000000;
+	AttackerConfig.InstanceId = "88888888-8888-4888-8888-888888888888";
+	AttackerConfig.EnableDistributedMode = true;
+	AttackerConfig.ClusterId = "integration-cluster";
+	AttackerConfig.PeerSecret = "wrong-peer-secret-that-is-still-long-enough";
+	AttackerConfig.PeerAddress = "127.0.0.1";
+	AttackerConfig.PeerPort = 0;
+	AttackerConfig.PeerSeeds.push_back({ "127.0.0.1", Endpoints.PeerPort });
+	DeviceExplorer::Host::HostCore AttackerHost(std::move(AttackerConfig));
+	CHECK(AttackerHost.Start(Error));
+	const DeviceExplorer::Host::BoundEndpoints AttackerEndpoints = AttackerHost.GetBoundEndpoints();
+	Done.store(false);
+	std::thread AttackLoop(
+		[&Host, &AttackerHost, &Done]
+		{
+			while (!Done.load())
+			{
+				Host.RunFor(std::chrono::milliseconds(10));
+				AttackerHost.RunFor(std::chrono::milliseconds(10));
+			}
+		});
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+	const std::string HostPeersAfterAttack = Body(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/peers"));
+	const std::string AttackerPeers = Body(Get(AttackerEndpoints.DashboardAddress, AttackerEndpoints.DashboardPort, "/api/peers"));
+	CHECK(HostPeersAfterAttack.find("\"refused_authentications\":0") == std::string::npos);
+	CHECK(AttackerPeers.find("\"peer_count\":0") != std::string::npos);
+	CHECK(Body(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/health")).find("\"host_session\":7") != std::string::npos);
+	Done.store(true);
+	AttackLoop.join();
+	AttackerHost.Stop();
+
 	// Stop with an accepted but silent peer handshake, then reuse the same
 	// io_context. Cancellation handlers from the old network must be drained
 	// before the replacement network starts.
@@ -235,6 +278,49 @@ int main()
 	DeviceExplorer::Host::HostCore UnsafeHost(std::move(UnsafeConfig));
 	CHECK(!UnsafeHost.Start(Error));
 	CHECK(Error.find("loopback") != std::string::npos);
+
+	DeviceExplorer::Host::HostConfig UnauthenticatedPeerConfig;
+	UnauthenticatedPeerConfig.DashboardPort = 0;
+	UnauthenticatedPeerConfig.DeviceAddress = "127.0.0.1";
+	UnauthenticatedPeerConfig.DevicePort = 0;
+	UnauthenticatedPeerConfig.Token = "integration-test-token-that-is-long-enough";
+	UnauthenticatedPeerConfig.NodeId = "99999999-9999-4999-8999-999999999999";
+	UnauthenticatedPeerConfig.HostSession = 1;
+	UnauthenticatedPeerConfig.InstanceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	UnauthenticatedPeerConfig.EnableDistributedMode = true;
+	UnauthenticatedPeerConfig.ClusterId = "integration-cluster";
+	UnauthenticatedPeerConfig.PeerAddress = "127.0.0.1";
+	DeviceExplorer::Host::HostCore UnauthenticatedPeerHost(std::move(UnauthenticatedPeerConfig));
+	CHECK(!UnauthenticatedPeerHost.Start(Error));
+	CHECK(Error.find("peer secret") != std::string::npos);
+
+	asio::io_context CandidateIo;
+	DeviceExplorer::Host::HostConfig CandidateConfig;
+	CandidateConfig.NodeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	CandidateConfig.HostSession = 1;
+	CandidateConfig.InstanceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+	CandidateConfig.EnableDistributedMode = true;
+	CandidateConfig.ClusterId = "candidate-test";
+	CandidateConfig.PeerSecret = "candidate-test-peer-secret-that-is-long-enough";
+	CandidateConfig.PeerAddress = "127.0.0.1";
+	CandidateConfig.PeerCandidateTtl = std::chrono::seconds(0);
+	DeviceExplorer::Host::HostPeerNetwork CandidateNetwork(CandidateIo, CandidateConfig);
+	CHECK(CandidateNetwork.Start(Error));
+	DeviceExplorer::Host::PeerCandidate ExpiringCandidate;
+	ExpiringCandidate.ClusterId = "candidate-test";
+	ExpiringCandidate.NodeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+	ExpiringCandidate.HostSession = 1;
+	ExpiringCandidate.InstanceId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+	ExpiringCandidate.Address = "not-an-ip-address";
+	ExpiringCandidate.Port = 12345;
+	ExpiringCandidate.ProtocolMinimum = DeviceExplorer::PeerProtocolVersion;
+	ExpiringCandidate.ProtocolMaximum = DeviceExplorer::PeerProtocolVersion;
+	CandidateNetwork.Discover(std::move(ExpiringCandidate));
+	CandidateIo.run_for(std::chrono::milliseconds(100));
+	const std::string CandidateDiagnostics = CandidateNetwork.DiagnosticsJson();
+	CHECK(CandidateDiagnostics.find("\"candidate_count\":0") != std::string::npos);
+	CHECK(CandidateDiagnostics.find("\"expired_candidates\":1") != std::string::npos);
+	CandidateNetwork.Stop();
 	if (Failures != 0)
 	{
 		std::cerr << Failures << " test(s) failed\n";

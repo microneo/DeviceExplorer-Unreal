@@ -52,6 +52,7 @@ struct HostConfig
 	std::string InstanceId;
 	bool EnableDistributedMode = false;
 	std::string ClusterId;
+	std::string PeerSecret;
 	std::string PeerAddress = "0.0.0.0";
 	std::uint16_t PeerPort = 0;
 	std::vector<PeerSeed> PeerSeeds;
@@ -65,6 +66,7 @@ struct HostConfig
 	std::chrono::seconds PeerHandshakeTimeout{ 5 };
 	std::chrono::seconds PeerPingInterval{ 5 };
 	std::chrono::seconds PeerSuspectTimeout{ 15 };
+	std::chrono::seconds PeerCandidateTtl{ 24 * 60 * 60 * 7 };
 	std::uint16_t TracePort = 1981;
 	std::size_t LogCapacity = 100000;
 	std::size_t LogCapacityBytes = 16 * 1024 * 1024;

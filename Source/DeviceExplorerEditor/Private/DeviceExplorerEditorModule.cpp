@@ -268,14 +268,28 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	// Taken from the project settings so builds packaged from this project authenticate
 	// against this host without being passed anything.
 	CurrentHostToken = EnsureProjectSessionToken();
+	if (Settings->bEnableDistributedMode &&
+	    (Settings->ClusterId.TrimStartAndEnd().IsEmpty() || Settings->PeerSecret.Len() < 32 ||
+	     Settings->ClusterId.Contains(TEXT("\"")) || Settings->PeerSecret.Contains(TEXT("\"")) ||
+	     Settings->ClusterId.Contains(TEXT("\n")) || Settings->PeerSecret.Contains(TEXT("\n"))))
+	{
+		CurrentHostToken.Reset();
+		Notify(LOCTEXT("InvalidPeerSecurity", "Distributed mode requires a cluster id and a shared peer secret of at least 32 characters."), true);
+		return;
+	}
 	// -Project must not be passed: project loading aborts in the host's program target.
-	const FString Arguments = FString::Printf(TEXT("-ParentPID=%u -DashboardPort=%d -DevicePort=%d -WebRoot=\"%s\" -TransferDir=\"%s\" -Token=%s"),
+	FString Arguments = FString::Printf(TEXT("-ParentPID=%u -DashboardPort=%d -DevicePort=%d -WebRoot=\"%s\" -TransferDir=\"%s\" -Token=%s"),
 	                                          FPlatformProcess::GetCurrentProcessId(),
 	                                          Settings->DashboardPort,
 	                                          Settings->DevicePort,
 	                                          *WebRoot,
 	                                          *FPaths::ConvertRelativePathToFull(TransferDir),
 	                                          *CurrentHostToken);
+	if (Settings->bEnableDistributedMode)
+	{
+		Arguments += FString::Printf(TEXT(" -EnableDistributed -ClusterId=\"%s\" -PeerSecret=\"%s\" -PeerPort=%d"),
+		                             *Settings->ClusterId.TrimStartAndEnd(), *Settings->PeerSecret, Settings->PeerPort);
+	}
 
 	HostProcess = FPlatformProcess::CreateProc(*Executable, *Arguments, true, false, false, &HostProcessId, 0, *FPaths::ProjectDir(), nullptr);
 	if (!HostProcess.IsValid())

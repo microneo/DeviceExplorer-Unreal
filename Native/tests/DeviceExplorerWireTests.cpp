@@ -791,11 +791,30 @@ void TestPeerProtocol()
 	Ack.KnownHostSession = 43;
 	Ack.Result = PeerHelloResult::StaleSession;
 	Ack.Reason = "a newer process is known";
+	PeerHello Verifier = Hello;
+	Verifier.NodeId = "33333333-3333-4333-8333-333333333333";
+	Verifier.InstanceId = "44444444-4444-4444-8444-444444444444";
+	Verifier.ConnectionNonce = "fedcba9876543210fedcba9876543210";
+	Ack.Proof = ComputePeerHelloAckProof("peer-secret-that-is-at-least-32-bytes", Hello, Verifier, Ack);
 	CHECK(SerializePeerHelloAck(Ack, Json));
 	PeerHelloAck ParsedAck;
 	CHECK(ParsePeerHelloAck({ reinterpret_cast<const std::uint8_t*>(Json.data()), Json.size() }, ParsedAck));
 	CHECK(ParsedAck.Result == PeerHelloResult::StaleSession);
 	CHECK(ParsedAck.KnownHostSession == 43);
+	CHECK(Auth::ConstantTimeEquals(
+		ParsedAck.Proof,
+		ComputePeerHelloAckProof("peer-secret-that-is-at-least-32-bytes", Hello, Verifier, ParsedAck)));
+	ParsedAck.KnownHostSession = 44;
+	CHECK(!Auth::ConstantTimeEquals(
+		ParsedAck.Proof,
+		ComputePeerHelloAckProof("peer-secret-that-is-at-least-32-bytes", Hello, Verifier, ParsedAck)));
+
+	PeerMessage ParsedMessage;
+	CHECK(ParsePeerMessage({ reinterpret_cast<const std::uint8_t*>(Json.data()), Json.size() }, ParsedMessage));
+	CHECK(ParsedMessage.Type == PeerMessageType::HelloAck);
+	const std::string Ping = "{\"type\":\"peer_ping\"}";
+	CHECK(ParsePeerMessage({ reinterpret_cast<const std::uint8_t*>(Ping.data()), Ping.size() }, ParsedMessage));
+	CHECK(ParsedMessage.Type == PeerMessageType::Ping);
 
 	std::vector<std::uint8_t> First;
 	std::vector<std::uint8_t> Second;

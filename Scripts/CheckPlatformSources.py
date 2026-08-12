@@ -31,6 +31,12 @@ require("#if PLATFORM_APPLE" in discovery and "CreateAppleDeviceExplorerEndpoint
 require("nw_browser_create" in apple and "Network/Network.h" in apple, "Apple discovery must use Network.framework browsing")
 require("nw_connection_create" in apple and "nw_path_copy_effective_remote_endpoint" in apple,
         "Apple Bonjour resolution must stay on Network.framework")
+require("nw_connection_state_waiting" in apple and "ResolveTimeout" in apple,
+        "Apple Bonjour resolution must publish waiting paths and bound unresolved connections")
+copy_fingerprint = apple[apple.find("NSString* CopyFingerprint"):apple.find("}    // namespace")]
+require("nw_txt_record_apply" in copy_fingerprint and
+        "@available(macOS 10.15, iOS 13.0, tvOS 13.0, *)" in copy_fingerprint,
+        "Apple TXT access must remain inside its Network.framework availability gate")
 require("NSNetService" not in apple and "-Wdeprecated-declarations" not in apple,
         "Apple discovery must not fall back to deprecated NSNetService resolution")
 require("@available(macOS 10.15, iOS 13.0, tvOS 13.0, *)" in apple,

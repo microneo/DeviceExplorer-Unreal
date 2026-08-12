@@ -10,24 +10,29 @@ namespace
 {
 constexpr NSTimeInterval MinRetryDelay = 2.0;
 constexpr NSTimeInterval MaxRetryDelay = 30.0;
+constexpr NSTimeInterval ResolveTimeout = 5.0;
 const FName AppleBonjourProviderId(TEXT("AppleBonjour"));
 
 NSString* CopyFingerprint(nw_browse_result_t Result)
 {
-	nw_txt_record_t Record = nw_browse_result_copy_txt_record_object(Result);
-	if (Record == nullptr) return nil;
-	__block NSString* Fingerprint = nil;
-	nw_txt_record_apply(Record, ^bool(const char* Key, nw_txt_record_find_key_t Found, const uint8_t* Value, size_t Length) {
-	  if (Key == nullptr || FCStringAnsi::Stricmp(Key, "fp") != 0 ||
-	      Found != nw_txt_record_find_key_non_empty_value || Value == nullptr)
-	  {
-		  return true;
-	  }
-	  Fingerprint = [[NSString alloc] initWithBytes:Value length:Length encoding:NSUTF8StringEncoding];
-	  return false;
-	});
-	nw_release(Record);
-	return Fingerprint;
+	if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, *))
+	{
+		nw_txt_record_t Record = nw_browse_result_copy_txt_record_object(Result);
+		if (Record == nullptr) return nil;
+		__block NSString* Fingerprint = nil;
+		nw_txt_record_apply(Record, ^bool(const char* Key, nw_txt_record_find_key_t Found, const uint8_t* Value, size_t Length) {
+		  if (Key == nullptr || FCStringAnsi::Stricmp(Key, "fp") != 0 ||
+		      Found != nw_txt_record_find_key_non_empty_value || Value == nullptr)
+		  {
+			  return true;
+		  }
+		  Fingerprint = [[NSString alloc] initWithBytes:Value length:Length encoding:NSUTF8StringEncoding];
+		  return false;
+		});
+		nw_release(Record);
+		return Fingerprint;
+	}
+	return nil;
 }
 }    // namespace
 
@@ -117,7 +122,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	[self emitRemoval:Name];
 }
 
-- (void)publishResult:(NSString*)Name connection:(nw_connection_t)Connection
+- (bool)publishResult:(NSString*)Name connection:(nw_connection_t)Connection
 {
 	nw_path_t Path = nw_connection_copy_current_path(Connection);
 	nw_endpoint_t Endpoint = Path == nullptr ? nullptr : nw_path_copy_effective_remote_endpoint(Path);
@@ -127,7 +132,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 		if (Endpoint != nullptr) nw_release(Endpoint);
 		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable host endpoint"),
 		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
-		return;
+		return false;
 	}
 	const char* RawHost = nw_endpoint_get_hostname(Endpoint);
 	const uint16 Port = nw_endpoint_get_port(Endpoint);
@@ -136,7 +141,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 		nw_release(Endpoint);
 		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable address/port"),
 		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
-		return;
+		return false;
 	}
 	const FString Host(UTF8_TO_TCHAR(RawHost));
 	const EDeviceExplorerAddressFamily Family = FCStringAnsi::Strchr(RawHost, ':') == nullptr
@@ -164,7 +169,8 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 		          Candidate.HostFingerprint = MoveTemp(Fingerprint);
 		          Candidate.Instance = Instance;
 		          CallbackCopy(Event, MoveTemp(Candidate));
-	          });
+		          });
+	return true;
 }
 
 - (void)resolveResult:(nw_browse_result_t)Result endpoint:(nw_endpoint_t)Endpoint name:(NSString*)Name
@@ -202,8 +208,18 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	  if (Current == nil || Current.pointerValue != Connection) return;
 	  if (State == nw_connection_state_ready)
 	  {
-		  [self publishResult:CurrentName connection:Connection];
+		  (void) [self publishResult:CurrentName connection:Connection];
 		  [self cancelConnection:CurrentName];
+	  }
+	  else if (State == nw_connection_state_waiting)
+	  {
+		  // DNS-SD resolution can complete even when the service's TCP port is
+		  // blocked. Publish the effective endpoint as soon as the path exposes it;
+		  // otherwise the timeout below owns cleanup.
+		  if ([self publishResult:CurrentName connection:Connection])
+		  {
+			  [self cancelConnection:CurrentName];
+		  }
 	  }
 	  else if (State == nw_connection_state_failed)
 	  {
@@ -214,6 +230,16 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	});
 	nw_connection_set_queue(Connection, dispatch_get_main_queue());
 	nw_connection_start(Connection);
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(ResolveTimeout * NSEC_PER_SEC)),
+	               dispatch_get_main_queue(), ^{
+	  if (self->SearchGeneration != Generation) return;
+	  NSString* CurrentName = [NSString stringWithUTF8String:NameUtf8.c_str()];
+	  NSValue* Current = CurrentName == nil ? nil : self->Connections[CurrentName];
+	  if (Current == nil || Current.pointerValue != Connection) return;
+	  UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Bonjour resolve timed out for %s"),
+	         *FString(UTF8_TO_TCHAR(NameUtf8.c_str())));
+	  [self cancelConnection:CurrentName];
+	});
 }
 
 - (void)scheduleRetry:(uint64)Generation

@@ -203,6 +203,7 @@ void PrintUsage()
 		   "                 [--trace-port PORT] [--token TOKEN] [--web-root PATH]\n"
 		   "                 [--transfer-dir PATH]\n"
 		   "                 [--enable-distributed --cluster-id ID]\n"
+		   "                 [--peer-secret SECRET]\n"
 		   "                 [--peer-address ADDRESS] [--peer-port PORT]\n"
 		   "                 [--peer-seed ADDRESS:PORT]\n"
 		   "                 [--parent-pid PID] [--state-dir PATH] [--build-id ID]\n"
@@ -255,6 +256,11 @@ int main(const int ArgCount, char** ArgValues)
 		if (Argument == "--cluster-id" && ReadValue(Index, ArgCount, ArgValues, Value) && !Value.empty())
 		{
 			Config.ClusterId = Value;
+			continue;
+		}
+		if (Argument == "--peer-secret" && ReadValue(Index, ArgCount, ArgValues, Value))
+		{
+			Config.PeerSecret = Value;
 			continue;
 		}
 		if (Argument == "--peer-seed" && ReadValue(Index, ArgCount, ArgValues, Value))
@@ -321,6 +327,7 @@ int main(const int ArgCount, char** ArgValues)
 		if (SplitUnrealArgument(Argument, "TracePort", Value) && ParsePort(Value, Config.TracePort)) continue;
 		if (SplitUnrealArgument(Argument, "PeerPort", Value) && ParsePort(Value, Config.PeerPort)) continue;
 		if (SplitUnrealArgument(Argument, "ClusterId", Value) && !Value.empty()) { Config.ClusterId = Value; continue; }
+		if (SplitUnrealArgument(Argument, "PeerSecret", Value)) { Config.PeerSecret = Value; continue; }
 		if (SplitUnrealArgument(Argument, "ParentPID", Value) && ParseProcessId(Value, ParentProcessId)) continue;
 		if (SplitUnrealArgument(Argument, "Token", Value)) { Config.Token = Value; continue; }
 		if (SplitUnrealArgument(Argument, "WebRoot", Value)) { Config.WebRoot = Value; continue; }
