@@ -35,6 +35,22 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceExplorerEditor, Log, All);
 
+namespace
+{
+bool WritePeerSecretLaunchFile(const FString& Secret, FString& OutPath)
+{
+	const FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("DeviceExplorer"), TEXT("Runtime"));
+	if (!IFileManager::Get().MakeDirectory(*Directory, true))
+	{
+		return false;
+	}
+	OutPath = FPaths::Combine(Directory,
+	                          FString::Printf(TEXT("peer-secret-%s.tmp"),
+	                                          *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	return FFileHelper::SaveStringToFile(Secret, *OutPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+}    // namespace
+
 void FDeviceExplorerEditorModule::StartupModule()
 {
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FDeviceExplorerEditorModule::RegisterMenus));
@@ -268,13 +284,15 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	// Taken from the project settings so builds packaged from this project authenticate
 	// against this host without being passed anything.
 	CurrentHostToken = EnsureProjectSessionToken();
+	const FTCHARToUTF8 PeerSecretUtf8(*Settings->PeerSecret);
 	if (Settings->bEnableDistributedMode &&
-	    (Settings->ClusterId.TrimStartAndEnd().IsEmpty() || Settings->PeerSecret.Len() < 32 ||
-	     Settings->ClusterId.Contains(TEXT("\"")) || Settings->PeerSecret.Contains(TEXT("\"")) ||
-	     Settings->ClusterId.Contains(TEXT("\n")) || Settings->PeerSecret.Contains(TEXT("\n"))))
+	    (Settings->ClusterId.TrimStartAndEnd().IsEmpty() || PeerSecretUtf8.Length() < 32 || PeerSecretUtf8.Length() > 1024 ||
+	     Settings->ClusterId.Contains(TEXT("\"")) || Settings->ClusterId.Contains(TEXT("\\")) ||
+	     Settings->ClusterId.Contains(TEXT("\r")) || Settings->ClusterId.Contains(TEXT("\n")) ||
+	     Settings->PeerSecret.Contains(TEXT("\r")) || Settings->PeerSecret.Contains(TEXT("\n"))))
 	{
 		CurrentHostToken.Reset();
-		Notify(LOCTEXT("InvalidPeerSecurity", "Distributed mode requires a cluster id and a shared peer secret of at least 32 characters."), true);
+		Notify(LOCTEXT("InvalidPeerSecurity", "Distributed mode requires a command-line-safe cluster id and a shared peer secret between 32 and 1024 UTF-8 bytes."), true);
 		return;
 	}
 	// -Project must not be passed: project loading aborts in the host's program target.
@@ -285,15 +303,24 @@ void FDeviceExplorerEditorModule::LaunchHost(bool bOpenDashboard)
 	                                          *WebRoot,
 	                                          *FPaths::ConvertRelativePathToFull(TransferDir),
 	                                          *CurrentHostToken);
+	FString PeerSecretLaunchFile;
 	if (Settings->bEnableDistributedMode)
 	{
-		Arguments += FString::Printf(TEXT(" -EnableDistributed -ClusterId=\"%s\" -PeerSecret=\"%s\" -PeerPort=%d"),
-		                             *Settings->ClusterId.TrimStartAndEnd(), *Settings->PeerSecret, Settings->PeerPort);
+		if (!WritePeerSecretLaunchFile(Settings->PeerSecret, PeerSecretLaunchFile))
+		{
+			CurrentHostToken.Reset();
+			Notify(LOCTEXT("PeerSecretFileFailed", "Cannot create the private launch file for the distributed peer secret."), true);
+			return;
+		}
+		Arguments += FString::Printf(TEXT(" -EnableDistributed -ClusterId=\"%s\" -PeerSecretFile=\"%s\" -PeerPort=%d"),
+		                             *Settings->ClusterId.TrimStartAndEnd(),
+		                             *FPaths::ConvertRelativePathToFull(PeerSecretLaunchFile), Settings->PeerPort);
 	}
 
 	HostProcess = FPlatformProcess::CreateProc(*Executable, *Arguments, true, false, false, &HostProcessId, 0, *FPaths::ProjectDir(), nullptr);
 	if (!HostProcess.IsValid())
 	{
+		if (!PeerSecretLaunchFile.IsEmpty()) IFileManager::Get().Delete(*PeerSecretLaunchFile, false, true);
 		HostProcessId = 0;
 		CurrentHostToken.Reset();
 		Notify(LOCTEXT("StartFailed", "Failed to start DeviceExplorerHost."), true);
