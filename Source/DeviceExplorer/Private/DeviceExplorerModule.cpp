@@ -286,6 +286,11 @@ private:
 
 	struct FZipCDZip64Extra : public FZip64Extra
 	{
+		FZipCDZip64Extra()
+		{
+			Length = sizeof(FZipCDZip64Extra) - sizeof(Id) - sizeof(Length);
+		}
+
 		uint64 Offset;
 	};
 
