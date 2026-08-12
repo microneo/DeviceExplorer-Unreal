@@ -112,7 +112,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	          [CallbackCopy, Candidate = MoveTemp(Candidate)]() mutable
 	          {
 		          if (CallbackCopy) CallbackCopy(EDeviceExplorerEndpointEvent::Removed, MoveTemp(Candidate));
-	          });
+	});
 }
 
 - (void)removeResult:(NSString*)Name
@@ -122,7 +122,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	[self emitRemoval:Name];
 }
 
-- (bool)publishResult:(NSString*)Name connection:(nw_connection_t)Connection
+- (bool)publishResult:(NSString*)Name connection:(nw_connection_t)Connection logFailure:(bool)bLogFailure
 {
 	nw_path_t Path = nw_connection_copy_current_path(Connection);
 	nw_endpoint_t Endpoint = Path == nullptr ? nullptr : nw_path_copy_effective_remote_endpoint(Path);
@@ -130,8 +130,11 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	if (Endpoint == nullptr || nw_endpoint_get_type(Endpoint) != nw_endpoint_type_host)
 	{
 		if (Endpoint != nullptr) nw_release(Endpoint);
-		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable host endpoint"),
-		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		if (bLogFailure)
+		{
+			UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable host endpoint"),
+			       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		}
 		return false;
 	}
 	const char* RawHost = nw_endpoint_get_hostname(Endpoint);
@@ -139,8 +142,11 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	if (RawHost == nullptr || *RawHost == '\0' || Port == 0)
 	{
 		nw_release(Endpoint);
-		UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable address/port"),
-		       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		if (bLogFailure)
+		{
+			UE_LOG(LogDeviceExplorerDiscoveryApple, Warning, TEXT("Resolved %s but found no usable address/port"),
+			       *FString(UTF8_TO_TCHAR(Name.UTF8String)));
+		}
 		return false;
 	}
 	const FString Host(UTF8_TO_TCHAR(RawHost));
@@ -169,7 +175,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 		          Candidate.HostFingerprint = MoveTemp(Fingerprint);
 		          Candidate.Instance = Instance;
 		          CallbackCopy(Event, MoveTemp(Candidate));
-		          });
+	          });
 	return true;
 }
 
@@ -208,7 +214,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 	  if (Current == nil || Current.pointerValue != Connection) return;
 	  if (State == nw_connection_state_ready)
 	  {
-		  (void) [self publishResult:CurrentName connection:Connection];
+		  (void) [self publishResult:CurrentName connection:Connection logFailure:true];
 		  [self cancelConnection:CurrentName];
 	  }
 	  else if (State == nw_connection_state_waiting)
@@ -216,7 +222,7 @@ NSString* CopyFingerprint(nw_browse_result_t Result)
 		  // DNS-SD resolution can complete even when the service's TCP port is
 		  // blocked. Publish the effective endpoint as soon as the path exposes it;
 		  // otherwise the timeout below owns cleanup.
-		  if ([self publishResult:CurrentName connection:Connection])
+		  if ([self publishResult:CurrentName connection:Connection logFailure:false])
 		  {
 			  [self cancelConnection:CurrentName];
 		  }
