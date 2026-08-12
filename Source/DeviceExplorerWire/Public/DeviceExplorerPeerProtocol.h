@@ -59,7 +59,11 @@ enum class PeerMessageType : std::uint8_t
 	Hello,
 	HelloAck,
 	Ping,
-	Pong
+	Pong,
+	RosterFull,
+	DeviceAttached,
+	DeviceDetached,
+	RosterRequest
 };
 
 struct PeerMessage
@@ -67,6 +71,7 @@ struct PeerMessage
 	PeerMessageType Type = PeerMessageType::Ping;
 	PeerHello Hello;
 	PeerHelloAck HelloAck;
+	JsonValue Payload;
 };
 
 enum class PeerProtocolError : std::uint8_t

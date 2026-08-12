@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(DeviceExplorerNative VERSION 0.1.0 LANGUAGES CXX)
+project(DeviceExplorerNative VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 include("${CMAKE_CURRENT_LIST_DIR}/../Source/DeviceExplorerWire/sources.cmake")
@@ -24,6 +24,7 @@ endif()
 
 option(DEVICEEXPLORER_BUILD_HOST "Build the standalone native host" ON)
 set(DEVICEEXPLORER_ASIO_ROOT "" CACHE PATH "Existing standalone Asio source root (the directory containing include/asio.hpp)")
+set(DEVICEEXPLORER_MONOCYPHER_ROOT "" CACHE PATH "Existing Monocypher source root (the directory containing src/monocypher.c)")
 set(DEVICEEXPLORER_BUILD_ID_OVERRIDE "" CACHE STRING "Stable build id for source archives without Git metadata")
 if(DEVICEEXPLORER_BUILD_HOST)
     find_package(Threads REQUIRED)
@@ -54,6 +55,31 @@ if(DEVICEEXPLORER_BUILD_HOST)
     endif()
     target_link_libraries(dexp-asio INTERFACE Threads::Threads)
 
+    if(DEVICEEXPLORER_MONOCYPHER_ROOT)
+        set(DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR "${DEVICEEXPLORER_MONOCYPHER_ROOT}")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(deviceexplorer_monocypher
+            GIT_REPOSITORY https://github.com/LoupVaillant/Monocypher.git
+            GIT_TAG 0d85f98c9d9b0227e42cf795cb527dff372b40a4
+            GIT_PROGRESS FALSE
+        )
+        FetchContent_GetProperties(deviceexplorer_monocypher)
+        if(NOT deviceexplorer_monocypher_POPULATED)
+            FetchContent_Populate(deviceexplorer_monocypher)
+        endif()
+        set(DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR "${deviceexplorer_monocypher_SOURCE_DIR}")
+    endif()
+    if(NOT EXISTS "${DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR}/src/monocypher.c")
+        message(FATAL_ERROR "Monocypher was not found below ${DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR}")
+    endif()
+    add_library(dexp-monocypher STATIC
+        "${DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR}/src/monocypher.c"
+        "${DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR}/src/monocypher.h"
+    )
+    target_include_directories(dexp-monocypher PUBLIC "${DEVICEEXPLORER_MONOCYPHER_SOURCE_DIR}/src")
+    set_target_properties(dexp-monocypher PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+
     add_library(dexp-host-core STATIC
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostCore.h"
@@ -63,13 +89,17 @@ if(DEVICEEXPLORER_BUILD_HOST)
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostMdns.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerState.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRoster.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRoster.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerNetwork.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerNetwork.h"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerCrypto.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerCrypto.h"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRuntime.h"
     )
     target_include_directories(dexp-host-core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/host")
-    target_link_libraries(dexp-host-core PUBLIC dexp-wire PRIVATE dexp-asio)
+    target_link_libraries(dexp-host-core PUBLIC dexp-wire PRIVATE dexp-asio dexp-monocypher)
     if(WIN32)
         target_link_libraries(dexp-host-core PRIVATE iphlpapi)
     endif()
@@ -156,6 +186,33 @@ if(DEVICEEXPLORER_BUILD_HOST)
             target_compile_options(dexp-host-peer-state-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
         endif()
         add_test(NAME dexp-host-peer-state-tests COMMAND dexp-host-peer-state-tests)
+        add_executable(dexp-host-peer-crypto-tests
+            "${CMAKE_CURRENT_LIST_DIR}/tests/DeviceExplorerHostPeerCryptoTests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerCrypto.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostPeerCrypto.h"
+        )
+        target_include_directories(dexp-host-peer-crypto-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/host")
+        target_link_libraries(dexp-host-peer-crypto-tests PRIVATE dexp-wire dexp-monocypher)
+        target_compile_features(dexp-host-peer-crypto-tests PRIVATE cxx_std_17)
+        if(MSVC)
+            target_compile_options(dexp-host-peer-crypto-tests PRIVATE /W4 /WX)
+        else()
+            target_compile_options(dexp-host-peer-crypto-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME dexp-host-peer-crypto-tests COMMAND dexp-host-peer-crypto-tests)
+        add_executable(dexp-host-roster-tests
+            "${CMAKE_CURRENT_LIST_DIR}/tests/DeviceExplorerHostRosterTests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRoster.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/host/DeviceExplorerHostRoster.h"
+        )
+        target_include_directories(dexp-host-roster-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/host")
+        target_compile_features(dexp-host-roster-tests PRIVATE cxx_std_17)
+        if(MSVC)
+            target_compile_options(dexp-host-roster-tests PRIVATE /W4 /WX)
+        else()
+            target_compile_options(dexp-host-roster-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME dexp-host-roster-tests COMMAND dexp-host-roster-tests)
         add_test(NAME dexp-host-version-json COMMAND dexp-host --version-json)
         set_tests_properties(dexp-host-version-json PROPERTIES
             PASS_REGULAR_EXPRESSION "\"manifest_version\":1"

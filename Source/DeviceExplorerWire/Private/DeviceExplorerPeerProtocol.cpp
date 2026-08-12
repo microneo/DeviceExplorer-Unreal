@@ -378,11 +378,16 @@ bool ParsePeerMessage(const ByteView Json, PeerMessage& OutMessage, PeerProtocol
 	}
 	else if (Type == "peer_ping") Parsed.Type = PeerMessageType::Ping;
 	else if (Type == "peer_pong") Parsed.Type = PeerMessageType::Pong;
+	else if (Type == "roster_full_owned") Parsed.Type = PeerMessageType::RosterFull;
+	else if (Type == "device_attached") Parsed.Type = PeerMessageType::DeviceAttached;
+	else if (Type == "device_detached") Parsed.Type = PeerMessageType::DeviceDetached;
+	else if (Type == "roster_request") Parsed.Type = PeerMessageType::RosterRequest;
 	else
 	{
 		SetError(OutError, PeerProtocolError::WrongMessageType);
 		return false;
 	}
+	Parsed.Payload = Root;
 	OutMessage = std::move(Parsed);
 	SetError(OutError, PeerProtocolError::None);
 	return true;

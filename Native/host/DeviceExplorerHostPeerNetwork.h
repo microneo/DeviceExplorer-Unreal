@@ -19,9 +19,13 @@ public:
 	bool Start(std::string& OutError);
 	void Stop();
 	std::string DiagnosticsJson() const;
+	std::string RosterJson() const;
 	std::string BoundAddress() const;
 	std::uint16_t BoundPort() const;
 	void Discover(PeerCandidate Candidate);
+	std::uint64_t KnownDeviceSession(const std::string& DeviceId) const;
+	void LocalDeviceAttached(RosterDevice Device);
+	void LocalDeviceDetached(const std::string& DeviceId, std::uint64_t DeviceSession);
 
 private:
 	struct Implementation;

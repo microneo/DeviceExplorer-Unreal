@@ -22,6 +22,7 @@ public:
 	void Accept(asio::ip::tcp::socket Socket, bool Dashboard);
 	void Stop();
 	void Reannounce();
+	void FenceLocalDevice(const std::string& DeviceId, std::uint64_t ObservedSession);
 
 private:
 	struct Implementation;

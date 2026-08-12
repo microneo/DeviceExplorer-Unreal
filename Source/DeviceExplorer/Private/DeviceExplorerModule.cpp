@@ -9,6 +9,7 @@
 #include "DeviceExplorerConsoleCatalog.h"
 #include "DeviceExplorerCoreModule.h"
 #include "DeviceExplorerDiscovery.h"
+#include "DeviceExplorerDeviceIdentity.h"
 #include "DeviceExplorerLogService.h"
 #include "DeviceExplorerSettings.h"
 #include "DeviceExplorerTrace.h"
@@ -663,7 +664,14 @@ void FDeviceExplorerModule::StartupModule()
 		DeviceExplorer::Auth::SetProvisionedToken(ProvisionedToken);
 	}
 
-	DeviceId = GetOrCreateDeviceId();
+	DeviceIdentityStore = MakeUnique<FDeviceExplorerDeviceIdentityStore>(
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("DeviceExplorer"), TEXT("device-identity.txt")));
+	FString IdentityError;
+	if (!DeviceIdentityStore->Load(IdentityError))
+	{
+		UE_LOG(LogDeviceExplorer, Error, TEXT("%s; network connections are disabled"), *IdentityError);
+	}
+	DeviceId = DeviceIdentityStore->GetDeviceId();
 	LogService = MakeUnique<FDeviceExplorerLogService>([this](const TSharedRef<FJsonObject>& Message) { SendJson(Message); });
 	LogService->Start();
 	ConsoleCatalog = MakeUnique<FDeviceExplorerConsoleCatalog>();
@@ -773,6 +781,7 @@ void FDeviceExplorerModule::ShutdownModule()
 	Disconnect();
 	Transport.Reset();
 	ConnectionCoordinator.Reset();
+	DeviceIdentityStore.Reset();
 	LogService.Reset();
 	ConsoleCatalog.Reset();
 }
@@ -938,6 +947,24 @@ void FDeviceExplorerModule::Connect(FDeviceExplorerEndpointCandidate Candidate)
 		ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
 		return;
 	}
+	if (!DeviceIdentityStore)
+	{
+		bConnecting = false;
+		ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
+		return;
+	}
+	FDeviceExplorerConnectionIdentity ConnectionIdentity;
+	FString IdentityError;
+	if (!DeviceIdentityStore->AllocateConnection(ConnectionIdentity, IdentityError))
+	{
+		bConnecting = false;
+		ConnectionCoordinator->MarkFailed(Candidate, FPlatformTime::Seconds());
+		UE_LOG(LogDeviceExplorer, Error, TEXT("%s; refusing to open a socket"), *IdentityError);
+		return;
+	}
+	DeviceId = MoveTemp(ConnectionIdentity.DeviceId);
+	DeviceSession = ConnectionIdentity.DeviceSession;
+	ConnectionId = MoveTemp(ConnectionIdentity.ConnectionId);
 	AuthenticatingCandidate = Candidate;
 
 	FDeviceExplorerTransportCallbacks Callbacks;
@@ -1062,6 +1089,8 @@ void FDeviceExplorerModule::SendHello()
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("type"), TEXT("hello"));
 	Message->SetStringField(TEXT("device_id"), DeviceId);
+	Message->SetStringField(TEXT("device_session"), LexToString(DeviceSession));
+	Message->SetStringField(TEXT("connection_id"), ConnectionId);
 	Message->SetStringField(TEXT("name"), FPlatformProcess::ComputerName());
 	Message->SetStringField(TEXT("project_name"), FApp::GetProjectName());
 	Message->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
@@ -1246,6 +1275,10 @@ void FDeviceExplorerModule::HandleMessage(const FString& Message)
 	{
 		return;
 	}
+	if ((Type == TEXT("attach_ack") || Type == TEXT("reconnect_required")) && HandleAttachAck(Json))
+	{
+		return;
+	}
 	if (LogService && LogService->HandleMessage(Type, Json))
 	{
 		return;
@@ -1274,6 +1307,36 @@ void FDeviceExplorerModule::HandleMessage(const FString& Message)
 	{
 		UploadFile(Json);
 	}
+}
+
+bool FDeviceExplorerModule::HandleAttachAck(const TSharedPtr<FJsonObject>& Message)
+{
+	bool bAccepted = false;
+	if (Message->TryGetBoolField(TEXT("accepted"), bAccepted) && bAccepted) return true;
+	FString KnownText;
+	uint64 KnownSession = 0;
+	if (!Message->TryGetStringField(TEXT("last_known_device_session"), KnownText) ||
+	    !LexTryParseString(KnownSession, *KnownText) || KnownSession < DeviceSession || !DeviceIdentityStore)
+	{
+		UE_LOG(LogDeviceExplorer, Error, TEXT("Host rejected the device attach without a usable last-known session"));
+		Disconnect();
+		if (ConnectionCoordinator) ConnectionCoordinator->AbandonActive();
+		return true;
+	}
+	FString Error;
+	if (!DeviceIdentityStore->AdvancePast(KnownSession, Error))
+	{
+		UE_LOG(LogDeviceExplorer, Error, TEXT("%s; refusing rollback recovery"), *Error);
+		Disconnect();
+		if (ConnectionCoordinator) ConnectionCoordinator->AbandonActive();
+		return true;
+	}
+	UE_LOG(LogDeviceExplorer, Warning,
+	       TEXT("Host remembered device session %llu; advanced the persistent counter and reconnecting"),
+	       static_cast<unsigned long long>(KnownSession));
+	Disconnect();
+	if (ConnectionCoordinator) ConnectionCoordinator->AbandonActive();
+	return true;
 }
 
 void FDeviceExplorerModule::ExecuteCommand(const TSharedPtr<FJsonObject>& Message)
@@ -1783,29 +1846,6 @@ void FDeviceExplorerModule::SendUnauthenticatedJson(const TSharedRef<FJsonObject
 	{
 		Transport->SendText(Serialized);
 	}
-}
-
-FString FDeviceExplorerModule::GetOrCreateDeviceId() const
-{
-	static const TCHAR* Section = TEXT("DeviceExplorer");
-	static const TCHAR* Key = TEXT("DeviceId");
-
-	FString Result;
-	if (GConfig != nullptr)
-	{
-		GConfig->GetString(Section, Key, Result, GGameUserSettingsIni);
-	}
-	FGuid ParsedGuid;
-	if (!FGuid::Parse(Result, ParsedGuid))
-	{
-		Result = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-		if (GConfig != nullptr)
-		{
-			GConfig->SetString(Section, Key, *Result, GGameUserSettingsIni);
-			GConfig->Flush(false, GGameUserSettingsIni);
-		}
-	}
-	return Result;
 }
 
 IMPLEMENT_MODULE(FDeviceExplorerModule, DeviceExplorer)

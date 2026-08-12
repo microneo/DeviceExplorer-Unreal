@@ -1,6 +1,7 @@
 #include "DeviceExplorerHostRuntime.h"
 
 #include "DeviceExplorerHostMdns.h"
+#include "DeviceExplorerHostPeerState.h"
 
 #include "DeviceExplorerAuthPrimitives.h"
 #include "DeviceExplorerHttpUpgrade.h"
@@ -352,6 +353,7 @@ public:
 	virtual ~DeviceChannel() = default;
 	virtual void SendText(std::string Text) = 0;
 	virtual void Close() = 0;
+	virtual void CloseAfterWrites() = 0;
 	virtual std::string LocalAddress() const = 0;
 };
 
@@ -367,6 +369,8 @@ struct LogEntry
 struct DeviceState
 {
 	std::string Id;
+	std::uint64_t DeviceSession = 0;
+	std::string ConnectionId;
 	std::string Name;
 	std::string ProjectName;
 	std::string EngineVersion;
@@ -441,7 +445,8 @@ std::string NormalizeRelativePath(const std::string& Value)
 struct HostState : public std::enable_shared_from_this<HostState>
 {
 	HostState(asio::io_context& InIo, const HostConfig& InConfig, BoundEndpoints InEndpoints, std::string InManifest)
-		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Manifest(std::move(InManifest)), MaintenanceTimer(Io)
+		: Io(InIo), Config(InConfig), Endpoints(std::move(InEndpoints)), Manifest(std::move(InManifest)),
+		  KnownDeviceSessions(Config.MaximumKnownDeviceSessions, Config.KnownDeviceSessionTtl), MaintenanceTimer(Io)
 	{
 	}
 
@@ -491,6 +496,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 				++Iterator;
 			}
 		}
+		KnownDeviceSessions.Expire(Now);
 	}
 
 	void Log(const LogLevel Level, const std::string& Message) const
@@ -502,10 +508,36 @@ struct HostState : public std::enable_shared_from_this<HostState>
 	{
 		const std::string Id = StringMember(Hello, "device_id");
 		if (Id.empty()) return;
+		std::uint64_t DeviceSessionValue = 0;
+		const std::string DeviceSessionText = StringMember(Hello, "device_session");
+		if (!DeviceSessionText.empty() && !ParseUnsigned(DeviceSessionText, DeviceSessionValue))
+		{
+			Channel->Close();
+			return;
+		}
+		const std::string ConnectionId = StringMember(Hello, "connection_id");
+		const auto Now = std::chrono::steady_clock::now();
+		const std::uint64_t LocalKnownSession = DeviceSessionValue == 0 ? 0 : KnownDeviceSessions.Get(Id, Now);
+		const std::uint64_t DistributedKnownSession = DeviceSessionValue == 0 || !Config.LastKnownDeviceSession
+			? 0 : Config.LastKnownDeviceSession(Id);
+		const std::uint64_t KnownSession = std::max(LocalKnownSession, DistributedKnownSession);
 		if (Devices.find(Id) == Devices.end() && Devices.size() >= Config.MaximumDevices)
 		{
 			Log(LogLevel::Warning, "device registry is full; refusing " + RemoteAddress);
 			Channel->Close();
+			return;
+		}
+		const bool Accepted = DeviceSessionValue != 0 && !ConnectionId.empty() && KnownSession < DeviceSessionValue;
+		Json Ack;
+		Ack.SetObject();
+		AddString(Ack, "type", "attach_ack");
+		AddBoolean(Ack, "accepted", Accepted);
+		AddString(Ack, "last_known_device_session", std::to_string(KnownSession));
+		Channel->SendText(Serialize(Ack));
+		if (!Accepted)
+		{
+			Log(LogLevel::Warning, "stale or malformed device session refused for " + Id);
+			Channel->CloseAfterWrites();
 			return;
 		}
 		DeviceState& Device = Devices[Id];
@@ -514,6 +546,9 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			if (Previous != Channel) Previous->Close();
 		}
 		Device.Id = Id;
+		Device.DeviceSession = DeviceSessionValue;
+		Device.ConnectionId = ConnectionId;
+		KnownDeviceSessions.Remember(Id, DeviceSessionValue, Now);
 		Device.Name = StringMember(Hello, "name");
 		Device.ProjectName = StringMember(Hello, "project_name");
 		Device.EngineVersion = StringMember(Hello, "engine_version");
@@ -536,6 +571,28 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		if (Device.Commands.GetType() != Wire::JsonType::Array) Device.Commands.SetArray();
 		if (Device.FileRoots.GetType() != Wire::JsonType::Array) Device.FileRoots.SetArray();
 		if (Device.DataModules.GetType() != Wire::JsonType::Array) Device.DataModules.SetArray();
+		if (Config.LocalDeviceAttached)
+		{
+			RosterDevice RosterEntry;
+			RosterEntry.DeviceId = Device.Id;
+			RosterEntry.DeviceSession = Device.DeviceSession;
+			RosterEntry.ConnectionId = Device.ConnectionId;
+			RosterEntry.Name = Device.Name;
+			RosterEntry.ProjectName = Device.ProjectName;
+			RosterEntry.Platform = Device.Platform;
+			RosterEntry.Configuration = Device.Configuration;
+			RosterEntry.EngineVersion = Device.EngineVersion;
+			RosterEntry.BuildVersion = Device.BuildVersion;
+			RosterEntry.CatalogRevision = 1;
+			if (const std::vector<Json>* Capabilities = Device.Capabilities.TryGetArray())
+			{
+				for (const Json& Capability : *Capabilities)
+				{
+					if (const std::string* Text = Capability.TryGetString()) RosterEntry.Capabilities.push_back(*Text);
+				}
+			}
+			Config.LocalDeviceAttached(std::move(RosterEntry));
+		}
 		Log(LogLevel::Information, "device connected: " + Device.Name + " (" + Id + ")");
 	}
 
@@ -545,13 +602,47 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		{
 			if (Pair.second.Channel.lock() == Channel)
 			{
+				const std::uint64_t DetachedSession = Pair.second.DeviceSession;
+				const std::string DetachedId = Pair.second.Id;
 				Pair.second.Channel.reset();
 				Pair.second.Connected = false;
 				Pair.second.LastSeen = IsoNow();
 				Pair.second.LastActivity = std::chrono::steady_clock::now();
+				if (DetachedSession != 0 && Config.LocalDeviceDetached)
+				{
+					Config.LocalDeviceDetached(DetachedId, DetachedSession);
+				}
 				break;
 			}
 		}
+	}
+
+	void FenceLocalDevice(const std::string& DeviceId, const std::uint64_t ObservedSession)
+	{
+		const auto Found = Devices.find(DeviceId);
+		if (Found == Devices.end() || Found->second.DeviceSession == 0 ||
+		    ObservedSession < Found->second.DeviceSession) return;
+		const std::shared_ptr<DeviceChannel> Channel = Found->second.Channel.lock();
+		if (!Channel) return;
+		for (auto Iterator = Pending.begin(); Iterator != Pending.end();)
+		{
+			if (Iterator->second->Channel.lock() != Channel)
+			{
+				++Iterator;
+				continue;
+			}
+			const std::shared_ptr<PendingRequest> Request = Iterator->second;
+			Iterator = Pending.erase(Iterator);
+			Request->Timer.cancel();
+			Request->Complete({});
+		}
+		Json Reconnect;
+		Reconnect.SetObject();
+		AddString(Reconnect, "type", "reconnect_required");
+		AddString(Reconnect, "last_known_device_session", std::to_string(ObservedSession));
+		Channel->SendText(Serialize(Reconnect));
+		Channel->CloseAfterWrites();
+		Log(LogLevel::Warning, "local device ownership fenced by session " + std::to_string(ObservedSession));
 	}
 
 	void OnMessage(const std::shared_ptr<DeviceChannel>& Channel, const Json& Message)
@@ -647,6 +738,8 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			Json Item;
 			Item.SetObject();
 			AddString(Item, "id", Device->Id);
+			AddString(Item, "device_session", std::to_string(Device->DeviceSession));
+			AddString(Item, "connection_id", Device->ConnectionId);
 			AddString(Item, "name", Device->Name);
 			AddString(Item, "project_name", Device->ProjectName);
 			AddString(Item, "engine_version", Device->EngineVersion);
@@ -825,6 +918,7 @@ struct HostState : public std::enable_shared_from_this<HostState>
 	BoundEndpoints Endpoints;
 	std::string Manifest;
 	std::unordered_map<std::string, DeviceState> Devices;
+	KnownHostSessions KnownDeviceSessions;
 	std::unordered_map<std::string, std::shared_ptr<PendingRequest>> Pending;
 	std::unordered_map<std::string, TransferState> Transfers;
 	asio::steady_timer MaintenanceTimer;
@@ -881,6 +975,12 @@ public:
 	void Close() override
 	{
 		CloseSocket();
+	}
+
+	void CloseAfterWrites() override
+	{
+		CloseAfterWrite = true;
+		if (WriteQueue.empty()) CloseSocket();
 	}
 
 	std::string LocalAddress() const override
@@ -1552,6 +1652,14 @@ private:
 			Reply({ 200, "application/json; charset=utf-8", Body, { { "Cache-Control", "no-store" } } });
 			return;
 		}
+		if (Request.Method == "GET" && Request.Path == "/api/roster")
+		{
+			const std::string Body = State->Config.RosterDiagnostics
+				? State->Config.RosterDiagnostics()
+				: "{\"devices\":[],\"device_count\":0,\"ambiguous_owners\":0}";
+			Reply({ 200, "application/json; charset=utf-8", Body, { { "Cache-Control", "no-store" } } });
+			return;
+		}
 		if (Request.Method == "GET" && Request.Path == "/api/devices")
 		{
 			Reply({ 200, "application/json; charset=utf-8", State->DevicesJson(), {} });
@@ -1889,5 +1997,10 @@ void HostRuntime::Stop()
 void HostRuntime::Reannounce()
 {
 	Impl->Mdns->Reannounce();
+}
+
+void HostRuntime::FenceLocalDevice(const std::string& DeviceId, const std::uint64_t ObservedSession)
+{
+	Impl->State->FenceLocalDevice(DeviceId, ObservedSession);
 }
 }    // namespace DeviceExplorer::Host

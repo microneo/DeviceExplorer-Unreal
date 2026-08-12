@@ -2,6 +2,10 @@
 #include "DeviceExplorerHostPeerNetwork.h"
 
 #include "DeviceExplorerHostManifest.h"
+#include "DeviceExplorerAuthPrimitives.h"
+#include "DeviceExplorerJson.h"
+#include "DeviceExplorerProtocol.h"
+#include "DeviceExplorerWebSocket.h"
 
 #include <asio.hpp>
 
@@ -58,6 +62,107 @@ std::string Body(const std::string& Response)
 	const std::size_t Separator = Response.find("\r\n\r\n");
 	return Separator == std::string::npos ? std::string{} : Response.substr(Separator + 4);
 }
+
+std::string JsonStringMember(const std::string& Text, const std::string_view Name)
+{
+	DeviceExplorer::Wire::JsonValue Root;
+	if (!DeviceExplorer::Wire::ParseJson(
+		    { reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Root)) return {};
+	const DeviceExplorer::Wire::JsonValue* Value = Root.FindMember(Name);
+	const std::string* String = Value == nullptr ? nullptr : Value->TryGetString();
+	return String == nullptr ? std::string{} : *String;
+}
+
+class DeviceClient
+{
+public:
+	explicit DeviceClient(asio::io_context& Io)
+		: Socket(Io), Decoder(DeviceExplorer::Wire::WebSocketRole::Client)
+	{
+	}
+
+	bool Connect(const std::string& Address, const std::uint16_t Port, const std::string& Token,
+	             const std::uint64_t DeviceSession, std::string& OutAttachAck)
+	{
+		asio::error_code Error;
+		Socket.connect({ asio::ip::make_address(Address, Error), Port }, Error);
+		if (Error) return false;
+		const std::string Request =
+			"GET /device/connect HTTP/1.1\r\nHost: " + Address + ':' + std::to_string(Port) +
+			"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+			"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+		asio::write(Socket, asio::buffer(Request), Error);
+		if (Error) return false;
+		std::string Header;
+		asio::read_until(Socket, asio::dynamic_buffer(Header), "\r\n\r\n", Error);
+		if (Error || Header.find("HTTP/1.1 101 Switching Protocols") != 0) return false;
+
+		const std::string ClientNonce = "0123456789abcdef0123456789abcdef";
+		if (!Send("{\"type\":\"auth_request\",\"protocol_version\":" +
+		          std::to_string(DeviceExplorer::DeviceProtocolVersion) + ",\"client_nonce\":\"" + ClientNonce + "\"}")) return false;
+		const std::string Challenge = Receive();
+		const std::string HostNonce = JsonStringMember(Challenge, "host_nonce");
+		if (!DeviceExplorer::Wire::Auth::IsValidNonce(HostNonce)) return false;
+		const std::string Proof = DeviceExplorer::Wire::Auth::ComputeProof(
+			Token, DeviceExplorer::Wire::Auth::DeviceProofLabel, ClientNonce, HostNonce);
+		if (!Send("{\"type\":\"auth_response\",\"client_proof\":\"" + Proof + "\"}")) return false;
+		if (Receive().find("\"type\":\"auth_ok\"") == std::string::npos) return false;
+		const std::string Hello =
+			"{\"type\":\"hello\",\"device_id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\","
+			"\"device_session\":\"" + std::to_string(DeviceSession) +
+			"\",\"connection_id\":\"connection-" + std::to_string(DeviceSession) +
+			"\",\"name\":\"Roster device\",\"project_name\":\"Integration\","
+			"\"engine_version\":\"5.test\",\"platform\":\"Test\",\"configuration\":\"Development\","
+			"\"build_version\":\"test\",\"protocol_version\":" +
+			std::to_string(DeviceExplorer::DeviceProtocolVersion) +
+			",\"uptime_seconds\":1,\"capabilities\":[\"logs\"],\"commands\":[],\"file_roots\":[],\"data_modules\":[]}";
+		if (!Send(Hello)) return false;
+		OutAttachAck = Receive();
+		return !OutAttachAck.empty();
+	}
+
+	void Close()
+	{
+		asio::error_code Error;
+		Socket.close(Error);
+	}
+
+private:
+	bool Send(const std::string& Text)
+	{
+		DeviceExplorer::Wire::WebSocketFrame Frame;
+		Frame.Opcode = DeviceExplorer::Wire::WebSocketOpcode::Text;
+		Frame.Payload.assign(Text.begin(), Text.end());
+		std::vector<std::uint8_t> Bytes;
+		if (!DeviceExplorer::Wire::EncodeWebSocketFrame(
+			    Frame, DeviceExplorer::Wire::WebSocketRole::Client, NextMask++, Bytes)) return false;
+		asio::error_code Error;
+		asio::write(Socket, asio::buffer(Bytes), Error);
+		return !Error;
+	}
+
+	std::string Receive()
+	{
+		for (;;)
+		{
+			DeviceExplorer::Wire::WebSocketFrame Frame;
+			if (Decoder.Drain(Frame))
+			{
+				if (Frame.Opcode == DeviceExplorer::Wire::WebSocketOpcode::Text)
+					return { reinterpret_cast<const char*>(Frame.Payload.data()), Frame.Payload.size() };
+				if (Frame.Opcode == DeviceExplorer::Wire::WebSocketOpcode::Close) return {};
+			}
+			std::array<std::uint8_t, 4096> Buffer{};
+			asio::error_code Error;
+			const std::size_t Bytes = Socket.read_some(asio::buffer(Buffer), Error);
+			if (Error || Bytes == 0 || !Decoder.Consume({ Buffer.data(), Bytes })) return {};
+		}
+	}
+
+	asio::ip::tcp::socket Socket;
+	DeviceExplorer::Wire::WebSocketDecoder Decoder;
+	std::uint32_t NextMask = 0x12345678;
+};
 }    // namespace
 
 int main()
@@ -76,6 +181,7 @@ int main()
 	Config.PeerSecret = "integration-peer-secret-shared-by-all-hosts";
 	Config.PeerAddress = "127.0.0.1";
 	Config.PeerPort = 0;
+	Config.PeerRosterRemovalTimeout = std::chrono::milliseconds(100);
 	DeviceExplorer::Host::HostCore Host(std::move(Config));
 	std::string Error;
 	CHECK(Host.Start(Error));
@@ -131,6 +237,54 @@ int main()
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	CHECK(PeersConnected);
+	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/roster").find("HTTP/1.1 200 OK") == 0);
+
+	asio::io_context DeviceIo;
+	DeviceClient FirstDevice(DeviceIo);
+	std::string AttachAck;
+	CHECK(FirstDevice.Connect(Endpoints.DeviceAddress, Endpoints.DevicePort,
+	                          "integration-test-token-that-is-long-enough", 10, AttachAck));
+	CHECK(AttachAck.find("\"accepted\":true") != std::string::npos);
+	bool FirstRosterConverged = false;
+	for (int Attempt = 0; Attempt < 200; ++Attempt)
+	{
+		const std::string Roster = Body(Get(PeerEndpoints.DashboardAddress, PeerEndpoints.DashboardPort, "/api/roster"));
+		if (Roster.find("\"device_session\":10") != std::string::npos &&
+		    Roster.find("\"owner_node_id\":\"11111111-1111-4111-8111-111111111111\"") != std::string::npos)
+		{
+			FirstRosterConverged = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	CHECK(FirstRosterConverged);
+
+	DeviceClient MigratedDevice(DeviceIo);
+	CHECK(MigratedDevice.Connect(PeerEndpoints.DeviceAddress, PeerEndpoints.DevicePort,
+	                             "second-integration-test-token-that-is-long-enough", 11, AttachAck));
+	CHECK(AttachAck.find("\"accepted\":true") != std::string::npos);
+	bool MigrationConverged = false;
+	for (int Attempt = 0; Attempt < 200; ++Attempt)
+	{
+		const std::string Roster = Body(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/roster"));
+		if (Roster.find("\"device_session\":11") != std::string::npos &&
+		    Roster.find("\"owner_node_id\":\"33333333-3333-4333-8333-333333333333\"") != std::string::npos &&
+		    Roster.find("\"ambiguous_owners\":0") != std::string::npos)
+		{
+			MigrationConverged = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	CHECK(MigrationConverged);
+
+	DeviceClient RolledBackDevice(DeviceIo);
+	CHECK(RolledBackDevice.Connect(Endpoints.DeviceAddress, Endpoints.DevicePort,
+	                               "integration-test-token-that-is-long-enough", 10, AttachAck));
+	CHECK(AttachAck.find("\"accepted\":false") != std::string::npos);
+	CHECK(AttachAck.find("\"last_known_device_session\":\"11\"") != std::string::npos);
+	RolledBackDevice.Close();
+	FirstDevice.Close();
 
 	const std::string DashboardHealth = Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/health");
 	const std::string DeviceHealth = Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/health");
@@ -151,7 +305,8 @@ int main()
 	CHECK(ConfigResponse.find("HTTP/1.1 200 OK") == 0);
 	CHECK(Body(ConfigResponse).find("\"device_port\":" + std::to_string(Endpoints.DevicePort)) != std::string::npos);
 	CHECK(Body(ConfigResponse).find("\"instance_id\":\"22222222-2222-4222-8222-222222222222\"") != std::string::npos);
-	CHECK(Body(ConfigResponse).find("\"peer_protocol_version\":2") != std::string::npos);
+	CHECK(Body(ConfigResponse).find("\"peer_protocol_version\":" +
+	                               std::to_string(DeviceExplorer::PeerProtocolVersion)) != std::string::npos);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/api/peers").find("HTTP/1.1 200 OK") == 0);
 	CHECK(Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/missing").find("HTTP/1.1 404 Not Found") == 0);
 	CHECK(Get(Endpoints.DeviceAddress, Endpoints.DevicePort, "/device/connect").find("HTTP/1.1 400 Bad Request") == 0);
@@ -159,6 +314,8 @@ int main()
 	Done.store(true);
 	EventLoop.join();
 	PeerHost.Stop();
+	Host.RunFor(std::chrono::milliseconds(250));
+	CHECK(Host.GetPeerDiagnosticsJson().find("\"expired_roster_owners\":1") != std::string::npos);
 
 	DeviceExplorer::Host::HostConfig RollbackConfig;
 	RollbackConfig.DashboardPort = 0;

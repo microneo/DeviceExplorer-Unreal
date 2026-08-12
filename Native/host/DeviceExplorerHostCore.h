@@ -38,6 +38,22 @@ struct PeerCandidate
 	std::int32_t ProtocolMaximum = 0;
 };
 
+struct RosterDevice
+{
+	std::string DeviceId;
+	std::uint64_t DeviceSession = 0;
+	std::string ConnectionId;
+	std::string Name;
+	std::string ProjectName;
+	std::string Platform;
+	std::string Configuration;
+	std::string EngineVersion;
+	std::string BuildVersion;
+	std::vector<std::string> Capabilities;
+	std::uint64_t CatalogRevision = 0;
+	std::uint64_t ConnectionAgeMilliseconds = 0;
+};
+
 struct HostConfig
 {
 	std::string DashboardAddress = "127.0.0.1";
@@ -61,26 +77,35 @@ struct HostConfig
 	std::size_t MaximumQueuedControlBytes = 64 * 1024;
 	std::size_t MaximumKnownHostSessions = 1024;
 	std::size_t MaximumCandidateMembers = 1024;
+	std::size_t MaximumRosterDevices = 4096;
 	std::size_t MaximumDialAttemptsPerSecond = 10;
 	std::uint64_t MaximumHostSessionCorrection = 1000000;
 	std::chrono::seconds PeerHandshakeTimeout{ 5 };
 	std::chrono::seconds PeerPingInterval{ 5 };
 	std::chrono::seconds PeerSuspectTimeout{ 15 };
+	std::chrono::milliseconds PeerRosterRemovalTimeout{ 60000 };
 	std::chrono::seconds PeerCandidateTtl{ 24 * 60 * 60 * 7 };
 	std::uint16_t TracePort = 1981;
 	std::size_t LogCapacity = 100000;
 	std::size_t LogCapacityBytes = 16 * 1024 * 1024;
 	std::size_t MaximumDevices = 1024;
+	std::size_t MaximumKnownDeviceSessions = 4096;
 	std::uint64_t MaximumTransferBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 	std::chrono::milliseconds RequestTimeout{ 10000 };
 	std::chrono::seconds TransferTtl{ 1800 };
 	std::chrono::seconds DisconnectedDeviceTtl{ 3600 };
+	std::chrono::seconds KnownDeviceSessionTtl{ 24 * 60 * 60 * 7 };
 	std::string BuildId = "unknown";
 	LogCallback Log;
 	std::shared_ptr<std::atomic<std::uint64_t>> LiveHostSession;
 	std::function<bool(std::uint64_t, std::uint64_t&, std::string&)> ApplyHostSessionCorrection;
 	std::shared_ptr<std::function<void()>> RequestMdnsReannounce;
+	std::shared_ptr<std::function<void(const std::string&, std::uint64_t)>> FenceLocalDevice;
 	std::function<std::string()> PeerDiagnostics;
+	std::function<std::string()> RosterDiagnostics;
+	std::function<std::uint64_t(const std::string&)> LastKnownDeviceSession;
+	std::function<void(RosterDevice)> LocalDeviceAttached;
+	std::function<void(const std::string&, std::uint64_t)> LocalDeviceDetached;
 	std::function<void(PeerCandidate)> PeerDiscovered;
 };
 
