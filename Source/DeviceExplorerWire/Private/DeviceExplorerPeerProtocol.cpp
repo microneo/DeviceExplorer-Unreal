@@ -116,7 +116,10 @@ bool ParseObject(const ByteView Bytes, JsonValue& OutRoot, PeerProtocolError* Ou
 	Limits.MaximumDocumentBytes = MaximumPeerMessageBytes;
 	Limits.MaximumStringBytes = MaximumPeerMessageBytes;
 	Limits.MaximumDepth = 8;
-	Limits.MaximumNodeCount = 64;
+	// A roster snapshot part is the largest peer message: an eight-node envelope
+	// plus sixteen device objects that each hold eleven fields and a capability
+	// array of up to thirty-two strings, so 729 values in the worst case.
+	Limits.MaximumNodeCount = 1024;
 	if (!ParseJson(Bytes, OutRoot, Limits) || OutRoot.GetType() != JsonType::Object)
 	{
 		SetError(OutError, PeerProtocolError::MalformedJson);
