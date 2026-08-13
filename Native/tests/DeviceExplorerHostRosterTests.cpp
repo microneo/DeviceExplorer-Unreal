@@ -21,9 +21,10 @@ DeviceExplorer::Host::RosterDevice Device(const char* Id, const std::uint64_t Se
 int main()
 {
 	using namespace DeviceExplorer::Host;
-	DistributedRoster Roster("local", 7, 8);
+	DistributedRoster Roster("local", 7, 8, 2);
 	CHECK(Roster.Local().Revision == 1);
-	CHECK(Roster.AttachLocal(Device("device", 10, "local-10")) == 2);
+	CHECK(Roster.AttachLocal(Device("device", 10, "local-10")).Result == LocalRosterResult::Applied);
+	CHECK(Roster.Local().Revision == 2);
 	CHECK(Roster.KnownDeviceSession("device") == 10);
 	CHECK(Roster.ApplyFull("peer-a", 4, 1, { Device("device", 11, "a-11") }) == RosterApplyResult::Applied);
 	CHECK(Roster.View().size() == 1);
@@ -51,6 +52,13 @@ int main()
 	                         Device("4", 1, "4"), Device("5", 1, "5"), Device("6", 1, "6"),
 	                         Device("7", 1, "7") }) ==
 	      RosterApplyResult::CapacityExceeded);
+
+	CHECK(Roster.AttachLocal(Device("local-2", 1, "local-2")).Result == LocalRosterResult::Applied);
+	CHECK(Roster.AttachLocal(Device("local-3", 1, "local-3")).Result == LocalRosterResult::CapacityExceeded);
+	RosterDevice Invalid = Device("invalid", 1, "connection");
+	Invalid.ConnectionId.assign(129, 'x');
+	CHECK(Roster.AttachLocal(std::move(Invalid)).Result == LocalRosterResult::Invalid);
+	CHECK(Roster.Local().Devices.size() == 2);
 	std::cout << "host roster tests passed\n";
 	return EXIT_SUCCESS;
 }

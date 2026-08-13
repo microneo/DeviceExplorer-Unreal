@@ -82,7 +82,8 @@ public:
 	}
 
 	bool Connect(const std::string& Address, const std::uint16_t Port, const std::string& Token,
-	             const std::uint64_t DeviceSession, std::string& OutAttachAck)
+	             const std::uint64_t DeviceSession, std::string& OutAttachAck,
+	             std::string ConnectionId = {})
 	{
 		asio::error_code Error;
 		Socket.connect({ asio::ip::make_address(Address, Error), Port }, Error);
@@ -107,10 +108,11 @@ public:
 			Token, DeviceExplorer::Wire::Auth::DeviceProofLabel, ClientNonce, HostNonce);
 		if (!Send("{\"type\":\"auth_response\",\"client_proof\":\"" + Proof + "\"}")) return false;
 		if (Receive().find("\"type\":\"auth_ok\"") == std::string::npos) return false;
+		if (ConnectionId.empty()) ConnectionId = "connection-" + std::to_string(DeviceSession);
 		const std::string Hello =
 			"{\"type\":\"hello\",\"device_id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\","
 			"\"device_session\":\"" + std::to_string(DeviceSession) +
-			"\",\"connection_id\":\"connection-" + std::to_string(DeviceSession) +
+			"\",\"connection_id\":\"" + ConnectionId +
 			"\",\"name\":\"Roster device\",\"project_name\":\"Integration\","
 			"\"engine_version\":\"5.test\",\"platform\":\"Test\",\"configuration\":\"Development\","
 			"\"build_version\":\"test\",\"protocol_version\":" +
@@ -284,6 +286,13 @@ int main()
 	CHECK(AttachAck.find("\"accepted\":false") != std::string::npos);
 	CHECK(AttachAck.find("\"last_known_device_session\":\"11\"") != std::string::npos);
 	RolledBackDevice.Close();
+	DeviceClient InvalidRosterDevice(DeviceIo);
+	CHECK(InvalidRosterDevice.Connect(Endpoints.DeviceAddress, Endpoints.DevicePort,
+	                                  "integration-test-token-that-is-long-enough", 12, AttachAck,
+	                                  std::string(129, 'x')));
+	CHECK(AttachAck.find("\"accepted\":false") != std::string::npos);
+	CHECK(AttachAck.find("connection_id must contain at most 128 bytes") != std::string::npos);
+	InvalidRosterDevice.Close();
 	FirstDevice.Close();
 
 	const std::string DashboardHealth = Get(Endpoints.DashboardAddress, Endpoints.DashboardPort, "/health");
@@ -478,6 +487,76 @@ int main()
 	CHECK(CandidateDiagnostics.find("\"candidate_count\":0") != std::string::npos);
 	CHECK(CandidateDiagnostics.find("\"expired_candidates\":1") != std::string::npos);
 	CandidateNetwork.Stop();
+
+	// A maximum-sized local roster is much larger than the physical control
+	// queue. Snapshot parts must follow write completion instead of being
+	// enqueued all at once, while retaining their order ahead of later deltas.
+	asio::io_context RosterIo;
+	DeviceExplorer::Host::HostConfig RosterAConfig;
+	RosterAConfig.NodeId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+	RosterAConfig.HostSession = 1;
+	RosterAConfig.InstanceId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+	RosterAConfig.EnableDistributedMode = true;
+	RosterAConfig.ClusterId = "large-roster-test";
+	RosterAConfig.PeerSecret = "large-roster-test-peer-secret-that-is-long-enough";
+	RosterAConfig.PeerAddress = "127.0.0.1";
+	RosterAConfig.MaximumQueuedControlBytes = 64 * 1024;
+	DeviceExplorer::Host::HostPeerNetwork RosterA(RosterIo, RosterAConfig);
+	CHECK(RosterA.Start(Error));
+	auto AttachLargeRosterRange = [&RosterA](const std::size_t Begin, const std::size_t End)
+	{
+		for (std::size_t Index = Begin; Index < End; ++Index)
+		{
+			DeviceExplorer::Host::RosterDevice Device;
+			Device.DeviceId = "large-device-" + std::to_string(Index);
+			Device.DeviceSession = 1;
+			Device.ConnectionId = "large-connection-" + std::to_string(Index);
+			Device.Name.assign(200, static_cast<char>('a' + (Index % 26)));
+			Device.ProjectName = "Backpressure";
+			Device.Platform = "Test";
+			Device.Configuration = "Development";
+			Device.EngineVersion = "5.test";
+			Device.BuildVersion = "test";
+			Device.Capabilities = { "logs", "files", "commands" };
+			std::string RosterError;
+			CHECK(RosterA.LocalDeviceAttached(std::move(Device), RosterError));
+			CHECK(RosterError.empty());
+		}
+	};
+	AttachLargeRosterRange(0, 900);
+	DeviceExplorer::Host::HostConfig RosterBConfig;
+	RosterBConfig.NodeId = "12121212-1212-4212-8212-121212121212";
+	RosterBConfig.HostSession = 1;
+	RosterBConfig.InstanceId = "34343434-3434-4434-8434-343434343434";
+	RosterBConfig.EnableDistributedMode = true;
+	RosterBConfig.ClusterId = RosterAConfig.ClusterId;
+	RosterBConfig.PeerSecret = RosterAConfig.PeerSecret;
+	RosterBConfig.PeerAddress = "127.0.0.1";
+	RosterBConfig.MaximumQueuedControlBytes = 64 * 1024;
+	RosterBConfig.PeerSeeds.push_back({ "127.0.0.1", RosterA.BoundPort() });
+	DeviceExplorer::Host::HostPeerNetwork RosterB(RosterIo, RosterBConfig);
+	CHECK(RosterB.Start(Error));
+	bool LargeRosterConverged = false;
+	bool DeltasQueuedBehindSnapshot = false;
+	for (int Attempt = 0; Attempt < 1000; ++Attempt)
+	{
+		RosterIo.run_for(std::chrono::milliseconds(10));
+		if (!DeltasQueuedBehindSnapshot && RosterA.DiagnosticsJson().find("\"peer_count\":1") != std::string::npos)
+		{
+			AttachLargeRosterRange(900, RosterAConfig.MaximumDevices);
+			DeltasQueuedBehindSnapshot = true;
+		}
+		if (RosterA.DiagnosticsJson().find("\"peer_count\":1") != std::string::npos &&
+		    RosterB.RosterJson().find("\"device_count\":1024") != std::string::npos)
+		{
+			LargeRosterConverged = true;
+			break;
+		}
+	}
+	CHECK(DeltasQueuedBehindSnapshot);
+	CHECK(LargeRosterConverged);
+	RosterB.Stop();
+	RosterA.Stop();
 	if (Failures != 0)
 	{
 		std::cerr << Failures << " test(s) failed\n";

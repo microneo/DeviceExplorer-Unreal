@@ -40,6 +40,7 @@ int main()
 	std::vector<std::uint8_t> Envelope;
 	std::string PlainText;
 	CHECK(AChannel.Encrypt("{\"type\":\"peer_ping\"}", Envelope));
+	CHECK(!AChannel.Decrypt({ reinterpret_cast<const char*>(Envelope.data()), Envelope.size() }, PlainText));
 	CHECK(BChannel.Decrypt({ reinterpret_cast<const char*>(Envelope.data()), Envelope.size() }, PlainText));
 	CHECK(PlainText == "{\"type\":\"peer_ping\"}");
 	CHECK(!BChannel.Decrypt({ reinterpret_cast<const char*>(Envelope.data()), Envelope.size() }, PlainText));

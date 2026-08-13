@@ -104,7 +104,7 @@ struct HostConfig
 	std::function<std::string()> PeerDiagnostics;
 	std::function<std::string()> RosterDiagnostics;
 	std::function<std::uint64_t(const std::string&)> LastKnownDeviceSession;
-	std::function<void(RosterDevice)> LocalDeviceAttached;
+	std::function<bool(RosterDevice, std::string&)> LocalDeviceAttached;
 	std::function<void(const std::string&, std::uint64_t)> LocalDeviceDetached;
 	std::function<void(PeerCandidate)> PeerDiscovered;
 };

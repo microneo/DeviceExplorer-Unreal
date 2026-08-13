@@ -425,6 +425,11 @@ int main(const int ArgCount, char** ArgValues)
 			return 2;
 		}
 	}
+	else if (Config.EnableDistributedMode && !Config.PeerSecret.empty())
+	{
+		std::cerr << "warning: --peer-secret exposes the cluster secret in the process command line; "
+		             "prefer --peer-secret-file\n";
+	}
 
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
