@@ -117,6 +117,12 @@ bool HostCore::Start(std::string& OutError)
 		OutError = "session token is required";
 		return false;
 	}
+	if (Impl->Config.MaximumDevices == 0 || Impl->Config.MaximumKnownDeviceSessions == 0 ||
+	    Impl->Config.KnownDeviceSessionTtl.count() <= 0)
+	{
+		OutError = "device registry and remembered-session limits must be non-zero";
+		return false;
+	}
 	if (Impl->Config.NodeId.empty() || Impl->Config.HostSession == 0 || Impl->Config.InstanceId.empty())
 	{
 		OutError = "persisted host identity is required";
@@ -129,6 +135,11 @@ bool HostCore::Start(std::string& OutError)
 	if (!Impl->Config.RequestMdnsReannounce)
 	{
 		Impl->Config.RequestMdnsReannounce = std::make_shared<std::function<void()>>();
+	}
+	if (!Impl->Config.FenceLocalDevice)
+	{
+		Impl->Config.FenceLocalDevice =
+			std::make_shared<std::function<void(const std::string&, std::uint64_t)>>();
 	}
 	Wire::HostManifest Manifest;
 	Manifest.BuildId = Impl->Config.BuildId.empty() ? "unknown" : Impl->Config.BuildId;
@@ -179,6 +190,30 @@ bool HostCore::Start(std::string& OutError)
 			const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock();
 			return Network ? Network->DiagnosticsJson() : "{\"enabled\":false,\"peers\":[],\"peer_count\":0}";
 		};
+		Impl->Config.RosterDiagnostics = [WeakPeerNetwork]
+		{
+			const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock();
+			return Network ? Network->RosterJson() : "{\"devices\":[],\"device_count\":0,\"ambiguous_owners\":0}";
+		};
+		Impl->Config.LastKnownDeviceSession = [WeakPeerNetwork](const std::string& DeviceId)
+		{
+			const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock();
+			return Network ? Network->KnownDeviceSession(DeviceId) : std::uint64_t{ 0 };
+		};
+		Impl->Config.LocalDeviceAttached = [WeakPeerNetwork](RosterDevice Device)
+		{
+			if (const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock())
+			{
+				Network->LocalDeviceAttached(std::move(Device));
+			}
+		};
+		Impl->Config.LocalDeviceDetached = [WeakPeerNetwork](const std::string& DeviceId, const std::uint64_t DeviceSession)
+		{
+			if (const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock())
+			{
+				Network->LocalDeviceDetached(DeviceId, DeviceSession);
+			}
+		};
 		Impl->Config.PeerDiscovered = [WeakPeerNetwork](PeerCandidate Candidate)
 		{
 			if (const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock())
@@ -192,6 +227,13 @@ bool HostCore::Start(std::string& OutError)
 	*Impl->Config.RequestMdnsReannounce = [WeakRuntime]
 	{
 		if (const std::shared_ptr<HostRuntime> Runtime = WeakRuntime.lock()) Runtime->Reannounce();
+	};
+	*Impl->Config.FenceLocalDevice = [WeakRuntime](const std::string& DeviceId, const std::uint64_t ObservedSession)
+	{
+		if (const std::shared_ptr<HostRuntime> Runtime = WeakRuntime.lock())
+		{
+			Runtime->FenceLocalDevice(DeviceId, ObservedSession);
+		}
 	};
 	Impl->Running = true;
 	Impl->Accept(Impl->DashboardAcceptor, ListenerKind::Dashboard);

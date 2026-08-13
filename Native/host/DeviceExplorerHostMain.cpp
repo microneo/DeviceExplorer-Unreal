@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -111,6 +112,43 @@ bool SplitUnrealArgument(const std::string_view Argument, const std::string_view
 	return true;
 }
 
+bool ReadAndRemovePeerSecret(const std::filesystem::path& Path, std::string& OutSecret, std::string& OutError)
+{
+	std::error_code Error;
+	if (Path.empty() || !std::filesystem::is_regular_file(Path, Error) || Error)
+	{
+		OutError = "peer secret launch file is missing or is not a regular file";
+		return false;
+	}
+	const std::uintmax_t Size = std::filesystem::file_size(Path, Error);
+	if (Error || Size < 32 || Size > 1024)
+	{
+		std::filesystem::remove(Path, Error);
+		OutError = "peer secret launch file must contain between 32 and 1024 bytes";
+		return false;
+	}
+	std::ifstream File(Path, std::ios::binary);
+	if (!File)
+	{
+		OutError = "cannot open peer secret launch file";
+		return false;
+	}
+	std::string Secret(static_cast<std::size_t>(Size), '\0');
+	File.read(Secret.data(), static_cast<std::streamsize>(Secret.size()));
+	const bool Complete = File.good() || (File.eof() && static_cast<std::size_t>(File.gcount()) == Secret.size());
+	File.close();
+	Error.clear();
+	const bool Removed = std::filesystem::remove(Path, Error);
+	if (!Complete || !Removed || Error)
+	{
+		OutError = Complete ? "cannot remove peer secret launch file after reading it" : "cannot read peer secret launch file";
+		return false;
+	}
+	OutSecret = std::move(Secret);
+	OutError.clear();
+	return true;
+}
+
 #if defined(_WIN32)
 // The narrow environment block is encoded in the active code page, so a user profile
 // outside it would resolve to a different directory than the Editor, which reads the
@@ -195,6 +233,21 @@ private:
 #endif
 };
 
+class ScopedFileRemoval
+{
+public:
+	explicit ScopedFileRemoval(const std::filesystem::path& InPath) : Path(InPath) {}
+	~ScopedFileRemoval()
+	{
+		if (Path.empty()) return;
+		std::error_code Ignored;
+		std::filesystem::remove(Path, Ignored);
+	}
+
+private:
+	const std::filesystem::path& Path;
+};
+
 void PrintUsage()
 {
 	std::cout
@@ -203,7 +256,7 @@ void PrintUsage()
 		   "                 [--trace-port PORT] [--token TOKEN] [--web-root PATH]\n"
 		   "                 [--transfer-dir PATH]\n"
 		   "                 [--enable-distributed --cluster-id ID]\n"
-		   "                 [--peer-secret SECRET]\n"
+		   "                 [--peer-secret-file PATH | --peer-secret SECRET]\n"
 		   "                 [--peer-address ADDRESS] [--peer-port PORT]\n"
 		   "                 [--peer-seed ADDRESS:PORT]\n"
 		   "                 [--parent-pid PID] [--state-dir PATH] [--build-id ID]\n"
@@ -218,6 +271,8 @@ int main(const int ArgCount, char** ArgValues)
 	Config.Token = RandomToken();
 	std::uint64_t ParentProcessId = 0;
 	std::filesystem::path StateDirectory = DefaultStateDirectory();
+	std::filesystem::path PeerSecretFile;
+	ScopedFileRemoval RemovePeerSecretFile(PeerSecretFile);
 	bool VersionJson = false;
 	for (int Index = 1; Index < ArgCount; ++Index)
 	{
@@ -261,6 +316,11 @@ int main(const int ArgCount, char** ArgValues)
 		if (Argument == "--peer-secret" && ReadValue(Index, ArgCount, ArgValues, Value))
 		{
 			Config.PeerSecret = Value;
+			continue;
+		}
+		if (Argument == "--peer-secret-file" && ReadValue(Index, ArgCount, ArgValues, Value))
+		{
+			PeerSecretFile = Value;
 			continue;
 		}
 		if (Argument == "--peer-seed" && ReadValue(Index, ArgCount, ArgValues, Value))
@@ -328,6 +388,7 @@ int main(const int ArgCount, char** ArgValues)
 		if (SplitUnrealArgument(Argument, "PeerPort", Value) && ParsePort(Value, Config.PeerPort)) continue;
 		if (SplitUnrealArgument(Argument, "ClusterId", Value) && !Value.empty()) { Config.ClusterId = Value; continue; }
 		if (SplitUnrealArgument(Argument, "PeerSecret", Value)) { Config.PeerSecret = Value; continue; }
+		if (SplitUnrealArgument(Argument, "PeerSecretFile", Value)) { PeerSecretFile = Value; continue; }
 		if (SplitUnrealArgument(Argument, "ParentPID", Value) && ParseProcessId(Value, ParentProcessId)) continue;
 		if (SplitUnrealArgument(Argument, "Token", Value)) { Config.Token = Value; continue; }
 		if (SplitUnrealArgument(Argument, "WebRoot", Value)) { Config.WebRoot = Value; continue; }
@@ -349,6 +410,20 @@ int main(const int ArgCount, char** ArgValues)
 		if (!DeviceExplorer::Wire::SerializeHostManifest(Manifest, Json)) return 1;
 		std::cout << Json << '\n';
 		return 0;
+	}
+	if (!PeerSecretFile.empty())
+	{
+		std::string Error;
+		if (!Config.PeerSecret.empty())
+		{
+			std::cerr << "peer secret and peer secret file are mutually exclusive\n";
+			return 2;
+		}
+		if (!ReadAndRemovePeerSecret(PeerSecretFile, Config.PeerSecret, Error))
+		{
+			std::cerr << Error << '\n';
+			return 2;
+		}
 	}
 
 	std::cout << std::unitbuf;

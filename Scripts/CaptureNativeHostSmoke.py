@@ -124,6 +124,8 @@ def main() -> int:
         connection.sendall(encode_json_frame({
             "type": "hello",
             "device_id": device_id,
+            "device_session": "1",
+            "connection_id": "native-host-smoke-connection-1",
             "name": "NativeHostSmoke",
             "project_name": "DeviceExplorer",
             "engine_version": "black-box",
@@ -137,6 +139,9 @@ def main() -> int:
             "file_roots": [{"name": "Saved", "path": "Saved"}],
             "data_modules": [],
         }))
+        _, attach_ack = recv_json_frame(connection, "attach_ack")
+        if attach_ack.get("accepted") is not True:
+            raise RuntimeError(f"host rejected native smoke attach: {attach_ack!r}")
         connection.sendall(encode_json_frame({
             "type": "log_batch",
             "entries": [{
@@ -159,6 +164,8 @@ def main() -> int:
         second_connection.sendall(encode_json_frame({
             "type": "hello",
             "device_id": "native-host-smoke-peer",
+            "device_session": "1",
+            "connection_id": "native-host-smoke-peer-connection-1",
             "name": "NativeHostSmokePeer",
             "protocol_version": PROTOCOL_VERSION,
             "capabilities": [],
@@ -166,6 +173,9 @@ def main() -> int:
             "file_roots": [],
             "data_modules": [],
         }))
+        _, peer_attach_ack = recv_json_frame(second_connection, "attach_ack")
+        if peer_attach_ack.get("accepted") is not True:
+            raise RuntimeError(f"host rejected peer smoke attach: {peer_attach_ack!r}")
 
         proxy_result: dict[str, Any] = {}
         def post_command() -> None:

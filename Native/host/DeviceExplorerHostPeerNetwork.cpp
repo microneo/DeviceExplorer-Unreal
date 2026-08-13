@@ -1,6 +1,8 @@
 #include "DeviceExplorerHostPeerNetwork.h"
 
+#include "DeviceExplorerHostPeerCrypto.h"
 #include "DeviceExplorerHostPeerState.h"
+#include "DeviceExplorerHostRoster.h"
 
 #include "DeviceExplorerAuthPrimitives.h"
 #include "DeviceExplorerJson.h"
@@ -13,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -57,6 +60,81 @@ void AddBoolean(Wire::JsonValue& Object, std::string Name, const bool Value)
 	Wire::JsonValue Field;
 	Field.SetBoolean(Value);
 	(void) Object.InsertMember(std::move(Name), std::move(Field));
+}
+
+const Wire::JsonValue* PeerMember(const Wire::JsonValue& Object, const std::string_view Name)
+{
+	return Object.FindMember(Name);
+}
+
+bool PeerStringMember(const Wire::JsonValue& Object, const std::string_view Name, std::string& OutValue)
+{
+	const Wire::JsonValue* Value = PeerMember(Object, Name);
+	const std::string* Text = Value == nullptr ? nullptr : Value->TryGetString();
+	if (Text == nullptr) return false;
+	OutValue = *Text;
+	return true;
+}
+
+bool PeerUnsignedMember(const Wire::JsonValue& Object, const std::string_view Name, std::uint64_t& OutValue)
+{
+	const Wire::JsonValue* Value = PeerMember(Object, Name);
+	const std::string* Text = Value == nullptr ? nullptr : Value->TryGetNumberText();
+	if (Text == nullptr || Text->empty()) return false;
+	const auto Parsed = std::from_chars(Text->data(), Text->data() + Text->size(), OutValue);
+	return Parsed.ec == std::errc{} && Parsed.ptr == Text->data() + Text->size();
+}
+
+Wire::JsonValue PeerRosterDeviceJson(const RosterDevice& Device)
+{
+	Wire::JsonValue Item;
+	Item.SetObject();
+	AddString(Item, "device_id", Device.DeviceId);
+	AddUnsigned(Item, "device_session", Device.DeviceSession);
+	AddString(Item, "connection_id", Device.ConnectionId);
+	AddString(Item, "name", Device.Name);
+	AddString(Item, "project_name", Device.ProjectName);
+	AddString(Item, "platform", Device.Platform);
+	AddString(Item, "configuration", Device.Configuration);
+	AddString(Item, "engine_version", Device.EngineVersion);
+	AddString(Item, "build_version", Device.BuildVersion);
+	AddUnsigned(Item, "catalog_revision", Device.CatalogRevision);
+	AddUnsigned(Item, "connection_age_ms", Device.ConnectionAgeMilliseconds);
+	Wire::JsonValue Capabilities;
+	Capabilities.SetArray();
+	for (const std::string& Capability : Device.Capabilities)
+	{
+		Wire::JsonValue Value;
+		(void) Value.SetString(Capability);
+		(void) Capabilities.Append(std::move(Value));
+	}
+	(void) Item.InsertMember("capabilities", std::move(Capabilities));
+	return Item;
+}
+
+bool ParsePeerRosterDevice(const Wire::JsonValue& Item, RosterDevice& OutDevice)
+{
+	RosterDevice Device;
+	if (Item.GetType() != Wire::JsonType::Object || !PeerStringMember(Item, "device_id", Device.DeviceId) ||
+	    !PeerUnsignedMember(Item, "device_session", Device.DeviceSession) ||
+	    !PeerStringMember(Item, "connection_id", Device.ConnectionId) || !PeerStringMember(Item, "name", Device.Name) ||
+	    !PeerStringMember(Item, "project_name", Device.ProjectName) || !PeerStringMember(Item, "platform", Device.Platform) ||
+	    !PeerStringMember(Item, "configuration", Device.Configuration) ||
+	    !PeerStringMember(Item, "engine_version", Device.EngineVersion) ||
+	    !PeerStringMember(Item, "build_version", Device.BuildVersion) ||
+	    !PeerUnsignedMember(Item, "catalog_revision", Device.CatalogRevision) ||
+	    !PeerUnsignedMember(Item, "connection_age_ms", Device.ConnectionAgeMilliseconds)) return false;
+	const Wire::JsonValue* CapabilitiesValue = PeerMember(Item, "capabilities");
+	const std::vector<Wire::JsonValue>* Capabilities = CapabilitiesValue == nullptr ? nullptr : CapabilitiesValue->TryGetArray();
+	if (Capabilities == nullptr) return false;
+	for (const Wire::JsonValue& Value : *Capabilities)
+	{
+		const std::string* Text = Value.TryGetString();
+		if (Text == nullptr) return false;
+		Device.Capabilities.push_back(*Text);
+	}
+	OutDevice = std::move(Device);
+	return true;
 }
 }    // namespace
 
@@ -155,7 +233,7 @@ struct HostPeerNetwork::Implementation
 				Close("cannot serialize peer hello");
 				return;
 			}
-			Send(std::move(Json));
+			SendPlain(std::move(Json));
 		}
 
 		void Read()
@@ -186,10 +264,21 @@ struct HostPeerNetwork::Implementation
 
 		bool Handle(const std::string& Text)
 		{
+			std::string PlainText;
+			std::string_view MessageText = Text;
+			if (Established)
+			{
+				if (!ChannelCrypto.Decrypt(Text, PlainText))
+				{
+					Close("invalid, replayed, or out-of-order protected peer frame");
+					return false;
+				}
+				MessageText = PlainText;
+			}
 			Wire::PeerMessage Message;
 			Wire::PeerProtocolError Error = Wire::PeerProtocolError::None;
 			if (!Wire::ParsePeerMessage(
-				    { reinterpret_cast<const std::uint8_t*>(Text.data()), Text.size() }, Message, &Error))
+				    { reinterpret_cast<const std::uint8_t*>(MessageText.data()), MessageText.size() }, Message, &Error))
 			{
 				Close(Wire::PeerProtocolErrorText(Error));
 				return false;
@@ -203,10 +292,18 @@ struct HostPeerNetwork::Implementation
 			}
 			if (Message.Type == Wire::PeerMessageType::Ping)
 			{
-				Send("{\"type\":\"peer_pong\"}");
+				SendProtected("{\"type\":\"peer_pong\"}");
 				return true;
 			}
 			if (Message.Type == Wire::PeerMessageType::Pong) return true;
+			if (Message.Type == Wire::PeerMessageType::RosterFull) return HandleRosterFull(Message.Payload);
+			if (Message.Type == Wire::PeerMessageType::DeviceAttached) return HandleDeviceAttached(Message.Payload);
+			if (Message.Type == Wire::PeerMessageType::DeviceDetached) return HandleDeviceDetached(Message.Payload);
+			if (Message.Type == Wire::PeerMessageType::RosterRequest)
+			{
+				Owner.SendRosterFull(*this);
+				return true;
+			}
 			Close("unsupported peer message");
 			return false;
 		}
@@ -240,7 +337,7 @@ struct HostPeerNetwork::Implementation
 			RemoteAccepted = Decision.Establish;
 			RemoteDecisionResult = Decision.Ack.Result;
 			if (!Decision.Establish) CloseAfterWrite = true;
-			Send(std::move(Ack));
+			SendPlain(std::move(Ack));
 			TryEstablish();
 			return true;
 		}
@@ -300,6 +397,11 @@ struct HostPeerNetwork::Implementation
 		void TryEstablish()
 		{
 			if (Established || !LocalAccepted || !RemoteAccepted || !ReceivedHello) return;
+			if (!ChannelCrypto.Initialize(Owner.Config.PeerSecret, LocalHello, RemoteHello, PeerProtocolVersion))
+			{
+				Close("cannot derive protected peer channel keys");
+				return;
+			}
 			if (!Owner.Register(shared_from_this()))
 			{
 				Close("peer limit or duplicate connection");
@@ -307,7 +409,106 @@ struct HostPeerNetwork::Implementation
 			}
 			Established = true;
 			Timer.cancel();
+			Owner.SetPeerReachable(RemoteHello.NodeId, RemoteHello.HostSession, true);
+			Owner.SendRosterFull(*this);
 			ScheduleKeepalive();
+		}
+
+		bool ValidateOwner(const Wire::JsonValue& Root, std::uint64_t& OutRevision)
+		{
+			std::string OwnerNodeId;
+			std::uint64_t OwnerHostSession = 0;
+			if (!PeerStringMember(Root, "owner_node_id", OwnerNodeId) ||
+			    !PeerUnsignedMember(Root, "owner_host_session", OwnerHostSession) ||
+			    !PeerUnsignedMember(Root, "revision", OutRevision) || OwnerNodeId != RemoteHello.NodeId ||
+			    OwnerHostSession != RemoteHello.HostSession || OutRevision == 0)
+			{
+				++Owner.RefusedRosterMessages;
+				Close("roster owner does not match authenticated peer link");
+				return false;
+			}
+			return true;
+		}
+
+		bool HandleRosterFull(const Wire::JsonValue& Root)
+		{
+			std::uint64_t Revision = 0;
+			std::uint64_t PartIndex = 0;
+			std::uint64_t PartCount = 0;
+			std::string SnapshotId;
+			if (!ValidateOwner(Root, Revision) || !PeerStringMember(Root, "snapshot_id", SnapshotId) || SnapshotId.empty() ||
+			    SnapshotId.size() > 128 || !PeerUnsignedMember(Root, "part_index", PartIndex) ||
+			    !PeerUnsignedMember(Root, "part_count", PartCount) || PartCount == 0 || PartCount > 64 || PartIndex >= PartCount)
+			{
+				if (!Closed) Close("invalid roster snapshot envelope");
+				return false;
+			}
+			const Wire::JsonValue* DevicesValue = PeerMember(Root, "devices");
+			const std::vector<Wire::JsonValue>* Devices = DevicesValue == nullptr ? nullptr : DevicesValue->TryGetArray();
+			if (Devices == nullptr || Devices->size() > 16)
+			{
+				Close("invalid roster snapshot part");
+				return false;
+			}
+			if (PartIndex == 0)
+			{
+				SnapshotDevices.clear();
+				RosterSnapshotId = SnapshotId;
+				SnapshotRevision = Revision;
+				SnapshotPartCount = PartCount;
+				NextSnapshotPart = 0;
+			}
+			if (SnapshotId != RosterSnapshotId || Revision != SnapshotRevision || PartCount != SnapshotPartCount ||
+			    PartIndex != NextSnapshotPart)
+			{
+				Close("out-of-order roster snapshot part");
+				return false;
+			}
+			for (const Wire::JsonValue& Value : *Devices)
+			{
+				RosterDevice Device;
+				if (!ParsePeerRosterDevice(Value, Device) || SnapshotDevices.size() >= Owner.Config.MaximumRosterDevices)
+				{
+					Close("invalid or oversized roster snapshot");
+					return false;
+				}
+				SnapshotDevices.push_back(std::move(Device));
+			}
+			++NextSnapshotPart;
+			if (NextSnapshotPart != SnapshotPartCount) return true;
+			const RosterApplyResult Result = Owner.ApplyRosterFull(RemoteHello.NodeId, RemoteHello.HostSession,
+				SnapshotRevision, std::move(SnapshotDevices));
+			RosterSnapshotId.clear();
+			return Owner.HandleRosterResult(*this, Result);
+		}
+
+		bool HandleDeviceAttached(const Wire::JsonValue& Root)
+		{
+			std::uint64_t Revision = 0;
+			const Wire::JsonValue* DeviceValue = PeerMember(Root, "device");
+			RosterDevice Device;
+			if (!ValidateOwner(Root, Revision) || DeviceValue == nullptr || !ParsePeerRosterDevice(*DeviceValue, Device))
+			{
+				if (!Closed) Close("invalid device_attached message");
+				return false;
+			}
+			return Owner.HandleRosterResult(*this, Owner.ApplyRosterAttached(
+				RemoteHello.NodeId, RemoteHello.HostSession, Revision, std::move(Device)));
+		}
+
+		bool HandleDeviceDetached(const Wire::JsonValue& Root)
+		{
+			std::uint64_t Revision = 0;
+			std::uint64_t DeviceSession = 0;
+			std::string DeviceId;
+			if (!ValidateOwner(Root, Revision) || !PeerStringMember(Root, "device_id", DeviceId) ||
+			    !PeerUnsignedMember(Root, "device_session", DeviceSession) || DeviceId.empty() || DeviceSession == 0)
+			{
+				if (!Closed) Close("invalid device_detached message");
+				return false;
+			}
+			return Owner.HandleRosterResult(*this, Owner.ApplyRosterDetached(
+				RemoteHello.NodeId, RemoteHello.HostSession, Revision, DeviceId, DeviceSession));
 		}
 
 		std::string ConnectionKey() const
@@ -329,12 +530,12 @@ struct HostPeerNetwork::Implementation
 					Self->Close("peer receive timeout");
 					return;
 				}
-				Self->Send("{\"type\":\"peer_ping\"}");
+				Self->SendProtected("{\"type\":\"peer_ping\"}");
 				Self->ScheduleKeepalive();
 			});
 		}
 
-		void Send(std::string Text)
+		void SendPlain(std::string Text)
 		{
 			std::vector<std::uint8_t> Frame;
 			if (!Wire::EncodePeerFrame(Text, Frame))
@@ -351,6 +552,22 @@ struct HostPeerNetwork::Implementation
 			QueuedBytes += Frame.size();
 			Writes.push_back(std::move(Frame));
 			if (Writes.size() == 1) Write();
+		}
+
+		void SendProtected(const std::string_view Text)
+		{
+			if (!Established || !ChannelCrypto.IsInitialized())
+			{
+				Close("protected peer channel is not established");
+				return;
+			}
+			std::vector<std::uint8_t> Envelope;
+			if (!ChannelCrypto.Encrypt(Text, Envelope))
+			{
+				Close("cannot protect peer message");
+				return;
+			}
+			SendPlain(std::string(reinterpret_cast<const char*>(Envelope.data()), Envelope.size()));
 		}
 
 		void Write()
@@ -388,6 +605,7 @@ struct HostPeerNetwork::Implementation
 			asio::error_code Ignored;
 			Socket.shutdown(Tcp::socket::shutdown_both, Ignored);
 			Socket.close(Ignored);
+			ChannelCrypto.Reset();
 			Owner.Closed(*this, Reason);
 			if (SourceCandidate) SourceCandidate->OnClosed();
 		}
@@ -397,6 +615,7 @@ struct HostPeerNetwork::Implementation
 		asio::steady_timer Timer;
 		std::shared_ptr<Candidate> SourceCandidate;
 		Wire::PeerFrameDecoder Decoder;
+		PeerChannelCrypto ChannelCrypto;
 		std::array<std::uint8_t, 16 * 1024> ReadBuffer{};
 		std::deque<std::vector<std::uint8_t>> Writes;
 		std::size_t QueuedBytes = 0;
@@ -414,11 +633,18 @@ struct HostPeerNetwork::Implementation
 		bool CloseAfterWrite = false;
 		bool Closed = false;
 		bool CountsInboundHandshake = false;
+		std::string RosterSnapshotId;
+		std::uint64_t SnapshotRevision = 0;
+		std::uint64_t SnapshotPartCount = 0;
+		std::uint64_t NextSnapshotPart = 0;
+		std::vector<RosterDevice> SnapshotDevices;
 	};
 
 	Implementation(asio::io_context& InIo, HostConfig InConfig)
 		: Io(InIo), Config(std::move(InConfig)), Acceptor(Io),
-	      KnownSessions(Config.MaximumKnownHostSessions, std::chrono::hours(24 * 7))
+		  KnownSessions(Config.MaximumKnownHostSessions, std::chrono::hours(24 * 7)),
+		  KnownDeviceSessions(Config.MaximumRosterDevices, std::chrono::hours(24 * 7)),
+		  Roster(Config.NodeId, Config.HostSession, Config.MaximumRosterDevices)
 	{
 	}
 
@@ -442,7 +668,8 @@ struct HostPeerNetwork::Implementation
 		if (Config.MaximumPeers == 0 || Config.MaximumInboundHandshakes == 0 ||
 		    Config.MaximumQueuedControlBytes < Wire::MaximumPeerMessageBytes + Wire::PeerFrameHeaderBytes ||
 		    Config.MaximumKnownHostSessions == 0 || Config.MaximumCandidateMembers == 0 ||
-		    Config.MaximumDialAttemptsPerSecond == 0)
+		    Config.MaximumDialAttemptsPerSecond == 0 || Config.MaximumRosterDevices == 0 ||
+		    Config.PeerRosterRemovalTimeout.count() <= 0)
 		{
 			OutError = "peer limits must be non-zero and hold one maximum-sized control frame";
 			return false;
@@ -561,6 +788,250 @@ struct HostPeerNetwork::Implementation
 		return true;
 	}
 
+	std::vector<std::shared_ptr<Session>> ConnectedSessions() const
+	{
+		std::vector<std::shared_ptr<Session>> Result;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		for (const auto& Pair : Peers)
+		{
+			if (const std::shared_ptr<Session> Value = Pair.second.lock()) Result.push_back(Value);
+		}
+		return Result;
+	}
+
+	void AddOwnerFields(Wire::JsonValue& Root, const RosterOwnerState& Local, const std::uint64_t Revision) const
+	{
+		AddString(Root, "owner_node_id", Config.NodeId);
+		AddUnsigned(Root, "owner_host_session", Local.HostSession);
+		AddUnsigned(Root, "revision", Revision);
+	}
+
+	void SendRosterFull(Session& Target)
+	{
+		RosterOwnerState Local;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			Local = Roster.Local();
+		}
+		std::vector<RosterDevice> Devices;
+		for (const auto& Pair : Local.Devices) Devices.push_back(Pair.second);
+		constexpr std::size_t DevicesPerPart = 16;
+		const std::size_t PartCount = std::max<std::size_t>(1, (Devices.size() + DevicesPerPart - 1) / DevicesPerPart);
+		const std::string SnapshotId = MakeNonce();
+		for (std::size_t Part = 0; Part < PartCount; ++Part)
+		{
+			Wire::JsonValue Root;
+			Root.SetObject();
+			AddString(Root, "type", "roster_full_owned");
+			AddOwnerFields(Root, Local, Local.Revision);
+			AddString(Root, "snapshot_id", SnapshotId);
+			AddUnsigned(Root, "part_index", Part);
+			AddUnsigned(Root, "part_count", PartCount);
+			Wire::JsonValue Array;
+			Array.SetArray();
+			const std::size_t End = std::min(Devices.size(), (Part + 1) * DevicesPerPart);
+			for (std::size_t Index = Part * DevicesPerPart; Index < End; ++Index)
+			{
+				(void) Array.Append(PeerRosterDeviceJson(Devices[Index]));
+			}
+			(void) Root.InsertMember("devices", std::move(Array));
+			std::string Json;
+			if (!Wire::SerializeJson(Root, Json) || Json.size() > Wire::MaximumPeerMessageBytes)
+			{
+				++RefusedRosterMessages;
+				Target.Close("local roster snapshot exceeds the peer frame bound");
+				return;
+			}
+			Target.SendProtected(Json);
+		}
+	}
+
+	void SendRosterRequest(Session& Target)
+	{
+		Wire::JsonValue Root;
+		Root.SetObject();
+		AddString(Root, "type", "roster_request");
+		std::string Json;
+		if (Wire::SerializeJson(Root, Json)) Target.SendProtected(Json);
+	}
+
+	bool HandleRosterResult(Session& Source, const RosterApplyResult Result)
+	{
+		if (Result == RosterApplyResult::Applied || Result == RosterApplyResult::Ignored) return true;
+		if (Result == RosterApplyResult::NeedFull)
+		{
+			++RosterResyncRequests;
+			SendRosterRequest(Source);
+			return true;
+		}
+		++RefusedRosterMessages;
+		if (Result == RosterApplyResult::CapacityExceeded) return true;
+		Source.Close("invalid or owner-mismatched roster update");
+		return false;
+	}
+
+	void FenceAgainstRemoteOwner(const std::string& NodeId)
+	{
+		std::vector<std::pair<std::string, std::uint64_t>> ToFence;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			const auto Remote = Roster.Owners().find(NodeId);
+			if (Remote == Roster.Owners().end()) return;
+			const RosterOwnerState& Local = Roster.Local();
+			for (const auto& Pair : Remote->second.Devices)
+			{
+				const auto LocalDevice = Local.Devices.find(Pair.first);
+				if (LocalDevice != Local.Devices.end() &&
+				    Pair.second.DeviceSession >= LocalDevice->second.DeviceSession)
+				{
+					ToFence.emplace_back(Pair.first, Pair.second.DeviceSession);
+				}
+			}
+		}
+		if (Config.FenceLocalDevice && *Config.FenceLocalDevice)
+		{
+			for (const auto& Pair : ToFence) (*Config.FenceLocalDevice)(Pair.first, Pair.second);
+		}
+	}
+
+	RosterApplyResult ApplyRosterFull(const std::string& NodeId,
+	                                const std::uint64_t HostSession,
+	                                const std::uint64_t Revision,
+	                                std::vector<RosterDevice> Devices)
+	{
+		RosterApplyResult Result;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			Result = Roster.ApplyFull(NodeId, HostSession, Revision, std::move(Devices));
+			if (Result == RosterApplyResult::Applied)
+			{
+				const auto Owner = Roster.Owners().find(NodeId);
+				if (Owner != Roster.Owners().end())
+				{
+					const auto Now = std::chrono::steady_clock::now();
+					for (const auto& Pair : Owner->second.Devices)
+					{
+						KnownDeviceSessions.Remember(Pair.first, Pair.second.DeviceSession, Now);
+					}
+				}
+			}
+		}
+		if (Result == RosterApplyResult::Applied) FenceAgainstRemoteOwner(NodeId);
+		return Result;
+	}
+
+	RosterApplyResult ApplyRosterAttached(const std::string& NodeId,
+	                                    const std::uint64_t HostSession,
+	                                    const std::uint64_t Revision,
+	                                    RosterDevice Device)
+	{
+		const std::string DeviceId = Device.DeviceId;
+		const std::uint64_t DeviceSession = Device.DeviceSession;
+		RosterApplyResult Result;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			Result = Roster.ApplyAttached(NodeId, HostSession, Revision, std::move(Device));
+			if (Result == RosterApplyResult::Applied)
+			{
+				KnownDeviceSessions.Remember(DeviceId, DeviceSession, std::chrono::steady_clock::now());
+			}
+		}
+		if (Result == RosterApplyResult::Applied) FenceAgainstRemoteOwner(NodeId);
+		return Result;
+	}
+
+	RosterApplyResult ApplyRosterDetached(const std::string& NodeId,
+	                                    const std::uint64_t HostSession,
+	                                    const std::uint64_t Revision,
+	                                    const std::string& DeviceId,
+	                                    const std::uint64_t DeviceSession)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return Roster.ApplyDetached(NodeId, HostSession, Revision, DeviceId, DeviceSession);
+	}
+
+	void SetPeerReachable(const std::string& NodeId, const std::uint64_t HostSession, const bool Reachable)
+	{
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			Roster.SetReachable(NodeId, HostSession, Reachable);
+			if (Reachable)
+			{
+				const auto Existing = RosterRemovalTimers.find(NodeId);
+				if (Existing != RosterRemovalTimers.end())
+				{
+					Existing->second->cancel();
+					RosterRemovalTimers.erase(Existing);
+				}
+			}
+		}
+		if (!Reachable) ScheduleRosterRemoval(NodeId, HostSession);
+	}
+
+	void ScheduleRosterRemoval(const std::string& NodeId, const std::uint64_t HostSession)
+	{
+		auto Timer = std::make_shared<asio::steady_timer>(Io);
+		Timer->expires_after(Config.PeerRosterRemovalTimeout);
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			const auto Existing = RosterRemovalTimers.find(NodeId);
+			if (Existing != RosterRemovalTimers.end()) Existing->second->cancel();
+			RosterRemovalTimers[NodeId] = Timer;
+		}
+		Timer->async_wait([this, NodeId, HostSession, Timer](const asio::error_code& Error)
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			const auto Existing = RosterRemovalTimers.find(NodeId);
+			if (Existing == RosterRemovalTimers.end() || Existing->second != Timer) return;
+			if (!Error && Roster.RemoveUnreachableOwner(NodeId, HostSession)) ++ExpiredRosterOwners;
+			RosterRemovalTimers.erase(Existing);
+		});
+	}
+
+	void LocalDeviceAttached(RosterDevice Device)
+	{
+		std::uint64_t Revision = 0;
+		RosterOwnerState Local;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			const std::uint64_t Before = Roster.Local().Revision;
+			Revision = Roster.AttachLocal(Device);
+			if (Revision == Before) return;
+			KnownDeviceSessions.Remember(Device.DeviceId, Device.DeviceSession, std::chrono::steady_clock::now());
+			Local = Roster.Local();
+		}
+		Wire::JsonValue Root;
+		Root.SetObject();
+		AddString(Root, "type", "device_attached");
+		AddOwnerFields(Root, Local, Revision);
+		(void) Root.InsertMember("device", PeerRosterDeviceJson(Device));
+		std::string Json;
+		if (!Wire::SerializeJson(Root, Json)) return;
+		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->SendProtected(Json);
+	}
+
+	void LocalDeviceDetached(const std::string& DeviceId, const std::uint64_t DeviceSession)
+	{
+		std::uint64_t Revision = 0;
+		RosterOwnerState Local;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			const std::uint64_t Before = Roster.Local().Revision;
+			Revision = Roster.DetachLocal(DeviceId, DeviceSession);
+			if (Revision == Before) return;
+			Local = Roster.Local();
+		}
+		Wire::JsonValue Root;
+		Root.SetObject();
+		AddString(Root, "type", "device_detached");
+		AddOwnerFields(Root, Local, Revision);
+		AddString(Root, "device_id", DeviceId);
+		AddUnsigned(Root, "device_session", DeviceSession);
+		std::string Json;
+		if (!Wire::SerializeJson(Root, Json)) return;
+		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->SendProtected(Json);
+	}
+
 	void Closed(Session& SessionValue, const std::string& Reason)
 	{
 		if (SessionValue.CountsInboundHandshake && PendingHandshakes != 0)
@@ -568,11 +1039,22 @@ struct HostPeerNetwork::Implementation
 			--PendingHandshakes;
 			SessionValue.CountsInboundHandshake = false;
 		}
+		bool RemovedCurrentPeer = false;
 		if (SessionValue.Established)
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
 			const auto Found = Peers.find(SessionValue.RemoteHello.NodeId);
-			if (Found != Peers.end() && Found->second.lock().get() == &SessionValue) Peers.erase(Found);
+			const std::shared_ptr<Session> Current = Found == Peers.end() ? nullptr : Found->second.lock();
+			if (Found != Peers.end() && Current.get() == &SessionValue)
+			{
+				Peers.erase(Found);
+				Roster.SetReachable(SessionValue.RemoteHello.NodeId, SessionValue.RemoteHello.HostSession, false);
+				RemovedCurrentPeer = true;
+			}
+		}
+		if (RemovedCurrentPeer)
+		{
+			ScheduleRosterRemoval(SessionValue.RemoteHello.NodeId, SessionValue.RemoteHello.HostSession);
 		}
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
@@ -602,6 +1084,7 @@ struct HostPeerNetwork::Implementation
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
 			RequiredHostSession = 0;
+			Roster.AdvanceLocalHostSession(Applied);
 		}
 		Log(LogLevel::Warning, "advanced local host session to " + std::to_string(Applied) +
 		    " after peer rollback detection");
@@ -723,6 +1206,8 @@ struct HostPeerNetwork::Implementation
 		std::vector<std::shared_ptr<Session>> ToClose;
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
+			for (const auto& Pair : RosterRemovalTimers) Pair.second->cancel();
+			RosterRemovalTimers.clear();
 			for (const auto& Pair : Sessions)
 			{
 				ToClose.push_back(Pair.second);
@@ -767,11 +1252,57 @@ struct HostPeerNetwork::Implementation
 		AddUnsigned(Root, "discovered_candidate_count", DiscoveredCandidateCount);
 		AddUnsigned(Root, "expired_candidates", ExpiredCandidates);
 		AddUnsigned(Root, "identity_collisions", IdentityCollisions);
+		AddUnsigned(Root, "roster_devices", Roster.DeviceCount());
+		AddUnsigned(Root, "maximum_roster_devices", Config.MaximumRosterDevices);
+		AddUnsigned(Root, "refused_roster_messages", RefusedRosterMessages);
+		AddUnsigned(Root, "roster_resync_requests", RosterResyncRequests);
+		AddUnsigned(Root, "expired_roster_owners", ExpiredRosterOwners);
 		AddUnsigned(Root, "known_session_cache", KnownSessions.Size());
+		AddUnsigned(Root, "known_device_session_cache", KnownDeviceSessions.Size());
 		AddUnsigned(Root, "required_host_session", RequiredHostSession);
 		AddUnsigned(Root, "anomalous_known_session", AnomalousKnownSession);
 		std::string Result;
 		return Wire::SerializeJson(Root, Result) ? Result : "{}";
+	}
+
+	std::string RosterJson() const
+	{
+		Wire::JsonValue Root;
+		Root.SetObject();
+		Wire::JsonValue Devices;
+		Devices.SetArray();
+		std::vector<RosterViewEntry> View;
+		{
+			std::lock_guard<std::mutex> Lock(Mutex);
+			View = Roster.View();
+		}
+		std::sort(View.begin(), View.end(), [](const RosterViewEntry& Left, const RosterViewEntry& Right)
+		{
+			return Left.Device.DeviceId < Right.Device.DeviceId;
+		});
+		std::uint64_t Ambiguous = 0;
+		for (const RosterViewEntry& Entry : View)
+		{
+			Wire::JsonValue Item = PeerRosterDeviceJson(Entry.Device);
+			AddString(Item, "owner_node_id", Entry.OwnerNodeId);
+			AddUnsigned(Item, "owner_host_session", Entry.OwnerHostSession);
+			AddString(Item, "state", Entry.State);
+			if (Entry.State == "ambiguous_owner") ++Ambiguous;
+			(void) Devices.Append(std::move(Item));
+		}
+		(void) Root.InsertMember("devices", std::move(Devices));
+		AddUnsigned(Root, "device_count", View.size());
+		AddUnsigned(Root, "ambiguous_owners", Ambiguous);
+		AddUnsigned(Root, "capacity", Config.MaximumRosterDevices);
+		std::string Result;
+		return Wire::SerializeJson(Root, Result) ? Result : "{}";
+	}
+
+	std::uint64_t KnownDeviceSession(const std::string& DeviceId) const
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return std::max(Roster.KnownDeviceSession(DeviceId),
+		                KnownDeviceSessions.Get(DeviceId, std::chrono::steady_clock::now()));
 	}
 
 	asio::io_context& Io;
@@ -779,11 +1310,14 @@ struct HostPeerNetwork::Implementation
 	Tcp::acceptor Acceptor;
 	Tcp::endpoint Bound;
 	KnownHostSessions KnownSessions;
+	mutable KnownHostSessions KnownDeviceSessions;
+	DistributedRoster Roster;
 	std::vector<std::shared_ptr<Candidate>> Candidates;
 	std::map<std::string, std::shared_ptr<Candidate>> DiscoveredCandidates;
 	mutable std::mutex Mutex;
 	std::map<Session*, std::shared_ptr<Session>> Sessions;
 	std::map<std::string, std::weak_ptr<Session>> Peers;
+	std::map<std::string, std::shared_ptr<asio::steady_timer>> RosterRemovalTimers;
 	std::atomic<std::size_t> PendingHandshakes{ 0 };
 	std::atomic<std::uint64_t> RefusedHandshakes{ 0 };
 	std::atomic<std::uint64_t> RefusedPeers{ 0 };
@@ -791,6 +1325,9 @@ struct HostPeerNetwork::Implementation
 	std::atomic<std::uint64_t> RefusedAuthentications{ 0 };
 	std::atomic<std::uint64_t> ExpiredCandidates{ 0 };
 	std::atomic<std::uint64_t> IdentityCollisions{ 0 };
+	std::atomic<std::uint64_t> RefusedRosterMessages{ 0 };
+	std::atomic<std::uint64_t> RosterResyncRequests{ 0 };
+	std::atomic<std::uint64_t> ExpiredRosterOwners{ 0 };
 	std::atomic<std::size_t> CandidateCount{ 0 };
 	std::atomic<std::size_t> DiscoveredCandidateCount{ 0 };
 	std::uint64_t RequiredHostSession = 0;
@@ -852,6 +1389,11 @@ std::string HostPeerNetwork::DiagnosticsJson() const
 	return Impl->DiagnosticsJson();
 }
 
+std::string HostPeerNetwork::RosterJson() const
+{
+	return Impl->RosterJson();
+}
+
 std::string HostPeerNetwork::BoundAddress() const
 {
 	return Impl->Bound.address().to_string();
@@ -865,5 +1407,20 @@ std::uint16_t HostPeerNetwork::BoundPort() const
 void HostPeerNetwork::Discover(PeerCandidate Candidate)
 {
 	Impl->Discover(std::move(Candidate));
+}
+
+std::uint64_t HostPeerNetwork::KnownDeviceSession(const std::string& DeviceId) const
+{
+	return Impl->KnownDeviceSession(DeviceId);
+}
+
+void HostPeerNetwork::LocalDeviceAttached(RosterDevice Device)
+{
+	Impl->LocalDeviceAttached(std::move(Device));
+}
+
+void HostPeerNetwork::LocalDeviceDetached(const std::string& DeviceId, const std::uint64_t DeviceSession)
+{
+	Impl->LocalDeviceDetached(DeviceId, DeviceSession);
 }
 }    // namespace DeviceExplorer::Host

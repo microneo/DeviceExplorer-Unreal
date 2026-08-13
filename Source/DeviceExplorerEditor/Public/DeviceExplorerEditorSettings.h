@@ -5,7 +5,7 @@
 
 #include "DeviceExplorerEditorSettings.generated.h"
 
-UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "DeviceExplorer"))
+UCLASS(Config = EditorPerProjectUserSettings, meta = (DisplayName = "DeviceExplorer"))
 class DEVICEEXPLOREREDITOR_API UDeviceExplorerEditorSettings final : public UDeveloperSettings
 {
 	GENERATED_BODY()

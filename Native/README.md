@@ -105,7 +105,7 @@ with:
 
 ```sh
 build/native/dexp-host --enable-distributed --cluster-id studio \
-  --peer-secret 64-or-more-random-hex-characters
+  --peer-secret-file /path/to/user-only/peer-secret
 ```
 
 Each host binds an ephemeral peer port by default and adds `cluster_id`,
@@ -115,7 +115,7 @@ For networks without multicast, add one or more numeric IPv4 seeds:
 
 ```sh
 build/native/dexp-host --enable-distributed --cluster-id studio \
-  --peer-secret 64-or-more-random-hex-characters \
+  --peer-secret-file /path/to/user-only/peer-secret \
   --peer-seed 192.0.2.10:42112
 ```
 
@@ -123,9 +123,15 @@ The peer listener uses bounded length-prefixed JSON frames, a symmetric
 `peer_hello`/`peer_hello_ack`, fixed version negotiation, a 64 KiB control
 queue, bounded handshake/peer/session caches, reconnect backoff, and
 application ping/pong. Both sides authenticate the complete handshake decision
-with HMAC-SHA-256 over fresh nonces and both host identities. The peer secret is
+with HMAC-SHA-256 over fresh nonces and both host identities. After that proof,
+every control frame is encrypted and authenticated with a transcript-bound,
+directional XChaCha20-Poly1305 key and a strictly monotonic sequence number.
+Replay, reordering, plaintext downgrade, and modification close the link. The peer secret is
 never published through DNS-SD; every host in a cluster must be configured with
-the same high-entropy value. `ClusterId` remains only a discovery boundary.
+the same high-entropy value. Prefer `--peer-secret-file`: the host reads it once
+and removes it before opening listeners. The Editor uses this path so the secret
+does not appear in the child process command line. `--peer-secret` remains for
+backward-compatible manual launches. `ClusterId` remains only a discovery boundary.
 
 `GET /api/peers` reports live links, authentication failures, identity
 collisions, expired discovery candidates, and anomalous sessions. A peer that
@@ -133,14 +139,56 @@ remembers a newer local `HostSession` can trigger the persisted correction path
 only after its proof is verified. Remote reads, writes, logs, and transfers
 remain disabled until their explicit opt-in phases.
 
+Peer protocol 3 is intentionally not wire-compatible with protocol 2. Upgrade
+all hosts in a cluster together: during a mixed-version rollout the two groups
+reject each other with `peer protocol ranges do not overlap`, while local device
+and dashboard paths continue to work independently.
+
+## Device identity and distributed roster
+
+The runtime client stores `DeviceId` and `NextDeviceSession` together in
+`Saved/DeviceExplorer/device-identity.txt`. It atomically reserves and persists
+a monotonically increasing session before every socket attempt. A corrupt file
+or a machine-marker mismatch creates a new `DeviceId`; a remembered newer
+session produces a negative `attach_ack`, advances the file, and reconnects
+without publishing the stale owner.
+
+This attach contract raises the device protocol to 11; runtime clients and hosts
+must be rebuilt together. A protocol-11 hello without both `device_session` and
+`connection_id` is rejected before it can enter the local registry or roster.
+
+Authenticated peer links exchange revisioned, bounded owner snapshots and
+attach/detach deltas. Every update is tied to the `NodeId` and `HostSession` of
+the protected link. Session precedes revision in the apply order; a revision gap
+requests a fresh snapshot, and a delayed detach removes only an exact
+`DeviceId`/`DeviceSession` match. Equal maximum device sessions from different
+owners are exposed as `ambiguous_owner` and fence the local socket instead of
+choosing a random winner.
+
+`GET /api/roster` exposes this thin distributed view. It is separate from
+`GET /api/devices`: the latter remains the local, operable registry until remote
+read/write routing is implemented. Roster snapshots are split into bounded
+parts of at most 16 devices, while the aggregate cache defaults to 4096 entries.
+When the active link to an owner closes, its rows become `unreachable`; a link
+for the same owner and host session restores them without churn, otherwise they
+are removed after the default 60-second grace period.
+
+The Editor's distributed settings are user settings under `Saved/Config`, not
+project defaults. If an earlier development build already wrote `PeerSecret`
+to `Config/DefaultEditorPerProjectUserSettings.ini`, remove that line from the
+project and rotate the secret once.
+
 Standalone Asio is pinned by commit and fetched during CMake configure. For an
 offline or centrally managed dependency, point CMake at an existing checkout:
 
 ```sh
-cmake -S Native -B build/native -DDEVICEEXPLORER_ASIO_ROOT=/path/to/asio
+cmake -S Native -B build/native \
+  -DDEVICEEXPLORER_ASIO_ROOT=/path/to/asio \
+  -DDEVICEEXPLORER_MONOCYPHER_ROOT=/path/to/monocypher
 ```
 
-The path must contain `include/asio.hpp`. It never enters `DeviceExplorerWire`.
+The paths must contain `include/asio.hpp` and `src/monocypher.c`, respectively.
+Neither dependency enters `DeviceExplorerWire`.
 Convenience wrappers configure, build, and run the complete native test suite:
 
 ```powershell

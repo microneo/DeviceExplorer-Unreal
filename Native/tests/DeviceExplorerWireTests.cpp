@@ -54,7 +54,7 @@ void TestAuthPrimitives()
 
 void TestHttpUpgrade()
 {
-	CHECK(DeviceExplorer::DeviceProtocolVersion == 10);
+	CHECK(DeviceExplorer::DeviceProtocolVersion == 11);
 	const std::string Key = "dGhlIHNhbXBsZSBub25jZQ==";
 	std::string Accept;
 	CHECK(MakeWebSocketAccept(Key, Accept));
@@ -202,7 +202,7 @@ void TestHostManifest()
 	CHECK(SerializeHostManifest(Source, Json, &Error));
 	CHECK(Error == JsonError::None);
 	CHECK(Json.find("\"host_version\":\"0.5.0\"") != std::string::npos);
-	CHECK(Json.find("\"device_protocol_min\":10") != std::string::npos);
+	CHECK(Json.find("\"device_protocol_min\":11") != std::string::npos);
 
 	HostManifest Parsed;
 	CHECK(ParseHostManifest(
@@ -221,7 +221,7 @@ void TestHostManifest()
 
 	const std::string Invalid =
 		"{\"manifest_version\":1,\"host_version\":\"0.5.0\",\"build_id\":\"x\","
-		"\"device_protocol_min\":10,\"device_protocol_max\":10,\"web_api_min\":1,"
+		"\"device_protocol_min\":11,\"device_protocol_max\":11,\"web_api_min\":1,"
 		"\"web_api_max\":1,\"peer_protocol_min\":2,\"peer_protocol_max\":1}";
 	CHECK(!ParseHostManifest(
 		{ reinterpret_cast<const std::uint8_t*>(Invalid.data()), Invalid.size() }, Parsed, &Error));

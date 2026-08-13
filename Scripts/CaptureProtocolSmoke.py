@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 HOST_MANIFEST_VERSION = 1
 WEB_API_VERSION = 1
 SERVICE_NAME = "_deviceexplorer._tcp.local"
@@ -234,6 +234,8 @@ def websocket_smoke(
             {
                 "type": "hello",
                 "device_id": device_id,
+                "device_session": "1",
+                "connection_id": "protocol-smoke-connection-1",
                 "name": "ProtocolSmoke",
                 "project_name": "DeviceExplorer",
                 "engine_version": "black-box",
@@ -249,6 +251,9 @@ def websocket_smoke(
             }
         )
         sock.sendall(hello_frame)
+        attach_ack_frame, attach_ack = recv_json_frame(sock, "attach_ack")
+        if attach_ack.get("accepted") is not True:
+            raise RuntimeError(f"host rejected the device attach: {attach_ack!r}")
 
         ping_payload = b"deviceexplorer"
         ping_frame = encode_client_frame(0x9, ping_payload)
@@ -275,6 +280,9 @@ def websocket_smoke(
                 "ascii"
             ),
             "client_hello_frame_base64": base64.b64encode(hello_frame).decode("ascii"),
+            "server_attach_ack_frame_base64": base64.b64encode(
+                attach_ack_frame
+            ).decode("ascii"),
             "client_ping_frame_base64": base64.b64encode(ping_frame).decode("ascii"),
             "server_pong_frame_base64": base64.b64encode(pong_frame).decode("ascii"),
             "client_close_frame_base64": base64.b64encode(close_frame).decode("ascii"),
@@ -514,7 +522,7 @@ def main() -> int:
         raise RuntimeError("the smoke device did not appear in /api/devices")
 
     capture: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "protocol_version": PROTOCOL_VERSION,
         "captured_unix_seconds": int(time.time()),
         "endpoint": {

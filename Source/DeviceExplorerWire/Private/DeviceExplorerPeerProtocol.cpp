@@ -116,7 +116,10 @@ bool ParseObject(const ByteView Bytes, JsonValue& OutRoot, PeerProtocolError* Ou
 	Limits.MaximumDocumentBytes = MaximumPeerMessageBytes;
 	Limits.MaximumStringBytes = MaximumPeerMessageBytes;
 	Limits.MaximumDepth = 8;
-	Limits.MaximumNodeCount = 64;
+	// A roster snapshot part is the largest peer message: an eight-node envelope
+	// plus sixteen device objects that each hold eleven fields and a capability
+	// array of up to thirty-two strings, so 729 values in the worst case.
+	Limits.MaximumNodeCount = 1024;
 	if (!ParseJson(Bytes, OutRoot, Limits) || OutRoot.GetType() != JsonType::Object)
 	{
 		SetError(OutError, PeerProtocolError::MalformedJson);
@@ -378,11 +381,16 @@ bool ParsePeerMessage(const ByteView Json, PeerMessage& OutMessage, PeerProtocol
 	}
 	else if (Type == "peer_ping") Parsed.Type = PeerMessageType::Ping;
 	else if (Type == "peer_pong") Parsed.Type = PeerMessageType::Pong;
+	else if (Type == "roster_full_owned") Parsed.Type = PeerMessageType::RosterFull;
+	else if (Type == "device_attached") Parsed.Type = PeerMessageType::DeviceAttached;
+	else if (Type == "device_detached") Parsed.Type = PeerMessageType::DeviceDetached;
+	else if (Type == "roster_request") Parsed.Type = PeerMessageType::RosterRequest;
 	else
 	{
 		SetError(OutError, PeerProtocolError::WrongMessageType);
 		return false;
 	}
+	Parsed.Payload = Root;
 	OutMessage = std::move(Parsed);
 	SetError(OutError, PeerProtocolError::None);
 	return true;

@@ -10,6 +10,7 @@
 class FDeviceExplorerConnectionCoordinator;
 class FDeviceExplorerConsoleCatalog;
 class FDeviceExplorerLogService;
+class FDeviceExplorerDeviceIdentityStore;
 class IDeviceExplorerTransport;
 class IConsoleObject;
 
@@ -33,6 +34,7 @@ private:
 	bool HandleAuthMessage(const FString& Type, const TSharedPtr<class FJsonObject>& Message);
 	void SendHello();
 	void SendHeartbeat();
+	bool HandleAttachAck(const TSharedPtr<class FJsonObject>& Message);
 	void HandleMessage(const FString& Message);
 	void ExecuteCommand(const TSharedPtr<class FJsonObject>& Message);
 	void ListConsoleObjects(const TSharedPtr<class FJsonObject>& Message);
@@ -45,12 +47,12 @@ private:
 	void SendTransferFailure(const FString& TransferId, const FString& Error);
 	void SendJson(const TSharedRef<class FJsonObject>& Message);
 	void SendUnauthenticatedJson(const TSharedRef<class FJsonObject>& Message);
-	FString GetOrCreateDeviceId() const;
 
 	TArray<TUniquePtr<IDeviceExplorerEndpointSource>> EndpointSources;
 	TSharedPtr<std::atomic<bool>, ESPMode::ThreadSafe> EndpointCallbackGate;
 	TUniquePtr<FDeviceExplorerConnectionCoordinator> ConnectionCoordinator;
 	TUniquePtr<FDeviceExplorerLogService> LogService;
+	TUniquePtr<FDeviceExplorerDeviceIdentityStore> DeviceIdentityStore;
 	TUniquePtr<FDeviceExplorerConsoleCatalog> ConsoleCatalog;
 	TUniquePtr<IDeviceExplorerTransport> Transport;
 	FTSTicker::FDelegateHandle TickerHandle;
@@ -59,6 +61,8 @@ private:
 
 	TOptional<FDeviceExplorerEndpointCandidate> AuthenticatingCandidate;
 	FString DeviceId;
+	FString ConnectionId;
+	uint64 DeviceSession = 0;
 	FString ClientNonce;
 	double LastHeartbeatSeconds = 0.0;
 	uint64 ConnectionGeneration = 0;

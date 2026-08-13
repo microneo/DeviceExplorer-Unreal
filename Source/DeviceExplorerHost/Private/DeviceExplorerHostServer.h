@@ -40,6 +40,11 @@ private:
 	struct FPendingRequest;
 	struct FTransfer;
 	struct FHttpRequest;
+	struct FKnownDeviceSession
+	{
+		uint64 Session = 0;
+		FDateTime LastSeen;
+	};
 
 	bool CreateListener(const FString& Address, int32 Port, FSocket*& OutSocket);
 	void AcceptConnections(FSocket* Listener, bool bDashboard);
@@ -82,6 +87,7 @@ private:
 
 	FCriticalSection StateMutex;
 	TMap<FString, TSharedPtr<FDeviceState>> Devices;
+	TMap<FString, FKnownDeviceSession> KnownDeviceSessions;
 	TMap<FString, TSharedPtr<FPendingRequest>> PendingRequests;
 	TMap<FString, TSharedPtr<FTransfer>> Transfers;
 

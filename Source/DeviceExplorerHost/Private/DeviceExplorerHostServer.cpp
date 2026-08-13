@@ -36,6 +36,13 @@ constexpr int32 IoChunkBytes = 64 * 1024;
 constexpr double MaximumSocketIdleSeconds = 30.0;
 constexpr double MaximumSocketSendSeconds = 15.0;
 constexpr double DisconnectedDeviceExpirySeconds = 3600.0;
+constexpr double KnownDeviceSessionExpirySeconds = 7.0 * 24.0 * 60.0 * 60.0;
+
+bool ParseSessionString(const TSharedPtr<FJsonObject>& Object, const TCHAR* Name, uint64& OutValue)
+{
+	FString Text;
+	return Object->TryGetStringField(Name, Text) && LexTryParseString(OutValue, *Text) && OutValue != 0;
+}
 
 bool SendAll(FSocket* Socket, const uint8* Data, int64 Size)
 {
@@ -458,6 +465,8 @@ private:
 struct FDeviceExplorerHostServer::FDeviceState
 {
 	FString Id;
+	uint64 DeviceSession = 0;
+	FString ConnectionId;
 	FString Name;
 	FString ProjectName;
 	FString EngineVersion;
@@ -1357,89 +1366,127 @@ void FDeviceExplorerHostServer::AttachDevice(const TSharedRef<FDeviceConnection>
 	{
 		return;
 	}
+	FString ConnectionId;
+	Hello->TryGetStringField(TEXT("connection_id"), ConnectionId);
+	uint64 DeviceSession = 0;
+	FString DeviceSessionText;
+	const bool bHasDeviceSession = Hello->TryGetStringField(TEXT("device_session"), DeviceSessionText);
+	if (bHasDeviceSession && !ParseSessionString(Hello, TEXT("device_session"), DeviceSession))
+	{
+		Connection->bClosed.Store(true);
+		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
+		return;
+	}
 
 	const TSharedRef<FInternetAddr> RemoteAddress = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
 	const bool bHasRemoteAddress = Connection->Socket->GetPeerAddress(*RemoteAddress);
+	uint64 LastKnownSession = 0;
+	bool bAccepted = false;
+	bool bRegistryFull = false;
+	FString DeviceName;
+	{
+		FScopeLock Lock(&StateMutex);
+		bRegistryFull = !Devices.Contains(DeviceId) && Devices.Num() >= Config.MaximumDevices;
+		if (!bRegistryFull)
+		{
+			if (const TSharedPtr<FDeviceState>* Existing = Devices.Find(DeviceId); Existing != nullptr && *Existing)
+			{
+				LastKnownSession = (*Existing)->DeviceSession;
+			}
+			if (const FKnownDeviceSession* Known = KnownDeviceSessions.Find(DeviceId))
+			{
+				LastKnownSession = FMath::Max(LastKnownSession, Known->Session);
+			}
+			bAccepted = bHasDeviceSession && !ConnectionId.IsEmpty() && LastKnownSession < DeviceSession;
+			if (bAccepted)
+			{
+				if (!KnownDeviceSessions.Contains(DeviceId) && KnownDeviceSessions.Num() >= Config.MaximumDevices)
+				{
+					FString OldestId;
+					FDateTime Oldest = FDateTime::MaxValue();
+					for (const TPair<FString, FKnownDeviceSession>& Pair : KnownDeviceSessions)
+					{
+						if (Pair.Value.LastSeen < Oldest)
+						{
+							Oldest = Pair.Value.LastSeen;
+							OldestId = Pair.Key;
+						}
+					}
+					if (!OldestId.IsEmpty()) KnownDeviceSessions.Remove(OldestId);
+				}
+				FKnownDeviceSession& Known = KnownDeviceSessions.FindOrAdd(DeviceId);
+				Known.Session = FMath::Max(Known.Session, DeviceSession);
+				Known.LastSeen = FDateTime::UtcNow();
+				TSharedPtr<FDeviceState>& Device = Devices.FindOrAdd(DeviceId);
+				if (!Device)
+				{
+					Device = MakeShared<FDeviceState>();
+					Device->Id = DeviceId;
+					Device->Logs.Reserve(Config.LogCapacity);
+				}
+				if (Device->Connection && Device->Connection != Connection)
+				{
+					Device->Connection->bClosed.Store(true);
+					Device->Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
+				}
 
-	FScopeLock Lock(&StateMutex);
-	if (!Devices.Contains(DeviceId) && Devices.Num() >= Config.MaximumDevices)
+				Connection->DeviceId = DeviceId;
+				Device->DeviceSession = DeviceSession;
+				Device->ConnectionId = ConnectionId;
+				Device->Connection = Connection;
+				Device->bConnected = true;
+				Device->ConnectedAt = FDateTime::UtcNow();
+				Device->LastSeen = Device->ConnectedAt;
+				Hello->TryGetStringField(TEXT("name"), Device->Name);
+				Hello->TryGetStringField(TEXT("project_name"), Device->ProjectName);
+				Hello->TryGetStringField(TEXT("engine_version"), Device->EngineVersion);
+				Hello->TryGetStringField(TEXT("platform"), Device->Platform);
+				Hello->TryGetStringField(TEXT("configuration"), Device->Configuration);
+				Hello->TryGetStringField(TEXT("build_version"), Device->BuildVersion);
+
+				double Number = 0.0;
+				if (Hello->TryGetNumberField(TEXT("protocol_version"), Number)) Device->ProtocolVersion = static_cast<int32>(Number);
+				if (Hello->TryGetNumberField(TEXT("uptime_seconds"), Number)) Device->UptimeSeconds = static_cast<int64>(Number);
+
+				Device->Capabilities.Reset();
+				const TArray<TSharedPtr<FJsonValue>>* Capabilities = nullptr;
+				if (Hello->TryGetArrayField(TEXT("capabilities"), Capabilities) && Capabilities != nullptr)
+				{
+					for (const TSharedPtr<FJsonValue>& Capability : *Capabilities) Device->Capabilities.Add(Capability->AsString());
+				}
+				const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+				Device->Commands.Reset();
+				if (Hello->TryGetArrayField(TEXT("commands"), Values) && Values != nullptr) Device->Commands = *Values;
+				Device->FileRoots.Reset();
+				if (Hello->TryGetArrayField(TEXT("file_roots"), Values) && Values != nullptr) Device->FileRoots = *Values;
+				Device->DataModules.Reset();
+				if (Hello->TryGetArrayField(TEXT("data_modules"), Values) && Values != nullptr) Device->DataModules = *Values;
+				if (bHasRemoteAddress) Device->RemoteAddress = RemoteAddress->ToString(true);
+				DeviceName = Device->Name;
+			}
+		}
+	}
+
+	if (bRegistryFull)
 	{
 		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Device registry is full; refusing %s"), *RemoteAddress->ToString(true));
 		Connection->bClosed.Store(true);
 		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
 		return;
 	}
-	TSharedPtr<FDeviceState>& Device = Devices.FindOrAdd(DeviceId);
-	if (!Device)
+	TSharedRef<FJsonObject> Ack = MakeShared<FJsonObject>();
+	Ack->SetStringField(TEXT("type"), TEXT("attach_ack"));
+	Ack->SetBoolField(TEXT("accepted"), bAccepted);
+	Ack->SetStringField(TEXT("last_known_device_session"), LexToString(LastKnownSession));
+	Connection->SendText(JsonString(Ack));
+	if (!bAccepted)
 	{
-		Device = MakeShared<FDeviceState>();
-		Device->Id = DeviceId;
-		Device->Logs.Reserve(Config.LogCapacity);
+		UE_LOG(LogDeviceExplorerHost, Warning, TEXT("Stale or malformed device session refused for %s"), *DeviceId);
+		Connection->bClosed.Store(true);
+		Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
+		return;
 	}
-	if (Device->Connection && Device->Connection != Connection)
-	{
-		Device->Connection->bClosed.Store(true);
-		Device->Connection->Socket->Shutdown(ESocketShutdownMode::ReadWrite);
-	}
-
-	Connection->DeviceId = DeviceId;
-	Device->Connection = Connection;
-	Device->bConnected = true;
-	Device->ConnectedAt = FDateTime::UtcNow();
-	Device->LastSeen = Device->ConnectedAt;
-	Hello->TryGetStringField(TEXT("name"), Device->Name);
-	Hello->TryGetStringField(TEXT("project_name"), Device->ProjectName);
-	Hello->TryGetStringField(TEXT("engine_version"), Device->EngineVersion);
-	Hello->TryGetStringField(TEXT("platform"), Device->Platform);
-	Hello->TryGetStringField(TEXT("configuration"), Device->Configuration);
-	Hello->TryGetStringField(TEXT("build_version"), Device->BuildVersion);
-
-	double Number = 0.0;
-	if (Hello->TryGetNumberField(TEXT("protocol_version"), Number))
-	{
-		Device->ProtocolVersion = static_cast<int32>(Number);
-	}
-	if (Hello->TryGetNumberField(TEXT("uptime_seconds"), Number))
-	{
-		Device->UptimeSeconds = static_cast<int64>(Number);
-	}
-
-	Device->Capabilities.Reset();
-	const TArray<TSharedPtr<FJsonValue>>* Capabilities = nullptr;
-	if (Hello->TryGetArrayField(TEXT("capabilities"), Capabilities) && Capabilities != nullptr)
-	{
-		for (const TSharedPtr<FJsonValue>& Capability : *Capabilities)
-		{
-			Device->Capabilities.Add(Capability->AsString());
-		}
-	}
-
-	Device->Commands.Reset();
-	const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
-	if (Hello->TryGetArrayField(TEXT("commands"), Commands) && Commands != nullptr)
-	{
-		Device->Commands = *Commands;
-	}
-
-	Device->FileRoots.Reset();
-	const TArray<TSharedPtr<FJsonValue>>* FileRoots = nullptr;
-	if (Hello->TryGetArrayField(TEXT("file_roots"), FileRoots) && FileRoots != nullptr)
-	{
-		Device->FileRoots = *FileRoots;
-	}
-
-	Device->DataModules.Reset();
-	const TArray<TSharedPtr<FJsonValue>>* DataModules = nullptr;
-	if (Hello->TryGetArrayField(TEXT("data_modules"), DataModules) && DataModules != nullptr)
-	{
-		Device->DataModules = *DataModules;
-	}
-
-	if (bHasRemoteAddress)
-	{
-		Device->RemoteAddress = RemoteAddress->ToString(true);
-	}
-	UE_LOG(LogDeviceExplorerHost, Display, TEXT("Device connected: %s (%s)"), *Device->Name, *DeviceId);
+	UE_LOG(LogDeviceExplorerHost, Display, TEXT("Device connected: %s (%s)"), *DeviceName, *DeviceId);
 }
 
 void FDeviceExplorerHostServer::DetachDevice(const TSharedRef<FDeviceConnection>& Connection)
@@ -1472,6 +1519,8 @@ void FDeviceExplorerHostServer::HandleDevicesApi(FSocket* Socket)
 
 			TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
 			Json->SetStringField(TEXT("id"), Device.Id);
+			Json->SetStringField(TEXT("device_session"), LexToString(Device.DeviceSession));
+			Json->SetStringField(TEXT("connection_id"), Device.ConnectionId);
 			Json->SetStringField(TEXT("name"), Device.Name);
 			Json->SetStringField(TEXT("project_name"), Device.ProjectName);
 			Json->SetStringField(TEXT("engine_version"), Device.EngineVersion);
@@ -2271,6 +2320,13 @@ void FDeviceExplorerHostServer::CleanupExpiredState()
 		{
 			const FDeviceState& Device = *Iterator.Value();
 			if (!Device.Connection && (Now - Device.LastSeen).GetTotalSeconds() > DisconnectedDeviceExpirySeconds)
+			{
+				Iterator.RemoveCurrent();
+			}
+		}
+		for (auto Iterator = KnownDeviceSessions.CreateIterator(); Iterator; ++Iterator)
+		{
+			if ((Now - Iterator.Value().LastSeen).GetTotalSeconds() > KnownDeviceSessionExpirySeconds)
 			{
 				Iterator.RemoveCurrent();
 			}
