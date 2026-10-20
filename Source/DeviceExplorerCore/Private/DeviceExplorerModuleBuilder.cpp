@@ -1274,7 +1274,7 @@ bool FDeviceExplorerModuleBuilder::Register()
 		{
 			for (const auto& Pair : Parameters->Values)
 			{
-				const FBindingEntry* Binding = BindingsRef->Entries.Find(Pair.Key);
+				const FBindingEntry* Binding = BindingsRef->Entries.Find(*Pair.Key);
 				if (Binding == nullptr || !Binding->Writer)
 				{
 					Errors.Add(FString::Printf(TEXT("Unknown or read-only field: %s"), *Pair.Key));
