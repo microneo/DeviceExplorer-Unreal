@@ -631,12 +631,18 @@ struct HostPeerNetwork::Implementation
 
 		bool RequestRosterResync()
 		{
-			if (RosterRequestOutstanding)
+			// Only a snapshot part zero clears the request. A peer that coalesces the
+			// request away, or that answers with a snapshot already past its first
+			// part, would otherwise leave this link short of the revision its deltas
+			// carry for as long as those deltas keep the link alive.
+			const auto Now = std::chrono::steady_clock::now();
+			if (RosterRequestOutstanding && Now < RosterRequestDeadline)
 			{
 				++Owner.SuppressedRosterRequests;
 				return false;
 			}
 			RosterRequestOutstanding = true;
+			RosterRequestDeadline = Now + Owner.Config.PeerRosterRemovalTimeout;
 			Owner.SendRosterRequest(*this);
 			return true;
 		}
@@ -714,6 +720,7 @@ struct HostPeerNetwork::Implementation
 		bool RosterWriteInFlight = false;
 		bool RosterRequestOutstanding = false;
 		bool PhysicalWriteInFlight = false;
+		std::chrono::steady_clock::time_point RosterRequestDeadline;
 		std::string RosterSnapshotId;
 		std::uint64_t SnapshotRevision = 0;
 		std::uint64_t SnapshotPartCount = 0;
