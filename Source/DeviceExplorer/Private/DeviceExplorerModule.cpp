@@ -1313,12 +1313,24 @@ bool FDeviceExplorerModule::HandleAttachAck(const TSharedPtr<FJsonObject>& Messa
 {
 	bool bAccepted = false;
 	if (Message->TryGetBoolField(TEXT("accepted"), bAccepted) && bAccepted) return true;
+	// The host names a reason only for refusals the session counter cannot explain,
+	// so its words replace the counter-based diagnosis below.
+	FString Reason;
+	Message->TryGetStringField(TEXT("reason"), Reason);
+	if (!Reason.IsEmpty())
+	{
+		UE_LOG(LogDeviceExplorer, Error, TEXT("Host refused the device attach: %s"), *Reason);
+	}
 	FString KnownText;
 	uint64 KnownSession = 0;
 	if (!Message->TryGetStringField(TEXT("last_known_device_session"), KnownText) ||
 	    !LexTryParseString(KnownSession, *KnownText) || KnownSession < DeviceSession || !DeviceIdentityStore)
 	{
-		UE_LOG(LogDeviceExplorer, Error, TEXT("Host rejected the device attach without a usable last-known session"));
+		if (Reason.IsEmpty())
+		{
+			UE_LOG(LogDeviceExplorer, Error,
+			       TEXT("Host rejected the device attach without a usable last-known session"));
+		}
 		Disconnect();
 		if (ConnectionCoordinator) ConnectionCoordinator->AbandonActive();
 		return true;
