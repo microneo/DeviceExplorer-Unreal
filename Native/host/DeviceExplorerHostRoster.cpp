@@ -5,6 +5,21 @@
 
 namespace DeviceExplorer::Host
 {
+namespace
+{
+// Peers receive every field below, so an entry that differs in any of them must
+// raise the revision or the remote copy stays stale until the next snapshot.
+bool RosterDeviceMatches(const RosterDevice& Left, const RosterDevice& Right)
+{
+	return Left.DeviceSession == Right.DeviceSession && Left.ConnectionId == Right.ConnectionId &&
+	       Left.Name == Right.Name && Left.ProjectName == Right.ProjectName && Left.Platform == Right.Platform &&
+	       Left.Configuration == Right.Configuration && Left.EngineVersion == Right.EngineVersion &&
+	       Left.BuildVersion == Right.BuildVersion && Left.CatalogRevision == Right.CatalogRevision &&
+	       Left.ConnectionAgeMilliseconds == Right.ConnectionAgeMilliseconds &&
+	       Left.Capabilities == Right.Capabilities;
+}
+}    // namespace
+
 bool ValidateRosterDevice(const RosterDevice& Device, std::string* const OutReason)
 {
 	auto Fail = [OutReason](const char* Reason)
@@ -50,12 +65,10 @@ LocalRosterUpdate DistributedRoster::AttachLocal(RosterDevice Device)
 {
 	RosterOwnerState& Owner = OwnerTables.at(LocalNodeId);
 	if (!ValidateRosterDevice(Device)) return { LocalRosterResult::Invalid, Owner.Revision };
-	const bool NewDevice = Owner.Devices.find(Device.DeviceId) == Owner.Devices.end();
-	if (NewDevice && Owner.Devices.size() >= MaximumLocalDevices)
-		return { LocalRosterResult::CapacityExceeded, Owner.Revision };
 	const auto Existing = Owner.Devices.find(Device.DeviceId);
-	if (Existing != Owner.Devices.end() && Existing->second.DeviceSession == Device.DeviceSession &&
-	    Existing->second.ConnectionId == Device.ConnectionId)
+	if (Existing == Owner.Devices.end() && Owner.Devices.size() >= MaximumLocalDevices)
+		return { LocalRosterResult::CapacityExceeded, Owner.Revision };
+	if (Existing != Owner.Devices.end() && RosterDeviceMatches(Existing->second, Device))
 		return { LocalRosterResult::Unchanged, Owner.Revision };
 	Owner.Devices[Device.DeviceId] = std::move(Device);
 	return { LocalRosterResult::Applied, ++Owner.Revision };

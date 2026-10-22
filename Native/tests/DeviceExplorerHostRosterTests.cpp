@@ -59,6 +59,14 @@ int main()
 	Invalid.ConnectionId.assign(129, 'x');
 	CHECK(Roster.AttachLocal(std::move(Invalid)).Result == LocalRosterResult::Invalid);
 	CHECK(Roster.Local().Devices.size() == 2);
+
+	CHECK(Roster.AttachLocal(Device("local-2", 1, "local-2")).Result == LocalRosterResult::Unchanged);
+	const std::uint64_t BeforeRename = Roster.Local().Revision;
+	RosterDevice Renamed = Device("local-2", 1, "local-2");
+	Renamed.ProjectName = "renamed";
+	CHECK(Roster.AttachLocal(std::move(Renamed)).Result == LocalRosterResult::Applied);
+	CHECK(Roster.Local().Revision == BeforeRename + 1);
+	CHECK(Roster.Local().Devices.at("local-2").ProjectName == "renamed");
 	std::cout << "host roster tests passed\n";
 	return EXIT_SUCCESS;
 }
