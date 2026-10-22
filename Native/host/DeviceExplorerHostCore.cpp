@@ -200,12 +200,14 @@ bool HostCore::Start(std::string& OutError)
 			const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock();
 			return Network ? Network->KnownDeviceSession(DeviceId) : std::uint64_t{ 0 };
 		};
-		Impl->Config.LocalDeviceAttached = [WeakPeerNetwork](RosterDevice Device)
+		Impl->Config.LocalDeviceAttached = [WeakPeerNetwork](RosterDevice Device, std::string& OutError)
 		{
 			if (const std::shared_ptr<HostPeerNetwork> Network = WeakPeerNetwork.lock())
 			{
-				Network->LocalDeviceAttached(std::move(Device));
+				return Network->LocalDeviceAttached(std::move(Device), OutError);
 			}
+			OutError = "distributed roster is unavailable";
+			return false;
 		};
 		Impl->Config.LocalDeviceDetached = [WeakPeerNetwork](const std::string& DeviceId, const std::uint64_t DeviceSession)
 		{

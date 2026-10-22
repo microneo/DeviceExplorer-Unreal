@@ -7,23 +7,48 @@ namespace DeviceExplorer::Host
 {
 namespace
 {
-bool ValidDevice(const RosterDevice& Device)
+// Peers receive every field below, so an entry that differs in any of them must
+// raise the revision or the remote copy stays stale until the next snapshot.
+bool RosterDeviceMatches(const RosterDevice& Left, const RosterDevice& Right)
 {
-	return !Device.DeviceId.empty() && Device.DeviceId.size() <= 128 && Device.DeviceSession != 0 &&
-	       !Device.ConnectionId.empty() && Device.ConnectionId.size() <= 128 && Device.Name.size() <= 256 &&
-	       Device.ProjectName.size() <= 256 && Device.Platform.size() <= 128 && Device.Configuration.size() <= 128 &&
-	       Device.EngineVersion.size() <= 128 && Device.BuildVersion.size() <= 128 && Device.Capabilities.size() <= 32 &&
-	       std::all_of(Device.Capabilities.begin(), Device.Capabilities.end(), [](const std::string& Capability)
-	       {
-		       return !Capability.empty() && Capability.size() <= 64;
-	       });
+	return Left.DeviceSession == Right.DeviceSession && Left.ConnectionId == Right.ConnectionId &&
+	       Left.Name == Right.Name && Left.ProjectName == Right.ProjectName && Left.Platform == Right.Platform &&
+	       Left.Configuration == Right.Configuration && Left.EngineVersion == Right.EngineVersion &&
+	       Left.BuildVersion == Right.BuildVersion && Left.CatalogRevision == Right.CatalogRevision &&
+	       Left.ConnectionAgeMilliseconds == Right.ConnectionAgeMilliseconds &&
+	       Left.Capabilities == Right.Capabilities;
 }
 }    // namespace
 
+bool ValidateRosterDevice(const RosterDevice& Device, std::string* const OutReason)
+{
+	auto Fail = [OutReason](const char* Reason)
+	{
+		if (OutReason != nullptr) *OutReason = Reason;
+		return false;
+	};
+	if (Device.DeviceId.empty() || Device.DeviceId.size() > 128) return Fail("device_id exceeds 128 bytes");
+	if (Device.DeviceSession == 0) return Fail("device_session must be non-zero");
+	if (Device.ConnectionId.empty() || Device.ConnectionId.size() > 128)
+		return Fail("connection_id must contain at most 128 bytes");
+	if (Device.Name.size() > 256 || Device.ProjectName.size() > 256) return Fail("device name exceeds 256 bytes");
+	if (Device.Platform.size() > 128 || Device.Configuration.size() > 128 || Device.EngineVersion.size() > 128 ||
+	    Device.BuildVersion.size() > 128) return Fail("device build metadata exceeds 128 bytes");
+	if (Device.Capabilities.size() > 32) return Fail("device has more than 32 capabilities");
+	if (!std::all_of(Device.Capabilities.begin(), Device.Capabilities.end(), [](const std::string& Capability)
+	{
+		return !Capability.empty() && Capability.size() <= 64;
+	})) return Fail("device capability must contain between 1 and 64 bytes");
+	if (OutReason != nullptr) OutReason->clear();
+	return true;
+}
+
 DistributedRoster::DistributedRoster(std::string InLocalNodeId,
 	                                 const std::uint64_t LocalHostSession,
-	                                 const std::size_t InMaximumDevices)
-	: LocalNodeId(std::move(InLocalNodeId)), MaximumDevices(InMaximumDevices)
+	                                 const std::size_t InMaximumDevices,
+	                                 const std::size_t InMaximumLocalDevices)
+	: LocalNodeId(std::move(InLocalNodeId)), MaximumDevices(InMaximumDevices),
+	  MaximumLocalDevices(InMaximumLocalDevices)
 {
 	RosterOwnerState& LocalState = OwnerTables[LocalNodeId];
 	LocalState.HostSession = LocalHostSession;
@@ -36,14 +61,17 @@ const RosterOwnerState& DistributedRoster::Local() const
 	return OwnerTables.at(LocalNodeId);
 }
 
-std::uint64_t DistributedRoster::AttachLocal(RosterDevice Device)
+LocalRosterUpdate DistributedRoster::AttachLocal(RosterDevice Device)
 {
 	RosterOwnerState& Owner = OwnerTables.at(LocalNodeId);
-	if (!ValidDevice(Device)) return Owner.Revision;
-	const bool NewDevice = Owner.Devices.find(Device.DeviceId) == Owner.Devices.end();
-	if (NewDevice && DeviceCount() >= MaximumDevices) return Owner.Revision;
+	if (!ValidateRosterDevice(Device)) return { LocalRosterResult::Invalid, Owner.Revision };
+	const auto Existing = Owner.Devices.find(Device.DeviceId);
+	if (Existing == Owner.Devices.end() && Owner.Devices.size() >= MaximumLocalDevices)
+		return { LocalRosterResult::CapacityExceeded, Owner.Revision };
+	if (Existing != Owner.Devices.end() && RosterDeviceMatches(Existing->second, Device))
+		return { LocalRosterResult::Unchanged, Owner.Revision };
 	Owner.Devices[Device.DeviceId] = std::move(Device);
-	return ++Owner.Revision;
+	return { LocalRosterResult::Applied, ++Owner.Revision };
 }
 
 std::uint64_t DistributedRoster::DetachLocal(const std::string& DeviceId, const std::uint64_t DeviceSession)
@@ -67,7 +95,9 @@ bool DistributedRoster::FitsReplacing(const std::string& NodeId, const std::size
 	std::size_t Existing = 0;
 	const auto Found = OwnerTables.find(NodeId);
 	if (Found != OwnerTables.end()) Existing = Found->second.Devices.size();
-	return ReplacementSize <= MaximumDevices && DeviceCount() - Existing <= MaximumDevices - ReplacementSize;
+	const std::size_t RemoteCapacity = MaximumDevices > MaximumLocalDevices
+		? MaximumDevices - MaximumLocalDevices : 0;
+	return ReplacementSize <= RemoteCapacity && RemoteDeviceCount() - Existing <= RemoteCapacity - ReplacementSize;
 }
 
 RosterOwnerState* DistributedRoster::FindBoundOwner(const std::string& NodeId, const std::uint64_t HostSession)
@@ -87,7 +117,7 @@ RosterApplyResult DistributedRoster::ApplyFull(const std::string& BoundNodeId,
 	std::map<std::string, RosterDevice> Replacement;
 	for (RosterDevice& Device : Devices)
 	{
-		if (!ValidDevice(Device) || !Replacement.emplace(Device.DeviceId, std::move(Device)).second)
+		if (!ValidateRosterDevice(Device) || !Replacement.emplace(Device.DeviceId, std::move(Device)).second)
 			return RosterApplyResult::Invalid;
 	}
 	const auto Existing = OwnerTables.find(BoundNodeId);
@@ -111,7 +141,7 @@ RosterApplyResult DistributedRoster::ApplyAttached(const std::string& BoundNodeI
 	                                                const std::uint64_t Revision,
 	                                                RosterDevice Device)
 {
-	if (!ValidDevice(Device)) return RosterApplyResult::Invalid;
+	if (!ValidateRosterDevice(Device)) return RosterApplyResult::Invalid;
 	RosterOwnerState* Owner = FindBoundOwner(BoundNodeId, BoundHostSession);
 	if (Owner == nullptr)
 	{
@@ -121,7 +151,10 @@ RosterApplyResult DistributedRoster::ApplyAttached(const std::string& BoundNodeI
 	}
 	if (Revision <= Owner->Revision) return RosterApplyResult::Ignored;
 	if (Revision != Owner->Revision + 1) return RosterApplyResult::NeedFull;
-	if (Owner->Devices.find(Device.DeviceId) == Owner->Devices.end() && DeviceCount() >= MaximumDevices)
+	const std::size_t RemoteCapacity = MaximumDevices > MaximumLocalDevices
+		? MaximumDevices - MaximumLocalDevices : 0;
+	if (Owner->Devices.find(Device.DeviceId) == Owner->Devices.end() &&
+	    RemoteDeviceCount() >= RemoteCapacity)
 		return RosterApplyResult::CapacityExceeded;
 	Owner->Devices[Device.DeviceId] = std::move(Device);
 	Owner->Revision = Revision;
@@ -221,6 +254,16 @@ std::size_t DistributedRoster::DeviceCount() const
 {
 	std::size_t Result = 0;
 	for (const auto& Pair : OwnerTables) Result += Pair.second.Devices.size();
+	return Result;
+}
+
+std::size_t DistributedRoster::RemoteDeviceCount() const
+{
+	std::size_t Result = 0;
+	for (const auto& Pair : OwnerTables)
+	{
+		if (Pair.first != LocalNodeId) Result += Pair.second.Devices.size();
+	}
 	return Result;
 }
 }    // namespace DeviceExplorer::Host

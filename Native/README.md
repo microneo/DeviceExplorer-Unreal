@@ -168,7 +168,12 @@ choosing a random winner.
 `GET /api/roster` exposes this thin distributed view. It is separate from
 `GET /api/devices`: the latter remains the local, operable registry until remote
 read/write routing is implemented. Roster snapshots are split into bounded
-parts of at most 16 devices, while the aggregate cache defaults to 4096 entries.
+parts of at most 16 devices. Parts and later deltas share one per-peer ordered
+output queue, and each next part is protected and enqueued only after the prior
+socket write completes. Repeated resync requests are coalesced while a snapshot
+is already pending. The aggregate cache defaults to 4096 entries and reserves
+the local registry limit (1024 by default), so remote owners cannot consume the
+capacity required to publish a newly attached local device.
 When the active link to an owner closes, its rows become `unreachable`; a link
 for the same owner and host session restores them without churn, otherwise they
 are removed after the default 60-second grace period.

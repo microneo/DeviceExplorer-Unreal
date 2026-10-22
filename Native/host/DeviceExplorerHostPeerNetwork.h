@@ -24,7 +24,7 @@ public:
 	std::uint16_t BoundPort() const;
 	void Discover(PeerCandidate Candidate);
 	std::uint64_t KnownDeviceSession(const std::string& DeviceId) const;
-	void LocalDeviceAttached(RosterDevice Device);
+	bool LocalDeviceAttached(RosterDevice Device, std::string& OutError);
 	void LocalDeviceDetached(const std::string& DeviceId, std::uint64_t DeviceSession);
 
 private:

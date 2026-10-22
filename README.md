@@ -19,8 +19,8 @@ Features:
   link.
 
 The native host also contains an opt-in peer control plane for multi-host
-discovery and liveness. It currently exchanges identity, negotiated peer
-protocol state, and ping/pong only; remote device operations are not enabled.
+discovery, liveness, and a revisioned distributed device roster. Remote device
+operations are not enabled.
 Peer links assume a trusted development LAN and are disabled unless the host is
 started with `--enable-distributed`, an explicit cluster id, and a shared
 high-entropy peer secret. The secret authenticates host-to-host handshakes and

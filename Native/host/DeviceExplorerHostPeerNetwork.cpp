@@ -18,6 +18,7 @@
 #include <charconv>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -193,6 +194,18 @@ struct HostPeerNetwork::Implementation
 
 	struct Session : public std::enable_shared_from_this<Session>
 	{
+		struct PendingWrite
+		{
+			std::vector<std::uint8_t> Frame;
+			std::function<void()> Completed;
+		};
+
+		struct PendingRosterMessage
+		{
+			std::string Json;
+			bool Snapshot = false;
+		};
+
 		Session(Implementation& InOwner, Tcp::socket InSocket, std::shared_ptr<Candidate> InCandidate, const bool InCountsInboundHandshake)
 			: Owner(InOwner), Socket(std::move(InSocket)), Timer(Owner.Io), SourceCandidate(std::move(InCandidate)),
 		      LocalNonce(MakeNonce()), LastReceive(std::chrono::steady_clock::now()),
@@ -301,7 +314,8 @@ struct HostPeerNetwork::Implementation
 			if (Message.Type == Wire::PeerMessageType::DeviceDetached) return HandleDeviceDetached(Message.Payload);
 			if (Message.Type == Wire::PeerMessageType::RosterRequest)
 			{
-				Owner.SendRosterFull(*this);
+				if (RosterSnapshotsQueued == 0) Owner.SendRosterFull(*this);
+				else ++Owner.SuppressedRosterRequests;
 				return true;
 			}
 			Close("unsupported peer message");
@@ -452,6 +466,7 @@ struct HostPeerNetwork::Implementation
 			}
 			if (PartIndex == 0)
 			{
+				RosterRequestOutstanding = false;
 				SnapshotDevices.clear();
 				RosterSnapshotId = SnapshotId;
 				SnapshotRevision = Revision;
@@ -535,54 +550,121 @@ struct HostPeerNetwork::Implementation
 			});
 		}
 
-		void SendPlain(std::string Text)
+		bool SendPlain(std::string Text, std::function<void()> Completed = {})
 		{
 			std::vector<std::uint8_t> Frame;
 			if (!Wire::EncodePeerFrame(Text, Frame))
 			{
 				Close("cannot frame peer message");
-				return;
+				return false;
 			}
 			if (QueuedBytes > Owner.Config.MaximumQueuedControlBytes ||
 			    Frame.size() > Owner.Config.MaximumQueuedControlBytes - QueuedBytes)
 			{
 				Close("peer control queue is full");
-				return;
+				return false;
 			}
 			QueuedBytes += Frame.size();
-			Writes.push_back(std::move(Frame));
+			Writes.push_back({ std::move(Frame), std::move(Completed) });
 			if (Writes.size() == 1) Write();
+			return true;
 		}
 
-		void SendProtected(const std::string_view Text)
+		bool SendProtected(const std::string_view Text, std::function<void()> Completed = {})
 		{
 			if (!Established || !ChannelCrypto.IsInitialized())
 			{
 				Close("protected peer channel is not established");
-				return;
+				return false;
 			}
 			std::vector<std::uint8_t> Envelope;
 			if (!ChannelCrypto.Encrypt(Text, Envelope))
 			{
 				Close("cannot protect peer message");
+				return false;
+			}
+			return SendPlain(std::string(reinterpret_cast<const char*>(Envelope.data()), Envelope.size()),
+			                 std::move(Completed));
+		}
+
+		void QueueRosterMessage(std::string Json, const bool Snapshot)
+		{
+			if (Closed) return;
+			RosterWrites.push_back({ std::move(Json), Snapshot });
+			if (Snapshot) ++RosterSnapshotsQueued;
+			PumpRosterWrite();
+		}
+
+		void QueueRosterDelta(std::string Json)
+		{
+			const std::size_t MaximumPending = Owner.Config.MaximumDevices + 64;
+			if (RosterWrites.size() >= MaximumPending)
+			{
+				const std::size_t Keep = RosterWriteInFlight && !RosterWrites.empty() ? 1 : 0;
+				RosterWrites.erase(RosterWrites.begin() + static_cast<std::ptrdiff_t>(Keep), RosterWrites.end());
+				RosterSnapshotsQueued = Keep != 0 && RosterWrites.front().Snapshot ? 1 : 0;
+				++Owner.CoalescedRosterOutputs;
+				Owner.SendRosterFull(*this);
 				return;
 			}
-			SendPlain(std::string(reinterpret_cast<const char*>(Envelope.data()), Envelope.size()));
+			QueueRosterMessage(std::move(Json), false);
+		}
+
+		void PumpRosterWrite()
+		{
+			if (RosterWriteInFlight || RosterWrites.empty() || Closed) return;
+			RosterWriteInFlight = true;
+			auto Self = shared_from_this();
+			if (!SendProtected(RosterWrites.front().Json, [Self]
+			{
+				if (Self->RosterWrites.empty()) return;
+				if (Self->RosterWrites.front().Snapshot && Self->RosterSnapshotsQueued != 0)
+					--Self->RosterSnapshotsQueued;
+				Self->RosterWrites.pop_front();
+				Self->RosterWriteInFlight = false;
+				Self->PumpRosterWrite();
+			}))
+			{
+				RosterWriteInFlight = false;
+			}
+		}
+
+		bool RequestRosterResync()
+		{
+			// Only a snapshot part zero clears the request. A peer that coalesces the
+			// request away, or that answers with a snapshot already past its first
+			// part, would otherwise leave this link short of the revision its deltas
+			// carry for as long as those deltas keep the link alive.
+			const auto Now = std::chrono::steady_clock::now();
+			if (RosterRequestOutstanding && Now < RosterRequestDeadline)
+			{
+				++Owner.SuppressedRosterRequests;
+				return false;
+			}
+			RosterRequestOutstanding = true;
+			RosterRequestDeadline = Now + Owner.Config.PeerRosterRemovalTimeout;
+			Owner.SendRosterRequest(*this);
+			return true;
 		}
 
 		void Write()
 		{
-			if (Writes.empty() || Closed) return;
+			if (Writes.empty() || Closed || PhysicalWriteInFlight) return;
+			PhysicalWriteInFlight = true;
 			auto Self = shared_from_this();
-			asio::async_write(Socket, asio::buffer(Writes.front()), [Self](const asio::error_code& Error, std::size_t)
+			asio::async_write(Socket, asio::buffer(Writes.front().Frame), [Self](const asio::error_code& Error, std::size_t)
 			{
 				if (Error)
 				{
+					Self->PhysicalWriteInFlight = false;
 					Self->Close(Error.message());
 					return;
 				}
-				Self->QueuedBytes -= Self->Writes.front().size();
+				Self->QueuedBytes -= Self->Writes.front().Frame.size();
+				std::function<void()> Completed = std::move(Self->Writes.front().Completed);
 				Self->Writes.pop_front();
+				if (Completed) Completed();
+				Self->PhysicalWriteInFlight = false;
 				if (Self->CloseAfterWrite && Self->Writes.empty())
 				{
 					// The peer answers our hello while we are already rejecting theirs, so
@@ -617,8 +699,10 @@ struct HostPeerNetwork::Implementation
 		Wire::PeerFrameDecoder Decoder;
 		PeerChannelCrypto ChannelCrypto;
 		std::array<std::uint8_t, 16 * 1024> ReadBuffer{};
-		std::deque<std::vector<std::uint8_t>> Writes;
+		std::deque<PendingWrite> Writes;
+		std::deque<PendingRosterMessage> RosterWrites;
 		std::size_t QueuedBytes = 0;
+		std::size_t RosterSnapshotsQueued = 0;
 		std::string LocalNonce;
 		Wire::PeerHello LocalHello;
 		Wire::PeerHello RemoteHello;
@@ -633,6 +717,10 @@ struct HostPeerNetwork::Implementation
 		bool CloseAfterWrite = false;
 		bool Closed = false;
 		bool CountsInboundHandshake = false;
+		bool RosterWriteInFlight = false;
+		bool RosterRequestOutstanding = false;
+		bool PhysicalWriteInFlight = false;
+		std::chrono::steady_clock::time_point RosterRequestDeadline;
 		std::string RosterSnapshotId;
 		std::uint64_t SnapshotRevision = 0;
 		std::uint64_t SnapshotPartCount = 0;
@@ -644,7 +732,7 @@ struct HostPeerNetwork::Implementation
 		: Io(InIo), Config(std::move(InConfig)), Acceptor(Io),
 		  KnownSessions(Config.MaximumKnownHostSessions, std::chrono::hours(24 * 7)),
 		  KnownDeviceSessions(Config.MaximumRosterDevices, std::chrono::hours(24 * 7)),
-		  Roster(Config.NodeId, Config.HostSession, Config.MaximumRosterDevices)
+		  Roster(Config.NodeId, Config.HostSession, Config.MaximumRosterDevices, Config.MaximumDevices)
 	{
 	}
 
@@ -668,10 +756,12 @@ struct HostPeerNetwork::Implementation
 		if (Config.MaximumPeers == 0 || Config.MaximumInboundHandshakes == 0 ||
 		    Config.MaximumQueuedControlBytes < Wire::MaximumPeerMessageBytes + Wire::PeerFrameHeaderBytes ||
 		    Config.MaximumKnownHostSessions == 0 || Config.MaximumCandidateMembers == 0 ||
-		    Config.MaximumDialAttemptsPerSecond == 0 || Config.MaximumRosterDevices == 0 ||
+		    Config.MaximumDialAttemptsPerSecond == 0 || Config.MaximumRosterDevices < Config.MaximumDevices ||
+		    Config.MaximumDevices == 0 || Config.MaximumDevices > 16 * 64 ||
 		    Config.PeerRosterRemovalTimeout.count() <= 0)
 		{
-			OutError = "peer limits must be non-zero and hold one maximum-sized control frame";
+			OutError = "peer limits must be non-zero, hold one maximum-sized control frame, "
+			           "reserve local device capacity, and fit a roster snapshot in 64 parts";
 			return false;
 		}
 		asio::error_code Error;
@@ -842,7 +932,7 @@ struct HostPeerNetwork::Implementation
 				Target.Close("local roster snapshot exceeds the peer frame bound");
 				return;
 			}
-			Target.SendProtected(Json);
+			Target.QueueRosterMessage(std::move(Json), true);
 		}
 	}
 
@@ -860,8 +950,7 @@ struct HostPeerNetwork::Implementation
 		if (Result == RosterApplyResult::Applied || Result == RosterApplyResult::Ignored) return true;
 		if (Result == RosterApplyResult::NeedFull)
 		{
-			++RosterResyncRequests;
-			SendRosterRequest(Source);
+			if (Source.RequestRosterResync()) ++RosterResyncRequests;
 			return true;
 		}
 		++RefusedRosterMessages;
@@ -988,26 +1077,55 @@ struct HostPeerNetwork::Implementation
 		});
 	}
 
-	void LocalDeviceAttached(RosterDevice Device)
+	bool LocalDeviceAttached(RosterDevice Device, std::string& OutError)
 	{
-		std::uint64_t Revision = 0;
+		std::string ValidationError;
+		if (!ValidateRosterDevice(Device, &ValidationError))
+		{
+			++RefusedLocalRosterDevices;
+			OutError = std::move(ValidationError);
+			Log(LogLevel::Warning, "local device refused by distributed roster: " + OutError);
+			return false;
+		}
+		LocalRosterUpdate Update;
 		RosterOwnerState Local;
 		{
 			std::lock_guard<std::mutex> Lock(Mutex);
-			const std::uint64_t Before = Roster.Local().Revision;
-			Revision = Roster.AttachLocal(Device);
-			if (Revision == Before) return;
+			Update = Roster.AttachLocal(Device);
+			if (Update.Result == LocalRosterResult::CapacityExceeded)
+			{
+				++RefusedLocalRosterDevices;
+				OutError = "local distributed roster capacity is full";
+				return false;
+			}
+			if (Update.Result == LocalRosterResult::Invalid)
+			{
+				++RefusedLocalRosterDevices;
+				OutError = "invalid local distributed roster entry";
+				return false;
+			}
+			if (Update.Result == LocalRosterResult::Unchanged)
+			{
+				OutError.clear();
+				return true;
+			}
 			KnownDeviceSessions.Remember(Device.DeviceId, Device.DeviceSession, std::chrono::steady_clock::now());
 			Local = Roster.Local();
 		}
 		Wire::JsonValue Root;
 		Root.SetObject();
 		AddString(Root, "type", "device_attached");
-		AddOwnerFields(Root, Local, Revision);
+		AddOwnerFields(Root, Local, Update.Revision);
 		(void) Root.InsertMember("device", PeerRosterDeviceJson(Device));
 		std::string Json;
-		if (!Wire::SerializeJson(Root, Json)) return;
-		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->SendProtected(Json);
+		if (!Wire::SerializeJson(Root, Json))
+		{
+			OutError = "cannot serialize local roster update";
+			return false;
+		}
+		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->QueueRosterDelta(Json);
+		OutError.clear();
+		return true;
 	}
 
 	void LocalDeviceDetached(const std::string& DeviceId, const std::uint64_t DeviceSession)
@@ -1029,7 +1147,7 @@ struct HostPeerNetwork::Implementation
 		AddUnsigned(Root, "device_session", DeviceSession);
 		std::string Json;
 		if (!Wire::SerializeJson(Root, Json)) return;
-		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->SendProtected(Json);
+		for (const std::shared_ptr<Session>& Peer : ConnectedSessions()) Peer->QueueRosterDelta(Json);
 	}
 
 	void Closed(Session& SessionValue, const std::string& Reason)
@@ -1255,7 +1373,10 @@ struct HostPeerNetwork::Implementation
 		AddUnsigned(Root, "roster_devices", Roster.DeviceCount());
 		AddUnsigned(Root, "maximum_roster_devices", Config.MaximumRosterDevices);
 		AddUnsigned(Root, "refused_roster_messages", RefusedRosterMessages);
+		AddUnsigned(Root, "refused_local_roster_devices", RefusedLocalRosterDevices);
 		AddUnsigned(Root, "roster_resync_requests", RosterResyncRequests);
+		AddUnsigned(Root, "suppressed_roster_requests", SuppressedRosterRequests);
+		AddUnsigned(Root, "coalesced_roster_outputs", CoalescedRosterOutputs);
 		AddUnsigned(Root, "expired_roster_owners", ExpiredRosterOwners);
 		AddUnsigned(Root, "known_session_cache", KnownSessions.Size());
 		AddUnsigned(Root, "known_device_session_cache", KnownDeviceSessions.Size());
@@ -1326,7 +1447,10 @@ struct HostPeerNetwork::Implementation
 	std::atomic<std::uint64_t> ExpiredCandidates{ 0 };
 	std::atomic<std::uint64_t> IdentityCollisions{ 0 };
 	std::atomic<std::uint64_t> RefusedRosterMessages{ 0 };
+	std::atomic<std::uint64_t> RefusedLocalRosterDevices{ 0 };
 	std::atomic<std::uint64_t> RosterResyncRequests{ 0 };
+	std::atomic<std::uint64_t> SuppressedRosterRequests{ 0 };
+	std::atomic<std::uint64_t> CoalescedRosterOutputs{ 0 };
 	std::atomic<std::uint64_t> ExpiredRosterOwners{ 0 };
 	std::atomic<std::size_t> CandidateCount{ 0 };
 	std::atomic<std::size_t> DiscoveredCandidateCount{ 0 };
@@ -1414,9 +1538,9 @@ std::uint64_t HostPeerNetwork::KnownDeviceSession(const std::string& DeviceId) c
 	return Impl->KnownDeviceSession(DeviceId);
 }
 
-void HostPeerNetwork::LocalDeviceAttached(RosterDevice Device)
+bool HostPeerNetwork::LocalDeviceAttached(RosterDevice Device, std::string& OutError)
 {
-	Impl->LocalDeviceAttached(std::move(Device));
+	return Impl->LocalDeviceAttached(std::move(Device), OutError);
 }
 
 void HostPeerNetwork::LocalDeviceDetached(const std::string& DeviceId, const std::uint64_t DeviceSession)

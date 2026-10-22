@@ -527,16 +527,51 @@ struct HostState : public std::enable_shared_from_this<HostState>
 			Channel->Close();
 			return;
 		}
-		const bool Accepted = DeviceSessionValue != 0 && !ConnectionId.empty() && KnownSession < DeviceSessionValue;
+		bool Accepted = DeviceSessionValue != 0 && !ConnectionId.empty() && KnownSession < DeviceSessionValue;
+		std::string RefusalReason;
+		const std::int64_t PresentedProtocol = IntegerMember(Hello, "protocol_version");
+		if (!Accepted && PresentedProtocol != DeviceProtocolVersion)
+		{
+			RefusalReason = "device protocol " + std::to_string(PresentedProtocol) +
+				" does not match required protocol " + std::to_string(DeviceProtocolVersion);
+		}
+		if (Accepted && Config.LocalDeviceAttached)
+		{
+			RosterDevice RosterEntry;
+			RosterEntry.DeviceId = Id;
+			RosterEntry.DeviceSession = DeviceSessionValue;
+			RosterEntry.ConnectionId = ConnectionId;
+			RosterEntry.Name = StringMember(Hello, "name");
+			RosterEntry.ProjectName = StringMember(Hello, "project_name");
+			RosterEntry.Platform = StringMember(Hello, "platform");
+			RosterEntry.Configuration = StringMember(Hello, "configuration");
+			RosterEntry.EngineVersion = StringMember(Hello, "engine_version");
+			RosterEntry.BuildVersion = StringMember(Hello, "build_version");
+			RosterEntry.CatalogRevision = 1;
+			if (const Json* CapabilitiesValue = Member(Hello, "capabilities"))
+			{
+				if (const std::vector<Json>* Capabilities = CapabilitiesValue->TryGetArray())
+				{
+					for (const Json& Capability : *Capabilities)
+					{
+						if (const std::string* Text = Capability.TryGetString()) RosterEntry.Capabilities.push_back(*Text);
+					}
+				}
+			}
+			Accepted = Config.LocalDeviceAttached(std::move(RosterEntry), RefusalReason);
+		}
 		Json Ack;
 		Ack.SetObject();
 		AddString(Ack, "type", "attach_ack");
 		AddBoolean(Ack, "accepted", Accepted);
 		AddString(Ack, "last_known_device_session", std::to_string(KnownSession));
+		if (!RefusalReason.empty()) AddString(Ack, "reason", RefusalReason);
 		Channel->SendText(Serialize(Ack));
 		if (!Accepted)
 		{
-			Log(LogLevel::Warning, "stale or malformed device session refused for " + Id);
+			Log(LogLevel::Warning, RefusalReason.empty()
+				? "stale or malformed device session refused for " + Id
+				: "device refused for " + Id + ": " + RefusalReason);
 			Channel->CloseAfterWrites();
 			return;
 		}
@@ -571,28 +606,6 @@ struct HostState : public std::enable_shared_from_this<HostState>
 		if (Device.Commands.GetType() != Wire::JsonType::Array) Device.Commands.SetArray();
 		if (Device.FileRoots.GetType() != Wire::JsonType::Array) Device.FileRoots.SetArray();
 		if (Device.DataModules.GetType() != Wire::JsonType::Array) Device.DataModules.SetArray();
-		if (Config.LocalDeviceAttached)
-		{
-			RosterDevice RosterEntry;
-			RosterEntry.DeviceId = Device.Id;
-			RosterEntry.DeviceSession = Device.DeviceSession;
-			RosterEntry.ConnectionId = Device.ConnectionId;
-			RosterEntry.Name = Device.Name;
-			RosterEntry.ProjectName = Device.ProjectName;
-			RosterEntry.Platform = Device.Platform;
-			RosterEntry.Configuration = Device.Configuration;
-			RosterEntry.EngineVersion = Device.EngineVersion;
-			RosterEntry.BuildVersion = Device.BuildVersion;
-			RosterEntry.CatalogRevision = 1;
-			if (const std::vector<Json>* Capabilities = Device.Capabilities.TryGetArray())
-			{
-				for (const Json& Capability : *Capabilities)
-				{
-					if (const std::string* Text = Capability.TryGetString()) RosterEntry.Capabilities.push_back(*Text);
-				}
-			}
-			Config.LocalDeviceAttached(std::move(RosterEntry));
-		}
 		Log(LogLevel::Information, "device connected: " + Device.Name + " (" + Id + ")");
 	}
 
